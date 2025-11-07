@@ -54,8 +54,8 @@ async function getConnection() {
 
 // Helper function to safely escape table/column names
 function escapeIdentifier(identifier: string): string {
-  // Only allow alphanumeric characters and underscores
-  if (!/^[a-zA-Z0-9_]+$/.test(identifier)) {
+  // Only allow alphanumeric characters and underscores, but not starting with underscore
+  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(identifier)) {
     throw new Error('Invalid table or column name');
   }
   return `\`${identifier}\``;

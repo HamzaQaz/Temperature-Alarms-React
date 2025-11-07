@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import type { DashboardData } from '../types';
 
 interface TemperatureCardProps {
@@ -40,13 +41,13 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data }) => {
           <span style={{ fontSize: '12px', display: 'inline-block', paddingTop: '7px' }}>
             {data.date && data.time ? `${data.date} ${formatTime(data.time)}` : 'No data'}
           </span>
-          <a 
-            href={`/history?device=${data.name}&date=${data.date || ''}`}
+          <Link 
+            to={`/history?device=${data.name}&date=${data.date || ''}`}
             className="btn btn-primary btn-sm"
             style={{ float: 'right', margin: '0px' }}
           >
             History
-          </a>
+          </Link>
           <div style={{ clear: 'both' }}></div>
         </div>
       </div>
