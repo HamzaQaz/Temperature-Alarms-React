@@ -16,13 +16,28 @@ app.use(express.json());
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'T3mp12',
+  password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME || 'temp'
 };
+
+// Check that required database password is set
+if (!dbConfig.password) {
+  console.error('ERROR: DB_PASSWORD environment variable is required');
+  process.exit(1);
+}
 
 // Helper function to get database connection
 async function getConnection() {
   return await createConnection(dbConfig);
+}
+
+// Helper function to safely escape table/column names
+function escapeIdentifier(identifier: string): string {
+  // Only allow alphanumeric characters and underscores
+  if (!/^[a-zA-Z0-9_]+$/.test(identifier)) {
+    throw new Error('Invalid table or column name');
+  }
+  return `\`${identifier}\``;
 }
 
 // ==================== DEVICE ROUTES ====================
@@ -53,15 +68,18 @@ app.post('/api/devices', async (req: Request, res: Response) => {
   try {
     const connection = await getConnection();
     
+    // Validate table name
+    const safeName = escapeIdentifier(name);
+    
     // Insert device
     const [result] = await connection.execute<ResultSetHeader>(
       'INSERT INTO devices (Name, Campus, Location) VALUES (?, ?, ?)',
       [name, campus, location]
     );
     
-    // Create table for device
+    // Create table for device with escaped name
     await connection.execute(
-      `CREATE TABLE IF NOT EXISTS \`${name}\` (
+      `CREATE TABLE IF NOT EXISTS ${safeName} (
         \`ID\` int(11) NOT NULL AUTO_INCREMENT,
         \`CAMPUS\` varchar(20) NOT NULL,
         \`LOCATION\` varchar(20) NOT NULL,
@@ -92,8 +110,9 @@ app.delete('/api/devices/:id', async (req: Request, res: Response) => {
     await connection.execute('DELETE FROM devices WHERE ID = ? LIMIT 1', [id]);
     
     // Truncate device table if name provided
-    if (name) {
-      await connection.execute(`TRUNCATE TABLE \`${name}\``);
+    if (name && typeof name === 'string') {
+      const safeName = escapeIdentifier(name);
+      await connection.execute(`TRUNCATE TABLE ${safeName}`);
     }
     
     await connection.end();
@@ -220,8 +239,9 @@ app.get('/api/temperature/:deviceName', async (req: Request, res: Response) => {
 
   try {
     const connection = await getConnection();
+    const safeName = escapeIdentifier(deviceName);
     const [rows] = await connection.execute<RowDataPacket[]>(
-      `SELECT * FROM \`${deviceName}\` ORDER BY id DESC LIMIT 1`
+      `SELECT * FROM ${safeName} ORDER BY id DESC LIMIT 1`
     );
     await connection.end();
     
@@ -243,11 +263,12 @@ app.get('/api/temperature/:deviceName/history', async (req: Request, res: Respon
 
   try {
     const connection = await getConnection();
-    let query = `SELECT * FROM \`${deviceName}\` ORDER BY id DESC`;
+    const safeName = escapeIdentifier(deviceName);
+    let query = `SELECT * FROM ${safeName} ORDER BY id DESC`;
     const params: any[] = [];
     
     if (date) {
-      query = `SELECT * FROM \`${deviceName}\` WHERE DATE = ? ORDER BY id DESC`;
+      query = `SELECT * FROM ${safeName} WHERE DATE = ? ORDER BY id DESC`;
       params.push(date);
     }
     
@@ -273,8 +294,9 @@ app.get('/api/dashboard', async (req: Request, res: Response) => {
     const dashboardData = await Promise.all(
       devices.map(async (device) => {
         try {
+          const safeName = escapeIdentifier(device.Name);
           const [tempData] = await connection.execute<RowDataPacket[]>(
-            `SELECT * FROM \`${device.Name}\` ORDER BY id DESC LIMIT 1`
+            `SELECT * FROM ${safeName} ORDER BY id DESC LIMIT 1`
           );
           
           return {
@@ -328,9 +350,11 @@ app.post('/api/write', async (req: Request, res: Response) => {
   try {
     const connection = await getConnection();
     
+    const safeName = escapeIdentifier(device);
+    
     // Check if device table exists, create if not
     await connection.execute(
-      `CREATE TABLE IF NOT EXISTS \`${device}\` (
+      `CREATE TABLE IF NOT EXISTS ${safeName} (
         \`ID\` int(11) NOT NULL AUTO_INCREMENT,
         \`CAMPUS\` varchar(20) NOT NULL,
         \`LOCATION\` varchar(20) NOT NULL,
@@ -343,7 +367,7 @@ app.post('/api/write', async (req: Request, res: Response) => {
     
     // Insert temperature data
     await connection.execute(
-      `INSERT INTO \`${device}\` (CAMPUS, LOCATION, DATE, TIME, TEMP) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO ${safeName} (CAMPUS, LOCATION, DATE, TIME, TEMP) VALUES (?, ?, ?, ?, ?)`,
       [campus, location, date, time, temp]
     );
     

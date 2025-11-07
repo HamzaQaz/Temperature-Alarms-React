@@ -41,7 +41,7 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data }) => {
             {data.date && data.time ? `${data.date} ${formatTime(data.time)}` : 'No data'}
           </span>
           <a 
-            href={`/history?device=${data.name}&date=${new Date().toLocaleDateString('en-US')}`}
+            href={`/history?device=${data.name}&date=${data.date || ''}`}
             className="btn btn-primary btn-sm"
             style={{ float: 'right', margin: '0px' }}
           >

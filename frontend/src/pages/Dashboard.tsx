@@ -132,7 +132,7 @@ const Dashboard: React.FC = () => {
 
       {/* Footer */}
       <div className="footer bg-light" style={{ bottom: 0, width: '100%', textAlign: 'center', marginTop: '10px' }}>
-        <p>2018 &copy;</p>
+        <p>{new Date().getFullYear()} &copy;</p>
       </div>
     </div>
   );
