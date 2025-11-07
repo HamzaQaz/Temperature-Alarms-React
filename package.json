@@ -1,0 +1,17 @@
+{
+  "name": "temperature-alarms-react",
+  "version": "2.0.0",
+  "description": "Temperature monitoring system with React frontend and Node.js backend",
+  "scripts": {
+    "install:all": "cd backend && npm install && cd ../frontend && npm install",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "build:all": "npm run build:backend && npm run build:frontend",
+    "start:backend": "cd backend && npm start"
+  },
+  "keywords": ["temperature", "iot", "nodemcu", "react", "typescript"],
+  "author": "",
+  "license": "ISC"
+}
