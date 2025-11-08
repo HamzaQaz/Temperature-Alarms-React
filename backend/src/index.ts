@@ -16,7 +16,7 @@ app.use(express.json());
 // Rate limiting middleware
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  max: 500, // Limit each IP to 500 requests per windowMs
   standardHeaders: true,
   legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.'
@@ -312,6 +312,53 @@ app.get('/api/temperature/:deviceName/history', async (req: Request, res: Respon
   } catch (error) {
     console.error('Error fetching temperature history:', error);
     res.status(500).json({ error: 'Failed to fetch temperature history' });
+  }
+});
+
+// Get temperature history (alternative endpoint used by frontend)
+app.get('/api/history', async (req: Request, res: Response) => {
+  const { device, date } = req.query;
+
+  if (!device || typeof device !== 'string') {
+    return res.status(400).json({ error: 'Device parameter is required' });
+  }
+
+  try {
+    const connection = await getConnection();
+    const safeName = escapeIdentifier(device);
+    let query = `SELECT * FROM ${safeName} ORDER BY id DESC`;
+    const params: any[] = [];
+    
+    if (date && typeof date === 'string') {
+      query = `SELECT * FROM ${safeName} WHERE DATE = ? ORDER BY id DESC`;
+      params.push(date);
+    }
+    
+    const [rows] = await connection.execute<RowDataPacket[]>(query, params);
+    await connection.end();
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching temperature history:', error);
+    res.status(500).json({ error: 'Failed to fetch temperature history' });
+  }
+});
+
+// Delete/reset temperature history for a device
+app.delete('/api/temperature/:deviceName/history', async (req: Request, res: Response) => {
+  const { deviceName } = req.params;
+
+  try {
+    const connection = await getConnection();
+    const safeName = escapeIdentifier(deviceName);
+    
+    // Delete all records from the device table
+    await connection.execute(`DELETE FROM ${safeName}`);
+    await connection.end();
+    
+    res.json({ message: 'Temperature history reset successfully' });
+  } catch (error) {
+    console.error('Error resetting temperature history:', error);
+    res.status(500).json({ error: 'Failed to reset temperature history' });
   }
 });
 

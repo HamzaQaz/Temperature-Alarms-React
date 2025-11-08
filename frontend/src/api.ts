@@ -94,6 +94,13 @@ export const getTemperatureHistory = async (deviceName: string, date?: string): 
   return response.json();
 };
 
+export const resetTemperatureHistory = async (deviceName: string): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/api/temperature/${deviceName}/history`, {
+    method: 'DELETE'
+  });
+  if (!response.ok) throw new Error('Failed to reset temperature history');
+};
+
 export const getDashboardData = async (filter?: string): Promise<DashboardData[]> => {
   const url = filter 
     ? `${API_BASE_URL}/api/dashboard?filter=${filter}`
