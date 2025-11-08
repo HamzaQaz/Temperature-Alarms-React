@@ -37,7 +37,7 @@ app.use('/api/', limiter);
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD,
+  password: process.env.DB_PASSWORD || 'temp123',
   database: process.env.DB_NAME || 'temp'
 };
 
@@ -62,6 +62,19 @@ function escapeIdentifier(identifier: string): string {
 }
 
 // ==================== DEVICE ROUTES ====================
+
+// Health check route
+app.get('/api/health', async (req: Request, res: Response) => {
+  try {
+    const connection = await getConnection();
+    await connection.ping();
+    await connection.end();
+    res.json({ status: 'ok', database: 'connected' });
+  } catch (error) {
+    console.error('Health check failed:', error);
+    res.status(503).json({ status: 'error', database: 'disconnected' });
+  }
+});
 
 // Get all devices
 app.get('/api/devices', async (req: Request, res: Response) => {
@@ -358,20 +371,76 @@ app.get('/api/dashboard', async (req: Request, res: Response) => {
   }
 });
 
+// ==================== SSE ENDPOINT (Server-Sent Events) ====================
+
+// Store connected SSE clients
+const sseClients = new Set<Response>();
+
+// SSE endpoint for live dashboard updates
+app.get('/api/dashboard/stream', (req: Request, res: Response) => {
+  // Set headers for SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // Add client to set
+  sseClients.add(res);
+  console.log(`SSE client connected. Total clients: ${sseClients.size}`);
+
+  // Send initial connection message
+  res.write('data: {"type":"connected"}\n\n');
+
+  // Remove client on disconnect
+  req.on('close', () => {
+    sseClients.delete(res);
+    console.log(`SSE client disconnected. Total clients: ${sseClients.size}`);
+  });
+});
+
+// Helper function to broadcast updates to all SSE clients
+function broadcastUpdate(deviceName: string, data: any) {
+  const message = `data: ${JSON.stringify({ type: 'update', device: deviceName, data })}\n\n`;
+  sseClients.forEach(client => {
+    try {
+      client.write(message);
+    } catch (error) {
+      console.error('Error broadcasting to client:', error);
+      sseClients.delete(client);
+    }
+  });
+}
+
 // ==================== WRITE ENDPOINT (for NodeMCU) ====================
 
 // Write temperature data (from NodeMCU) - separate rate limiter for IoT devices
 app.post('/api/write', writeLimiter, async (req: Request, res: Response) => {
-  const { device, campus, location, date, time, temp } = req.body;
-  
-  if (!device || !campus || !location || !date || !time || temp === undefined) {
-    return res.status(400).json({ error: 'All fields are required' });
+  const { table, temp } = req.body;
+
+  if (!table || temp === undefined) {
+    return res.status(400).json({ error: 'Table and temp fields are required' });
   }
+  const tableName = table.replace(/-/g, '_');
 
   try {
     const connection = await getConnection();
     
-    const safeName = escapeIdentifier(device);
+    // Get device info from devices table
+    const [deviceRows] = await connection.execute<RowDataPacket[]>(
+      'SELECT Campus, Location FROM devices WHERE Name = ? LIMIT 1',
+      [tableName]
+    );
+    
+    if (deviceRows.length === 0) {
+      await connection.end();
+      return res.status(404).json({ error: 'Unknown device' });
+    }
+    
+    const { Campus: campus, Location: location } = deviceRows[0];
+    const date = new Date().toLocaleDateString();
+    const time = new Date().toLocaleTimeString();
+    
+    const safeName = escapeIdentifier(tableName);
     
     // Check if device table exists, create if not
     await connection.execute(
@@ -393,6 +462,16 @@ app.post('/api/write', writeLimiter, async (req: Request, res: Response) => {
     );
     
     await connection.end();
+    
+    // Broadcast update to all connected SSE clients
+    broadcastUpdate(tableName, {
+      campus,
+      location,
+      temperature: temp,
+      date,
+      time
+    });
+    
     res.status(201).json({ message: 'Temperature data recorded' });
   } catch (error) {
     console.error('Error writing temperature data:', error);

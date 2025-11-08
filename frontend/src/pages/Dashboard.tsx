@@ -13,6 +13,7 @@ const Dashboard: React.FC = () => {
   const [locations, setLocations] = useState<Location[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [countdowns, setCountdowns] = useState<Record<number, number>>({});
 
   const loadData = useCallback(async () => {
     try {
@@ -35,6 +36,82 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Countdown timer effect
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCountdowns(prev => {
+        const updated = { ...prev };
+        Object.keys(updated).forEach(id => {
+          if (updated[Number(id)] > 0) {
+            updated[Number(id)] -= 1;
+          }
+        });
+        return updated;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Initialize countdowns when dashboard data loads
+  useEffect(() => {
+    const newCountdowns: Record<number, number> = {};
+    dashboardData.forEach(device => {
+      if (countdowns[device.id] === undefined) {
+        newCountdowns[device.id] = 30;
+      } else {
+        newCountdowns[device.id] = countdowns[device.id];
+      }
+    });
+    setCountdowns(newCountdowns);
+  }, [dashboardData.length]);
+
+  // Setup SSE for live updates
+  useEffect(() => {
+    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+    const eventSource = new EventSource(`${apiUrl}/api/dashboard/stream`);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        
+        if (message.type === 'connected') {
+          console.log('Connected to live updates');
+        } else if (message.type === 'update') {
+          // Update the specific device data
+          setDashboardData(prev => prev.map(device => {
+            if (device.name === message.device) {
+              // Reset countdown to 30 when new data arrives
+              setCountdowns(prevCountdowns => ({
+                ...prevCountdowns,
+                [device.id]: 30
+              }));
+              
+              return {
+                ...device,
+                temperature: message.data.temperature,
+                date: message.data.date,
+                time: message.data.time
+              };
+            }
+            return device;
+          }));
+        }
+      } catch (err) {
+        console.error('Error parsing SSE message:', err);
+      }
+    };
+
+    eventSource.onerror = (err) => {
+      console.error('SSE error:', err);
+      eventSource.close();
+    };
+
+    return () => {
+      eventSource.close();
+    };
+  }, []);
 
   const handleFilterClick = (shortcode: string) => {
     if (shortcode === filter) {
@@ -124,7 +201,7 @@ const Dashboard: React.FC = () => {
         {!loading && !error && rows.map((row, idx) => (
           <div key={idx} className="row">
             {row.map((data) => (
-              <TemperatureCard key={data.id} data={data} />
+              <TemperatureCard key={data.id} data={data} countdown={countdowns[data.id] || 0} />
             ))}
           </div>
         ))}

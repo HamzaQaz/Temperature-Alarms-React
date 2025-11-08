@@ -1,24 +1,16 @@
 import { Link } from 'react-router-dom';
 import type { DashboardData } from '../types';
+import NumberFlow from '@number-flow/react'
 
 interface TemperatureCardProps {
   data: DashboardData;
+  countdown?: number;
 }
-
-const TemperatureCard: React.FC<TemperatureCardProps> = ({ data }) => {
-  const formatTime = (time: string | null) => {
-    if (!time) return '';
-    // Remove seconds and add AM/PM formatting
-    const parts = time.split(':');
-    if (parts.length >= 2) {
-      const hour = parseInt(parts[0]);
-      const minute = parts[1];
-      const ampm = hour >= 12 ? 'PM' : 'AM';
-      const displayHour = hour % 12 || 12;
-      return `${displayHour}:${minute} ${ampm}`;
-    }
-    return time;
-  };
+type Temp = number | null;
+const TemperatureCard: React.FC<TemperatureCardProps> = ({ data, countdown = 0 }) => {
+  
+  
+  const temp: Temp = data.temperature;
 
   return (
     <div className="col-sm" style={{ marginBottom: '20px' }}>
@@ -34,13 +26,46 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data }) => {
         </div>
         <div className="card-body">
           <h1 className="card-text" style={{ fontSize: '72px', textAlign: 'center' }}>
-            {data.temperature !== null ? `${data.temperature}°` : 'N/A'}
+            <NumberFlow
+              value={temp ?? 0}
+              format={{notation: "compact"}}
+              locales="en-US"
+              willChange
+              suffix="°"
+            />
           </h1>
         </div>
         <div className="card-footer text-muted">
-          <span style={{ fontSize: '12px', display: 'inline-block', paddingTop: '7px' }}>
-            {data.date && data.time ? `${data.date} ${formatTime(data.time)}` : 'No data'}
-          </span>
+            <span style={{ fontSize: '12px', display: 'inline-block', paddingTop: '7px' }}>
+            {data.date && data.time ? (
+              <>
+              {data.date}{' '}
+              <NumberFlow
+                value={parseInt(data.time.split(':')[0])}
+                format={{ minimumIntegerDigits: 2 }}
+                locales="en-US"
+              />
+              :
+              <NumberFlow
+                value={parseInt(data.time.split(':')[1])}
+                format={{ minimumIntegerDigits: 2 }}
+                locales="en-US"
+              />
+              {' '}{parseInt(data.time.split(':')[0]) >= 12 ? 'AM' : 'PM'}
+              </>
+            ) : 'No data'}
+            
+            </span>
+            <span style={{ fontSize: '12px', display: 'inline-block', paddingTop: '7px' }}>
+            Next update in{' '}
+            <NumberFlow
+              value={countdown}
+              format={{notation: "compact"}}
+              locales="en-US"
+              willChange
+              suffix="s"
+            />
+            </span>
           <Link 
             to={`/history?device=${data.name}&date=${data.date || ''}`}
             className="btn btn-primary btn-sm"
@@ -48,6 +73,7 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data }) => {
           >
             History
           </Link>
+          
           <div style={{ clear: 'both' }}></div>
         </div>
       </div>
