@@ -120,6 +120,7 @@ app.post('/api/devices', async (req: Request, res: Response) => {
         \`DATE\` varchar(20) NOT NULL,
         \`TIME\` varchar(20) NOT NULL,
         \`TEMP\` int(20) NOT NULL,
+        \`HUMIDITY\` int(20) DEFAULT NULL,
         PRIMARY KEY (\`ID\`)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8`
     );
@@ -386,6 +387,7 @@ app.get('/api/dashboard', async (req: Request, res: Response) => {
             campus: device.Campus,
             location: device.Location,
             temperature: tempData.length > 0 ? tempData[0].TEMP : null,
+            humidity: tempData.length > 0 ? (tempData[0].HUMIDITY || null) : null,
             date: tempData.length > 0 ? tempData[0].DATE : null,
             time: tempData.length > 0 ? tempData[0].TIME : null
           };
@@ -397,6 +399,7 @@ app.get('/api/dashboard', async (req: Request, res: Response) => {
             campus: device.Campus,
             location: device.Location,
             temperature: null,
+            humidity: null,
             date: null,
             time: null
           };
@@ -462,7 +465,7 @@ function broadcastUpdate(deviceName: string, data: any) {
 
 // Write temperature data (from NodeMCU) - separate rate limiter for IoT devices
 app.post('/api/write', writeLimiter, async (req: Request, res: Response) => {
-  const { table, temp } = req.body;
+  const { table, temp, humidity } = req.body;
 
   if (!table || temp === undefined) {
     return res.status(400).json({ error: 'Table and temp fields are required' });
@@ -489,7 +492,7 @@ app.post('/api/write', writeLimiter, async (req: Request, res: Response) => {
     
     const safeName = escapeIdentifier(tableName);
     
-    // Check if device table exists, create if not
+    // Check if device table exists, create if not (with humidity column)
     await connection.execute(
       `CREATE TABLE IF NOT EXISTS ${safeName} (
         \`ID\` int(11) NOT NULL AUTO_INCREMENT,
@@ -498,14 +501,15 @@ app.post('/api/write', writeLimiter, async (req: Request, res: Response) => {
         \`DATE\` varchar(20) NOT NULL,
         \`TIME\` varchar(20) NOT NULL,
         \`TEMP\` int(20) NOT NULL,
+        \`HUMIDITY\` int(20) DEFAULT NULL,
         PRIMARY KEY (\`ID\`)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8`
     );
     
-    // Insert temperature data
+    // Insert temperature and humidity data
     await connection.execute(
-      `INSERT INTO ${safeName} (CAMPUS, LOCATION, DATE, TIME, TEMP) VALUES (?, ?, ?, ?, ?)`,
-      [campus, location, date, time, temp]
+      `INSERT INTO ${safeName} (CAMPUS, LOCATION, DATE, TIME, TEMP, HUMIDITY) VALUES (?, ?, ?, ?, ?, ?)`,
+      [campus, location, date, time, temp, humidity || null]
     );
     
     await connection.end();
@@ -515,6 +519,7 @@ app.post('/api/write', writeLimiter, async (req: Request, res: Response) => {
       campus,
       location,
       temperature: temp,
+      humidity: humidity || null,
       date,
       time
     });

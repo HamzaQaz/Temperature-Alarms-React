@@ -24,6 +24,7 @@ export interface TemperatureData {
   DATE: string;
   TIME: string;
   TEMP: number;
+  HUMIDITY: number | null;
 }
 
 export interface DashboardData {
@@ -32,6 +33,7 @@ export interface DashboardData {
   campus: string;
   location: string;
   temperature: number | null;
+  humidity: number | null;
   date: string | null;
   time: string | null;
 }
