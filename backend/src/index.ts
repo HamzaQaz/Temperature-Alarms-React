@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3001;
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:3000',
-  'https://envn.celinaisd.tech',
+  'https://your-frontend-domain.com',
   process.env.CORS_ORIGIN
 ].filter(Boolean);
 
@@ -59,7 +59,7 @@ app.use('/api/', limiter);
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'temp123',
+  password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'temp'
 };
 

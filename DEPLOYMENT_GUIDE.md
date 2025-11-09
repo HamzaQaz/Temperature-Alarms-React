@@ -4,8 +4,8 @@
 - Ubuntu Server (20.04 or newer)
 - Root or sudo access
 - Domains pointing to your server:
-  - `envn.celinaisd.tech` → Frontend
-  - `envnapi.celinaisd.tech` → Backend API
+  - `your-frontend-domain.com` → Frontend
+  - `your-api-domain.com` → Backend API
 
 ## Step 1: Initial Server Setup
 
@@ -80,7 +80,7 @@ DB_HOST=localhost
 DB_USER=tempuser
 DB_PASSWORD=your_secure_password_here
 DB_NAME=temperature_alarms
-CORS_ORIGIN=https://envn.celinaisd.tech
+CORS_ORIGIN=https://your-frontend-domain.com
 EOF
 
 # Build TypeScript
@@ -102,7 +102,7 @@ npm install
 
 # Create production environment file
 cat > .env.production << EOF
-VITE_API_URL=https://envnapi.celinaisd.tech
+VITE_API_URL=https://your-api-domain.com
 EOF
 
 # Build for production
@@ -119,7 +119,7 @@ sudo cp -r dist/* /var/www/html/temperature-frontend/
 
 ```bash
 # Create nginx config for API
-sudo nano /etc/nginx/sites-available/envnapi.celinaisd.tech
+sudo nano /etc/nginx/sites-available/your-api-domain.com
 ```
 
 Add this configuration:
@@ -127,7 +127,7 @@ Add this configuration:
 ```nginx
 server {
     listen 80;
-    server_name envnapi.celinaisd.tech;
+    server_name your-api-domain.com;
 
     # Redirect to HTTPS (will be configured with certbot)
     return 301 https://$server_name$request_uri;
@@ -135,11 +135,11 @@ server {
 
 server {
     listen 443 ssl http2;
-    server_name envnapi.celinaisd.tech;
+    server_name your-api-domain.com;
 
     # SSL certificates (will be added by certbot)
-    # ssl_certificate /etc/letsencrypt/live/envnapi.celinaisd.tech/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/envnapi.celinaisd.tech/privkey.pem;
+    # ssl_certificate /etc/letsencrypt/live/your-api-domain.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/your-api-domain.com/privkey.pem;
 
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
@@ -164,18 +164,16 @@ server {
         proxy_read_timeout 86400s;
         proxy_send_timeout 86400s;
     }
-
-    # Rate limiting
-    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=100r/m;
-    limit_req zone=api_limit burst=20 nodelay;
 }
 ```
+
+**Note:** Rate limiting should be configured in `/etc/nginx/nginx.conf` in the `http` block (see Additional Nginx Optimization section below).
 
 ### Frontend Configuration
 
 ```bash
 # Create nginx config for frontend
-sudo nano /etc/nginx/sites-available/envn.celinaisd.tech
+sudo nano /etc/nginx/sites-available/your-frontend-domain.com
 ```
 
 Add this configuration:
@@ -183,7 +181,7 @@ Add this configuration:
 ```nginx
 server {
     listen 80;
-    server_name envn.celinaisd.tech;
+    server_name your-frontend-domain.com;
 
     # Redirect to HTTPS
     return 301 https://$server_name$request_uri;
@@ -191,11 +189,11 @@ server {
 
 server {
     listen 443 ssl http2;
-    server_name envn.celinaisd.tech;
+    server_name your-frontend-domain.com;
 
     # SSL certificates (will be added by certbot)
-    # ssl_certificate /etc/letsencrypt/live/envn.celinaisd.tech/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/envn.celinaisd.tech/privkey.pem;
+    # ssl_certificate /etc/letsencrypt/live/your-frontend-domain.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/your-frontend-domain.com/privkey.pem;
 
     root /var/www/html/temperature-frontend;
     index index.html;
@@ -229,8 +227,8 @@ server {
 
 ```bash
 # Enable both sites
-sudo ln -s /etc/nginx/sites-available/envn.celinaisd.tech /etc/nginx/sites-enabled/
-sudo ln -s /etc/nginx/sites-available/envnapi.celinaisd.tech /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/your-frontend-domain.com /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/your-api-domain.com /etc/nginx/sites-enabled/
 
 # Remove default site
 sudo rm /etc/nginx/sites-enabled/default
@@ -246,7 +244,7 @@ sudo systemctl restart nginx
 
 ```bash
 # Obtain SSL certificates for both domains
-sudo certbot --nginx -d envn.celinaisd.tech -d envnapi.celinaisd.tech
+sudo certbot --nginx -d your-frontend-domain.com -d your-api-domain.com
 
 # Follow the prompts:
 # - Enter email address
@@ -283,7 +281,7 @@ Update CORS configuration:
 ```typescript
 // Update CORS origins
 const allowedOrigins = [
-  'https://envn.celinaisd.tech',
+  'https://your-frontend-domain.com',
   'http://localhost:5173' // Keep for local development
 ];
 ```
@@ -307,7 +305,7 @@ nano src/api.ts
 Update the base URL:
 
 ```typescript
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://envnapi.celinaisd.tech';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://your-api-domain.com';
 ```
 
 Rebuild and deploy:
@@ -410,15 +408,15 @@ sudo crontab -e
 
 ### Test Backend API
 ```bash
-curl https://envnapi.celinaisd.tech/api/dashboard
+curl https://your-api-domain.com/api/dashboard
 ```
 
 ### Test Frontend
-Open browser: `https://envn.celinaisd.tech`
+Open browser: `https://your-frontend-domain.com`
 
 ### Test SSE Connection
 ```bash
-curl -N https://envnapi.celinaisd.tech/api/dashboard/stream
+curl -N https://your-api-domain.com/api/dashboard/stream
 ```
 
 ## Troubleshooting
@@ -452,7 +450,7 @@ sudo mysql -u tempuser -p
 Update your Arduino code to use the new API endpoint:
 
 ```cpp
-const char* serverUrl = "https://envnapi.celinaisd.tech/api/write";
+const char* serverUrl = "https://your-api-domain.com/api/write";
 ```
 
 Note: You may need to add SSL fingerprint verification or use HTTP if HTTPS causes issues with NodeMCU.
@@ -462,23 +460,50 @@ Note: You may need to add SSL fingerprint verification or use HTTP if HTTPS caus
 Add to `/etc/nginx/nginx.conf` in the `http` block:
 
 ```nginx
-# Connection optimization
-keepalive_timeout 65;
-keepalive_requests 100;
+http {
+    # ... existing configuration ...
 
-# Buffer sizes
-client_body_buffer_size 10K;
-client_header_buffer_size 1k;
-client_max_body_size 8m;
-large_client_header_buffers 2 1k;
+    # Rate limiting zones (add this in http block)
+    limit_req_zone $binary_remote_addr zone=api_limit:10m rate=100r/m;
 
-# Timeouts
-client_body_timeout 12;
-client_header_timeout 12;
-send_timeout 10;
+    # Connection optimization
+    keepalive_timeout 65;
+    keepalive_requests 100;
 
-# Hide nginx version
-server_tokens off;
+    # Buffer sizes
+    client_body_buffer_size 10K;
+    client_header_buffer_size 1k;
+    client_max_body_size 8m;
+    large_client_header_buffers 2 1k;
+
+    # Timeouts
+    client_body_timeout 12;
+    client_header_timeout 12;
+    send_timeout 10;
+
+    # Hide nginx version
+    server_tokens off;
+
+    # ... rest of configuration ...
+}
+```
+
+Then, to apply rate limiting to your API, add this inside the API server block in `/etc/nginx/sites-available/your-api-domain.com`:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name your-api-domain.com;
+
+    # ... other configuration ...
+
+    location / {
+        # Apply rate limiting
+        limit_req zone=api_limit burst=20 nodelay;
+
+        # ... proxy settings ...
+    }
+}
 ```
 
 ## PM2 Ecosystem File (Optional)
@@ -527,11 +552,11 @@ pm2 start ecosystem.config.js
 - MySQL: `sudo tail -f /var/log/mysql/error.log`
 
 **Domains:**
-- Frontend: https://envn.celinaisd.tech
-- Backend API: https://envnapi.celinaisd.tech
+- Frontend: https://your-frontend-domain.com
+- Backend API: https://your-api-domain.com
 
 **Important Files:**
-- Nginx Frontend: `/etc/nginx/sites-available/envn.celinaisd.tech`
-- Nginx Backend: `/etc/nginx/sites-available/envnapi.celinaisd.tech`
+- Nginx Frontend: `/etc/nginx/sites-available/your-frontend-domain.com`
+- Nginx Backend: `/etc/nginx/sites-available/your-api-domain.com`
 - Backend Env: `/var/www/temperature-alarms/backend/.env`
 - Frontend Build: `/var/www/html/temperature-frontend/`
