@@ -45,10 +45,10 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data, countdown = 0 }
 
   return (
     <Card className={`${hasMoldRisk ? 'border-2 border-destructive' : ''}`}>
-      <CardContent className="p-1">
-        <div className="flex justify-between items-start">
+      <CardContent className="p-4 space-y-4">
+        <div className="flex justify-between items-start mb-2">
           <div>
-            <h6 className="font-semibold flex items-center gap-2">
+            <h6 className="font-semibold flex items-center gap-1">
               <MapPin className="h-4 w-4 text-muted-foreground" />
               {data.campus} - {data.location}
             </h6>
