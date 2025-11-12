@@ -45,7 +45,7 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data, countdown = 0 }
 
   return (
     <Card className={`${hasMoldRisk ? 'border-2 border-destructive' : ''}`}>
-      <CardContent className="p-6">
+      <CardContent className="p-3">
         <div className="flex justify-between items-start mb-1">
           <div>
             <h6 className="font-semibold flex items-center gap-2">
