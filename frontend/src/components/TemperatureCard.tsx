@@ -1,4 +1,4 @@
-//import { Link } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import type { DashboardData } from '../types';
 import NumberFlow from '@number-flow/react';
 import { Card, CardContent } from "@/components/ui/card";
