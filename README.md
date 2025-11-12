@@ -7,8 +7,8 @@ This project utilizes NodeMCU SOCs & Temperature Sensors (DS18B20) to report tem
 - **Frontend**: React 18 + TypeScript + Vite
 - **Backend**: Node.js + Express + TypeScript
 - **Database**: MySQL
-- **UI**: Bootstrap 5 + Font Awesome
-- **Hardware**: NodeMCU + DS18B20 Temperature Sensors
+- **UI**: Tailwind CSS + Shadcn UI
+- **Hardware**: NodeMCU + DHT11 Temperature Sensors
 
 ---
 
