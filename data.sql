@@ -7,8 +7,8 @@
 --
 -- Database: `temp`
 --
-CREATE DATABASE IF NOT EXISTS `temp` DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;
-USE `temp`;
+CREATE DATABASE IF NOT EXISTS `temperature_alarms` DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;
+USE `temperature_alarms`;
 
 -- --------------------------------------------------------
 

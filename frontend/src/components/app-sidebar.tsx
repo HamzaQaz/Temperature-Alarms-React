@@ -3,7 +3,6 @@
 import * as React from "react"
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  Gauge,
   Settings2,
   LayoutDashboard,
 } from "lucide-react"

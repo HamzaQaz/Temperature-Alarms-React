@@ -9,11 +9,9 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+app.set('trust proxy', true);
 // CORS configuration
 const allowedOrigins = [
-  'http://localhost:5173',
-  'http://localhost:3000',
-  'https://your-frontend-domain.com',
   process.env.CORS_ORIGIN
 ].filter(Boolean);
 
@@ -41,7 +39,8 @@ const limiter = rateLimit({
   max: 500, // Limit each IP to 500 requests per windowMs
   standardHeaders: true,
   legacyHeaders: false,
-  message: 'Too many requests from this IP, please try again later.'
+  message: 'Too many requests from this IP, please try again later.',
+  validate: false
 });
 
 const writeLimiter = rateLimit({
@@ -49,7 +48,8 @@ const writeLimiter = rateLimit({
   max: 20, // Limit each IP to 20 write requests per minute (NodeMCU updates)
   standardHeaders: true,
   legacyHeaders: false,
-  message: 'Too many write requests from this IP, please try again later.'
+  message: 'Too many write requests from this IP, please try again later.',
+  validate: false
 });
 
 // Apply rate limiting to all routes
