@@ -3,8 +3,6 @@
 import * as React from "react"
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  Settings2,
-  LayoutDashboard,
   MonitorCog
 } from "lucide-react"
 
@@ -19,6 +17,10 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
+import { LayoutDashboardIcon } from "@/components/animate-ui/icons/layout-dashboard"
+import { SettingsIcon } from "@/components/animate-ui/icons/settings"
+
+
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -27,12 +29,28 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     {
       title: "Dashboard",
       url: "/",
-      icon: LayoutDashboard,
+      icon: (props: React.ComponentProps<typeof LayoutDashboardIcon>) => (
+        <LayoutDashboardIcon
+          animation="default-loop"
+          animateOnHover
+          size={20}
+          strokeWidth={2.5}
+          {...props}
+        />
+      ),
     },
     {
       title: "Settings",
       url: "/settings",
-      icon: Settings2,
+      icon: (props: React.ComponentProps<typeof SettingsIcon>) => (
+        <SettingsIcon
+          animation="rotate"
+          animateOnHover
+          size={20}
+          strokeWidth={2.5}
+          {...props}
+        />
+      ),
     },
   ]
 
@@ -43,11 +61,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild
-              className="data-[slot=sidebar-menu-button]:!p-0"
+              className="data-[slot=sidebar-menu-button]:!p-.5"
             >
               <a href="#">
                 <MonitorCog className="!size-5" />
-                <span className="text-base font-semibold">CISD FRAMEWORK TEMPS</span>
+                <span className="text-base font-semibold">CISD TEMPS</span>
 
               </a>
             </SidebarMenuButton>
@@ -79,7 +97,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   {new Date().getFullYear()} © Celina Independent School District
                 </span>
               </div>
-            </SidebarMenuButton>a
+            </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
