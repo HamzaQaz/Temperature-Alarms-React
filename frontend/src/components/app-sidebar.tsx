@@ -47,7 +47,8 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             >
               <a href="#">
                 <MonitorCog className="!size-5" />
-                <span className="text-base font-semibold">CISD TEMP MONITER</span>
+                <span className="text-base font-semibold">CISD FRAMEWORK TEMPS</span>
+
               </a>
             </SidebarMenuButton>
           </SidebarMenuItem>
