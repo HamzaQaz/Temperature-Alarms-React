@@ -78,7 +78,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   {new Date().getFullYear()} © Celina Independent School District
                 </span>
               </div>
-            </SidebarMenuButton>
+            </SidebarMenuButton>a
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
