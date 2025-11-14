@@ -3,9 +3,9 @@
 import * as React from "react"
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  MonitorCog,
-  LayoutDashboardIcon,
-  SettingsIcon,
+  Settings2,
+  LayoutDashboard,
+  MonitorCog
 } from "lucide-react"
 
 import {
@@ -20,7 +20,6 @@ import {
 } from "@/components/ui/sidebar"
 
 
-
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -29,12 +28,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     {
       title: "Dashboard",
       url: "/",
-      icon:  <LayoutDashboardIcon/>
+      icon: LayoutDashboard,
     },
     {
       title: "Settings",
       url: "/settings",
-      icon:  <SettingsIcon/>
+      icon: Settings2,
     },
   ]
 
@@ -78,10 +77,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <SidebarMenuButton size="sm">
               <div className="flex flex-1 text-left text-sm leading-tight">
                 <span className="truncate text-xs text-muted-foreground">
-                  {new Date().getFullYear()} © 
+                  {new Date().getFullYear()} © Celina Independent School District
                 </span>
               </div>
-            </SidebarMenuButton>
+            </SidebarMenuButton>a
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
