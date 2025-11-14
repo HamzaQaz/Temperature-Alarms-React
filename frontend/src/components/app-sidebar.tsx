@@ -3,7 +3,9 @@
 import * as React from "react"
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  MonitorCog
+  MonitorCog,
+  LayoutDashboardIcon,
+  SettingsIcon,
 } from "lucide-react"
 
 import {
@@ -17,8 +19,6 @@ import {
   SidebarRail,
 } from "@/components/ui/sidebar"
 
-import { LayoutDashboardIcon } from "@/components/animate-ui/icons/layout-dashboard"
-import { SettingsIcon } from "@/components/animate-ui/icons/settings"
 
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
@@ -29,28 +29,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
     {
       title: "Dashboard",
       url: "/",
-      icon: (props: React.ComponentProps<typeof LayoutDashboardIcon>) => (
-        <LayoutDashboardIcon
-          animation="default-loop"
-          animateOnHover
-          size={20}
-          strokeWidth={2.5}
-          {...props}
-        />
-      ),
+      icon:  <LayoutDashboardIcon/>
     },
     {
       title: "Settings",
       url: "/settings",
-      icon: (props: React.ComponentProps<typeof SettingsIcon>) => (
-        <SettingsIcon
-          animation="rotate"
-          animateOnHover
-          size={20}
-          strokeWidth={2.5}
-          {...props}
-        />
-      ),
+      icon:  <SettingsIcon/>
     },
   ]
 
@@ -94,7 +78,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <SidebarMenuButton size="sm">
               <div className="flex flex-1 text-left text-sm leading-tight">
                 <span className="truncate text-xs text-muted-foreground">
-                  {new Date().getFullYear()} © Celina Independent School District
+                  {new Date().getFullYear()} © 
                 </span>
               </div>
             </SidebarMenuButton>
