@@ -5,7 +5,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Settings2,
   LayoutDashboard,
-  IconInnerShadowTop,
+  MonitorCog
 } from "lucide-react"
 
 import {
@@ -46,7 +46,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
               className="data-[slot=sidebar-menu-button]:!p-1.5"
             >
               <a href="#">
-                <IconInnerShadowTop className="!size-5" />
+                <MonitorCog className="!size-5" />
                 <span className="text-base font-semibold">Acme Inc.</span>
               </a>
             </SidebarMenuButton>
