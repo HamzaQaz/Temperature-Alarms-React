@@ -5,6 +5,7 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Settings2,
   LayoutDashboard,
+  IconInnerShadowTop,
 } from "lucide-react"
 
 import {
