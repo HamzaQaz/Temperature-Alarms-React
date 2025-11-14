@@ -20,16 +20,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogCancel,
-  AlertDialogAction,
-} from '@/components/animate-ui/components/radix/alert-dialog';
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -43,12 +33,6 @@ import {
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, Trash2 } from "lucide-react";
 
-// Type for delete confirmation state
-type DeleteConfirmation = {
-  type: 'device' | 'location' | 'alarm';
-  id: number;
-  name?: string;
-} | null;
 
 const Settings: React.FC = () => {
   const [devices, setDevices] = useState<Device[]>([]);
@@ -60,9 +44,6 @@ const Settings: React.FC = () => {
   const [showDeviceModal, setShowDeviceModal] = useState(false);
   const [showLocationModal, setShowLocationModal] = useState(false);
   const [showAlarmModal, setShowAlarmModal] = useState(false);
-  
-  // Delete confirmation state
-  const [deleteConfirm, setDeleteConfirm] = useState<DeleteConfirmation>(null);
 
   // Form states
   const [deviceForm, setDeviceForm] = useState({ name: '', campus: '', location: '' });
@@ -86,7 +67,6 @@ const Settings: React.FC = () => {
       setAlarms(alarmsData);
     } catch (err) {
       console.error('Failed to load data:', err);
-      alert('Failed to load data. Please refresh the page.');
     } finally {
       setLoading(false);
     }
@@ -131,52 +111,39 @@ const Settings: React.FC = () => {
     }
   };
 
-  const handleDeleteDevice = (id: number, name: string) => {
-    setDeleteConfirm({ type: 'device', id, name });
-  };
-
-  const handleDeleteLocation = (id: number) => {
-    setDeleteConfirm({ type: 'location', id });
-  };
-
-  const handleDeleteAlarm = (id: number) => {
-    setDeleteConfirm({ type: 'alarm', id });
-  };
-
-  const confirmDelete = async () => {
-    if (!deleteConfirm) return;
-
-    try {
-      switch (deleteConfirm.type) {
-        case 'device':
-          await deleteDevice(deleteConfirm.id, deleteConfirm.name || '');
-          break;
-        case 'location':
-          await deleteLocation(deleteConfirm.id);
-          break;
-        case 'alarm':
-          await deleteAlarm(deleteConfirm.id);
-          break;
+  const handleDeleteDevice = async (id: number, name: string) => {
+    if (window.confirm(`Are you sure you want to delete device ${name}?`)) {
+      try {
+        await deleteDevice(id, name);
+        loadData();
+      } catch (err) {
+        console.error('Failed to delete device:', err);
+        alert('Failed to delete device');
       }
-      loadData();
-    } catch (err) {
-      console.error(`Failed to delete ${deleteConfirm.type}:`, err);
-      alert(`Failed to delete ${deleteConfirm.type}`);
-    } finally {
-      setDeleteConfirm(null);
     }
   };
 
-  const getDeleteMessage = () => {
-    if (!deleteConfirm) return '';
-    
-    switch (deleteConfirm.type) {
-      case 'device':
-        return `Are you sure you want to delete device ${deleteConfirm.name}?`;
-      case 'location':
-        return 'Are you sure you want to delete this location?';
-      case 'alarm':
-        return 'Are you sure you want to delete this alarm?';
+  const handleDeleteLocation = async (id: number) => {
+    if (window.confirm('Are you sure you want to delete this location?')) {
+      try {
+        await deleteLocation(id);
+        loadData();
+      } catch (err) {
+        console.error('Failed to delete location:', err);
+        alert('Failed to delete location');
+      }
+    }
+  };
+
+  const handleDeleteAlarm = async (id: number) => {
+    if (window.confirm('Are you sure you want to delete this alarm?')) {
+      try {
+        await deleteAlarm(id);
+        loadData();
+      } catch (err) {
+        console.error('Failed to delete alarm:', err);
+        alert('Failed to delete alarm');
+      }
     }
   };
 
@@ -272,7 +239,7 @@ const Settings: React.FC = () => {
               <TableHeader>
                 <TableRow>
                   <TableHead>Email</TableHead>
-                  <TableHead>Threshold</TableHead>
+                  <TableHead>Temperature Threshold</TableHead>
                   <TableHead className="w-20">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -280,7 +247,7 @@ const Settings: React.FC = () => {
                 {alarms.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={3} className="text-center text-muted-foreground">
-                      No alarms configured. Add an alarm to receive notifications.
+                      No alarms configured. Add your first alarm to receive notifications.
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -495,24 +462,9 @@ const Settings: React.FC = () => {
           </form>
         </DialogContent>
       </Dialog>
-
-      {/* Delete Confirmation AlertDialog */}
-      <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
-        <AlertDialogContent from="bottom" className="sm:max-w-[425px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Are you absolutely sure?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {getDeleteMessage()} This action cannot be undone. This will permanently delete the data from the server.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel onClick={() => setDeleteConfirm(null)}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={confirmDelete}>Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 };
 
 export default Settings;
+
