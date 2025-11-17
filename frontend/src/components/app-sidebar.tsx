@@ -44,7 +44,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild
-              className="data-[slot=sidebar-menu-button]:!p-.5"
+              className="data-[slot=sidebar-menu-button]:!p-0"
             >
               <a href="#">
                 <MonitorCog className="!size-5" />
@@ -77,10 +77,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
             <SidebarMenuButton size="sm">
               <div className="flex flex-1 text-left text-sm leading-tight">
                 <span className="truncate text-xs text-muted-foreground">
-                  {new Date().getFullYear()} © Celina Independent School District
+                  {new Date().getFullYear()} © 
                 </span>
               </div>
-            </SidebarMenuButton>a
+            </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
