@@ -1,6 +1,6 @@
 import type { Device, Location, Alarm, TemperatureData, DashboardData } from './types';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://192.168.1.247:3001';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
 
 // ==================== DEVICE API ====================
 
