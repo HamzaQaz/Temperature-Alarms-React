@@ -4,7 +4,6 @@ import * as React from "react"
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Settings2,
-  LayoutDashboard,
   MonitorCog
 } from "lucide-react"
 
@@ -18,6 +17,8 @@ import {
   SidebarMenuItem,
   SidebarRail,
 } from "@/components/ui/sidebar"
+
+import { LayoutDashboard } from "@/components/animate-ui/icons/layout-dashboard"
 
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
