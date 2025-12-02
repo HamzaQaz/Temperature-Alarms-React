@@ -1,15 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import {
-  motion,
-  useAnimation,
-  type SVGMotionProps,
-  type UseInViewOptions,
-  type LegacyAnimationControls,
-  type Variants,
-  type HTMLMotionProps,
-} from 'motion/react';
+import { motion, Variants, useAnimation, SVGMotionProps, UseInViewOptions, LegacyAnimationControls, HTMLMotionProps } from "framer-motion";
 
 import { cn } from '@/lib/utils';
 import { useIsInView } from '@/hooks/use-is-in-view';

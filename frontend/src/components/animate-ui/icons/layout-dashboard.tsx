@@ -1,7 +1,7 @@
 'use client';
 
 import * as React from 'react';
-import { motion, type Variants } from 'motion/react';
+import { motion, Variants, useAnimation, SVGMotionProps, UseInViewOptions, LegacyAnimationControls, HTMLMotionProps } from "framer-motion";
 
 import {
   getVariants,
