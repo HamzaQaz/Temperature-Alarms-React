@@ -26,7 +26,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const navItems = [
+  const items = [
     {
       title: "Dashboard",
       url: "/",
