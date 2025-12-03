@@ -31,11 +31,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       title: "Dashboard",
       url: "/",
       icon: LayoutDashboard,
+      isActive: true
     },
     {
       title: "Settings",
       url: "/settings",
       icon: Settings2,
+      isActive: true
     },
   ]
 
@@ -60,19 +62,17 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
       <SidebarContent>
         <SidebarMenu>
-          {navItems.map((item) => (
-            <SidebarMenuItem key={item.title}>
-              <SidebarMenuButton
-                tooltip={item.title}
-                onClick={() => navigate(item.url)}
-                isActive={location.pathname === item.url}
-              >
-                <item.icon />
-                <span>{item.title}</span>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-          ))}
-        </SidebarMenu>
+      {items.map((item) => (
+        <SidebarMenuItem key={item.title}>
+          <SidebarMenuButton asChild isActive={item.isActive}>
+            <a href={item.url}>
+              <item.icon />
+              <span>{item.title}</span>
+            </a>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      ))}
+    </SidebarMenu>
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>
