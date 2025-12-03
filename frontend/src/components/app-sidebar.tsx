@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 import {
   Settings2,
   LayoutDashboard,
@@ -23,7 +23,7 @@ import {
 
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const navigate = useNavigate()
+
   const location = useLocation()
 
   const navItems = [
