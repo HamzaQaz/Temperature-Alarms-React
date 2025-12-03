@@ -78,7 +78,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="sm">
-              <div className="flex flex-1 text-left text-sm leading-tight">
+              <div className="flex flex-1 text-center text-sm leading-tight group-data-[collapsible=icon]:hidden">
                 <span className="truncate text-xs text-muted-foreground">
                   {new Date().getFullYear()} © 
                 </span>
