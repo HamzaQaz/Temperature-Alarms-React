@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-//import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import {
   Settings2,
   LayoutDashboard,
@@ -26,18 +26,18 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   const navigate = useNavigate()
   const location = useLocation()
 
-  const items = [
+  const navItems = [
     {
       title: "Dashboard",
       url: "/",
       icon: LayoutDashboard,
-      isActive: true
+      isActive: location.pathname === "/",
     },
     {
       title: "Settings",
       url: "/settings",
       icon: Settings2,
-      isActive: true
+      isActive: location.pathname === "/settings",
     },
   ]
 
@@ -62,7 +62,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       </SidebarHeader>
       <SidebarContent>
         <SidebarMenu>
-      {items.map((item) => (
+      {navItems.map((item) => (
         <SidebarMenuItem key={item.title}>
           <SidebarMenuButton asChild isActive={item.isActive}>
             <a href={item.url}>
