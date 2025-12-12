@@ -103,8 +103,26 @@ cd backend
 npm start
 ```
 
-Serve the frontend build from a web server (e.g., nginx, Apache).
+Serve the frontend build from nginx.
 
+The use the nginx config in the envn.celinaisd.tech file.
+
+Run the following commands:
+
+```bash
+sudo apt update && sudo apt upgrade
+sudo apt install nginx
+sudo rm -rf /etc/nginx/sites-enabled/default
+sudo nano /etc/nginx/sites-avalible/your-domain
+Paste in config from file.
+sudo ln /etc/nginx/sites-avalible/your-domain /etc/nginx/sites-enabled/your-domain
+sudo nginx -t
+if ok:
+sudo systemctl restart nginx
+if not:
+retrace steps
+```
+make sure port 443 (certbot) & port 80 (http) is allowed from ufw.
 ---
 
 ## Configuration
