@@ -388,7 +388,7 @@ app.delete('/api/temperature/:deviceName/history', async (req: Request, res: Res
 // Get temperature data for all devices (dashboard)
 app.get('/api/dashboard', async (req: Request, res: Response) => {
   const { filter } = req.query;
-  const filterStr = typeof filter === 'string' ? filter : undefined;
+  const campusFilter = typeof filter === 'string' ? filter : undefined;
 
   try {
     const connection = await getConnection();
@@ -433,8 +433,8 @@ app.get('/api/dashboard', async (req: Request, res: Response) => {
     await connection.end();
     
     // Filter by campus if filter parameter is provided (case-insensitive)
-    const filteredData = filterStr 
-      ? dashboardData.filter(d => d.campus?.toLowerCase() === filterStr.toLowerCase())
+    const filteredData = campusFilter 
+      ? dashboardData.filter(d => d.campus?.toLowerCase() === campusFilter.toLowerCase())
       : dashboardData;
     
     res.json(filteredData);
