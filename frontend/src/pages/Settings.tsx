@@ -23,6 +23,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Table,
   TableBody,
   TableCell,
@@ -348,13 +355,22 @@ const Settings: React.FC = () => {
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="device-campus">Campus</Label>
-                <Input
-                  id="device-campus"
+                <Select
                   value={deviceForm.campus}
-                  onChange={(e) => setDeviceForm({ ...deviceForm, campus: e.target.value })}
-                  placeholder="Enter campus/building"
+                  onValueChange={(value) => setDeviceForm({ ...deviceForm, campus: value })}
                   required
-                />
+                >
+                  <SelectTrigger id="device-campus">
+                    <SelectValue placeholder="Select a campus" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {locations.map((location) => (
+                      <SelectItem key={location.ID} value={location.SHORTCODE}>
+                        {location.NAME}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="device-location">Location</Label>
