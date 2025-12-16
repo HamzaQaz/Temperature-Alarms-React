@@ -43,15 +43,34 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data, countdown = 0 }
     return `${diffHours}h ago`;
   };
 
+  // Extract location type (IDF or MDF) from location string
+  const getLocationType = (location: string): 'IDF' | 'MDF' | null => {
+    const upperLocation = location.toUpperCase();
+    if (upperLocation.startsWith('IDF')) return 'IDF';
+    if (upperLocation.startsWith('MDF')) return 'MDF';
+    return null;
+  };
+
+  const locationType = getLocationType(data.location);
+
   return (
     <Card className={`${hasMoldRisk ? 'border-2 border-destructive' : ''}`}>
-      <CardContent className="p-4 space-y-4">
-        <div className="flex justify-between items-start mb-2">
-          <div>
+      <CardContent className="p-4 space-y-3">
+        <div className="flex justify-between items-start">
+          <div className="space-y-1">
             <h6 className="font-semibold flex items-center gap-1">
               <MapPin className="h-4 w-4 text-muted-foreground" />
               {data.campus} - {data.location}
             </h6>
+            {locationType && (
+              <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${
+                locationType === 'IDF' 
+                  ? 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                  : 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
+              }`}>
+                {locationType}
+              </span>
+            )}
           </div>
           <div className="flex gap-2">
             {/* Connection Status Badge */}
@@ -82,17 +101,15 @@ const TemperatureCard: React.FC<TemperatureCardProps> = ({ data, countdown = 0 }
           </div>
         </div>
 
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Thermometer className="h-5 w-5 text-muted-foreground" />
-                <span className="text-sm">Temperature</span>
-              </div>
-              <span className="font-semibold text-lg">
-                <NumberFlow value={data.temperature || 0} suffix="°F" />
-              </span>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Thermometer className="h-5 w-5 text-muted-foreground" />
+              <span className="text-sm">Temperature</span>
             </div>
+            <span className="font-semibold text-lg">
+              <NumberFlow value={data.temperature || 0} suffix="°F" />
+            </span>
           </div>
 
           <div className="space-y-1">
