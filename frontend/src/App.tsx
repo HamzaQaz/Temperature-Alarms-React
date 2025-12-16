@@ -1,4 +1,5 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
 import History from './pages/History';
@@ -10,6 +11,69 @@ import {
 } from "@/components/ui/sidebar"
 import { Separator } from "@/components/ui/separator"
 
+
+const pageVariants = {
+  initial: {
+    opacity: 0,
+    x: -20
+  },
+  in: {
+    opacity: 1,
+    x: 0
+  },
+  out: {
+    opacity: 0,
+    x: 20
+  }
+};
+
+const pageTransition = {
+  duration: 0.3
+};
+
+function AnimatedRoutes() {
+  const location = useLocation();
+  
+  return (
+    <AnimatePresence mode="wait">
+      <Routes location={location} key={location.pathname}>
+        <Route path="/" element={
+          <motion.div
+            initial="initial"
+            animate="in"
+            exit="out"
+            variants={pageVariants}
+            transition={pageTransition}
+          >
+            <Dashboard />
+          </motion.div>
+        } />
+        <Route path="/settings" element={
+          <motion.div
+            initial="initial"
+            animate="in"
+            exit="out"
+            variants={pageVariants}
+            transition={pageTransition}
+          >
+            <Settings />
+          </motion.div>
+        } />
+        <Route path="/history" element={
+          <motion.div
+            initial="initial"
+            animate="in"
+            exit="out"
+            variants={pageVariants}
+            transition={pageTransition}
+          >
+            <History />
+          </motion.div>
+        } />
+      </Routes>
+    </AnimatePresence>
+  );
+}
 
 function App() {
   return (
@@ -24,11 +88,7 @@ function App() {
             </div>
           </header>
           <div className="flex flex-1 flex-col gap-4 p-4 pt-0">
-            <Routes>
-              <Route path="/" element={<Dashboard />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/history" element={<History />} />
-            </Routes>
+            <AnimatedRoutes />
           </div>
         </SidebarInset>
       </SidebarProvider>
