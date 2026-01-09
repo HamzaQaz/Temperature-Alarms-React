@@ -52,7 +52,7 @@ export const deleteLocation = async (id: number): Promise<void> => {
   if (!response.ok) throw new Error('Failed to delete location');
 };
 
-// ==================== ALARM API ====================
+// ==================== ALARM API ===================
 
 export const getAlarms = async (): Promise<Alarm[]> => {
   const response = await fetch(`${API_BASE_URL}/api/alarms`);
