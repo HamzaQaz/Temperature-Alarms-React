@@ -498,8 +498,8 @@ app.post('/api/write', writeLimiter, async (req: Request, res: Response) => {
   try {
     const connection = await getConnection();
     
-    // Get device info from devices table
-    const [deviceRows] = await connection.execute<RowDataPacket[]>(
+    // Get device info from device types
+   const [deviceRows] = await connection.execute<RowDataPacket[]>(
       'SELECT Campus, Location FROM devices WHERE Name = ? LIMIT 1',
       [tableName]
     );
