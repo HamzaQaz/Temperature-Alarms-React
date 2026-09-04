@@ -1,39 +1,28 @@
 # Dependencies
 node_modules/
-frontend/node_modules/
-backend/node_modules/
 
 # Build outputs
 frontend/dist/
 backend/dist/
+backend/logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 
 # Environment files
 .env
-.env.local
-.env.production
-frontend/.env
-backend/.env
+.env.*
+!.env.example
 
-# IDE
+# Firmware secrets (copy config.example.h to config.h)
+arduino/**/config.h
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
-.DS_Store
-
-# OS files
-Thumbs.db
-
-# Legacy PHP files (keeping them for reference but not committing changes)
-# Uncomment the following lines if you want to keep only the React version
-# *.php
-# vendor/
-# css/
-# js/

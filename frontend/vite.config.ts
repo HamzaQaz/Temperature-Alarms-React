@@ -11,8 +11,4 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
-  build: {
-    outDir: '/var/www/envn/dist',
-    emptyOutDir: true
-}
 })

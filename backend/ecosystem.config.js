@@ -1,14 +1,11 @@
+// One fork-mode instance, per docs/adr/0001. Do not raise `instances`.
 module.exports = {
   apps: [{
     name: 'temperature-api',
     script: './dist/index.js',
-    instances: 2,
-    exec_mode: 'cluster',
+    instances: 1,
+    exec_mode: 'fork',
     env: {
-      NODE_ENV: 'production',
-      PORT: 3001
-    },
-    env_production: {
       NODE_ENV: 'production',
       PORT: 3001
     },
@@ -18,8 +15,6 @@ module.exports = {
     max_memory_restart: '500M',
     autorestart: true,
     watch: false,
-    ignore_watch: ['node_modules', 'logs'],
-    merge_logs: true,
     time: true
   }]
 };

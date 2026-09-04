@@ -1,221 +1,103 @@
-# Temperature Alarms - React + TypeScript + Vite
+# Temperature Alarms
 
-This project utilizes NodeMCU SOCs & Temperature Sensors (DS18B20) to report temperatures of specified locations every 30 minutes. The application has been completely rewritten in React with TypeScript using Vite for the frontend and Node.js/Express for the backend.
+Live temperature and humidity monitoring for network closets across school campuses.
 
-## Technology Stack
+Each closet has a **Device**: a NodeMCU (ESP8266) board with a **DHT11** temperature and humidity sensor. The Device posts a Reading to the backend on a fixed Report interval, and the backend pushes it to every open dashboard over Server-Sent Events.
 
-- **Frontend**: React 18 + TypeScript + Vite
-- **Backend**: Node.js + Express + TypeScript
-- **Database**: MySQL
-- **UI**: Tailwind CSS + Shadcn UI
-- **Hardware**: NodeMCU + DHT11 Temperature Sensors
+The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CONTEXT.md). The decisions behind the architecture are recorded as ADRs in [`docs/adr/`](docs/adr/):
 
----
+- [0001 — HTTP POST from Devices, SSE to browsers, single backend process](docs/adr/0001-http-post-from-devices-sse-to-browsers.md)
+- [0002 — A single `readings` table](docs/adr/0002-single-readings-table.md)
+- [0003 — Two shared tokens instead of user accounts](docs/adr/0003-shared-tokens-not-user-accounts.md)
+- [0004 — Ninety-day raw retention](docs/adr/0004-ninety-day-raw-retention.md)
 
-## Prerequisites
-
-- Node.js (v16 or higher)
-- MySQL/MariaDB Server
-- npm or yarn package manager
-
----
-
-## Installation & Setup
-
-### 1. Database Setup
-
-Execute the SQL commands from the `data.sql` file to create the required database and tables:
-
-```bash
-mysql -u root -p < data.sql
-```
-
-Update database credentials in `backend/.env` (see step 3).
-
-### 2. Backend Setup
-
-```bash
-cd backend
-npm install
-cp .env.example .env
-```
-
-Edit `backend/.env` and configure your database settings:
-```
-PORT=3001
-DB_HOST=localhost
-DB_USER=root
-DB_PASSWORD=your_password
-DB_NAME=temp
-```
-
-### 3. Frontend Setup
-
-```bash
-cd frontend
-npm install
-cp .env.example .env
-```
-
-Edit `frontend/.env` if needed:
-```
-VITE_API_URL=http://localhost:3001
-```
-
----
-
-## Running the Application
-
-### Development Mode
-
-Start the backend server:
-```bash
-cd backend
-npm run dev
-```
-
-In a separate terminal, start the frontend:
-```bash
-cd frontend
-npm run dev
-```
-
-The frontend will be available at `http://localhost:5173` (Vite's default port).
-The backend API will be available at `http://localhost:3001`.
-
-### Production Build
-
-Build the frontend:
-```bash
-cd frontend
-npm run build
-```
-
-Build the backend:
-```bash
-cd backend
-npm run build
-```
-
-Start the backend:
-```bash
-cd backend
-npm start
-```
-
-Serve the frontend build from nginx.
-
-The use the nginx config in the envn.celinaisd.tech file.
-
-Run the following commands:
-
-```bash
-sudo apt update && sudo apt upgrade
-sudo apt install nginx
-sudo rm -rf /etc/nginx/sites-enabled/default
-sudo nano /etc/nginx/sites-avalible/your-domain
-Paste in config from file.
-sudo ln /etc/nginx/sites-avalible/your-domain /etc/nginx/sites-enabled/your-domain
-sudo nginx -t
-if ok:
-sudo systemctl restart nginx
-if not:
-retrace steps
-```
-make sure port 443 (certbot) & port 80 (http) is allowed from ufw.
----
-
-## Configuration
-
-### Web Interface
-
-1. Navigate to the Settings page (accessible via the navigation menu)
-2. **Configure Locations**: Add location names and shortcodes
-3. **Configure Devices**: 
-   - Name: Device hostname (default is ESP_XXXXXX where XXXXXX are the last 6 digits of the MAC address)
-   - Campus/Shortcode: Must match a configured location shortcode
-   - Location: Descriptive location name
-4. **Configure Alarms**: Set email addresses and temperature thresholds for notifications
-
-### NodeMCU Configuration
-
-1. Modify the Arduino code in the `arduino/` directory:
-   - Update WiFi network credentials
-   - Update the backend API server URL (point to `http://your-server:3001/api/write`)
-2. Flash your NodeMCU with the modified code
-3. Connect the DS18B20 temperature sensor according to the pinout diagram
-
----
-
-## API Endpoints
-
-### Devices
-- `GET /api/devices` - Get all devices
-- `POST /api/devices` - Add a new device
-- `DELETE /api/devices/:id` - Delete a device
-
-### Locations
-- `GET /api/locations` - Get all locations
-- `POST /api/locations` - Add a new location
-- `DELETE /api/locations/:id` - Delete a location
-
-### Alarms
-- `GET /api/alarms` - Get all alarms
-- `POST /api/alarms` - Add a new alarm
-- `DELETE /api/alarms/:id` - Delete an alarm
-
-### Temperature Data
-- `GET /api/dashboard` - Get temperature data for all devices
-- `GET /api/temperature/:deviceName` - Get latest temperature for a device
-- `GET /api/temperature/:deviceName/history` - Get temperature history
-- `POST /api/write` - Write temperature data (used by NodeMCU)
-
----
-
-## Project Structure
+## Repository layout
 
 ```
 .
-├── backend/              # Backend API (Node.js + Express + TypeScript)
-│   ├── src/
-│   │   └── index.ts     # Main API server
-│   ├── package.json
-│   └── tsconfig.json
-├── frontend/            # Frontend (React + TypeScript + Vite)
-│   ├── src/
-│   │   ├── components/  # React components
-│   │   ├── pages/       # Page components
-│   │   ├── api.ts       # API client
-│   │   ├── types.ts     # TypeScript types
-│   │   └── App.tsx      # Main App component
-│   ├── package.json
-│   └── vite.config.ts
-├── arduino/             # Arduino code for NodeMCU
-├── data.sql            # Database schema
-└── README.md
+├── arduino/     # ESP8266 firmware for the NodeMCU + DHT11 Device
+├── backend/     # Express + TypeScript API, MySQL
+├── frontend/    # React + TypeScript + Vite, Tailwind, shadcn/ui
+├── docs/adr/    # Architecture decision records
+├── CONTEXT.md   # Domain vocabulary
+└── DEPLOYMENT.md
 ```
 
----
+## Hardware
 
-## Migration from PHP
+| Part | Notes |
+| --- | --- |
+| NodeMCU (ESP8266) | Identifies itself by hostname: `ESP_` plus the last six hex digits of its MAC |
+| DHT11 | Temperature and humidity, data pin on GPIO 5 (D1) |
 
-This project has been completely rewritten from PHP to a modern React + TypeScript stack. The legacy PHP files are still present in the repository root for reference but are no longer used. The new application provides the same functionality with improved:
+The full wiring diagram, library versions, and flashing steps live in the [firmware section](#firmware).
 
-- Type safety with TypeScript
-- Modern React component architecture
-- RESTful API design
-- Better separation of concerns
-- Improved development experience with Vite
+## Local development
 
----
+### Prerequisites
+
+- Node.js 20 or newer
+- MySQL or MariaDB
+
+### Backend
+
+```bash
+cd backend
+npm install
+cp .env.example .env   # fill in database credentials
+npm run dev            # http://localhost:3001
+```
+
+The backend expects a MySQL database named in `.env`. Schema setup is being moved into the backend's own migration runner; until that lands, see `backend/.env.example` for the connection settings the server reads.
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+cp .env.example .env   # VITE_API_URL points at the backend
+npm run dev            # http://localhost:5173
+```
+
+### Root shortcuts
+
+The root `package.json` wraps both packages:
+
+```bash
+npm run install:all
+npm run dev:backend
+npm run dev:frontend
+npm run build:all
+npm run start:backend
+```
+
+## API
+
+All responses are JSON. The table below is the contract the rebuild is converging on; until the backend tickets land, the running server still exposes the older route names. Exact request and response shapes will be documented here.
+
+| Group | Routes | Auth |
+| --- | --- | --- |
+| Health | `GET /api/health` | none |
+| Campuses | `GET`, `POST /api/campuses`, `DELETE /api/campuses/:id` | Admin token on writes |
+| Devices | `GET`, `POST /api/devices`, `DELETE /api/devices/:id` | Admin token on writes |
+| Readings | `POST /api/readings` | Device token |
+| Dashboard | `GET /api/dashboard?campus=CODE`, `GET /api/dashboard/stream` (SSE) | none |
+| History | `GET /api/devices/:id/history?date=YYYY-MM-DD`, `DELETE /api/devices/:id/history` | Admin token on delete |
+
+Tokens are sent as `Authorization: Bearer <token>`. See ADR 0003 for why there are two.
+
+## Firmware
+
+The firmware in [`arduino/`](arduino/) is being rewritten for the DHT11. The sketch currently committed is the older DS18B20 version and does not match the hardware or the API above; do not flash it.
+
+The replacement will target the ESP8266 Arduino core with the DHT11 on GPIO 5, read on the configured Report interval, skip failed samples, and post a JSON Reading with the Device token in the `Authorization` header. Its settings (WiFi credentials, server URL, Device token, interval) will live in a gitignored `config.h` with a committed `config.example.h`.
+
+Wiring, library versions, board settings, flashing steps, and the bench checklist will be documented in this section once the new sketch lands.
+
+## Deployment
+
+See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the nginx template, PM2 setup, and database provisioning.
 
 ## License
 
 ISC
-
----
-
-## Copyright
-
-2018 ©
-
