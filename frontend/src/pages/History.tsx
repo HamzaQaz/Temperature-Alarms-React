@@ -87,7 +87,7 @@ const History: React.FC = () => {
         // Data can be either an array or a single object
         const devices = Array.isArray(data) ? data : [data];
         // If this device got updated, reload history (debounced)
-        const updatedDevice = devices.find((d: any) => d.name === device);
+        const updatedDevice = devices.find((d: { name?: string }) => d.name === device);
         if (updatedDevice) {
           // Clear existing timeout
           if (reloadTimeout) clearTimeout(reloadTimeout);

@@ -20,4 +20,13 @@ export default defineConfig([
       globals: globals.browser,
     },
   },
+  {
+    // Vendored shadcn primitives export helpers (buttonVariants, useSidebar)
+    // next to their components by design; fast-refresh granularity there is
+    // not worth splitting the generated files.
+    files: ['src/components/ui/**/*.tsx'],
+    rules: {
+      'react-refresh/only-export-components': 'off',
+    },
+  },
 ])

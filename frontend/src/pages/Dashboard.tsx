@@ -68,16 +68,14 @@ const Dashboard: React.FC = () => {
 
   // Initialize countdowns when dashboard data loads
   useEffect(() => {
-    const newCountdowns: Record<number, number> = {};
-    dashboardData.forEach(device => {
-      if (countdowns[device.id] === undefined) {
-        newCountdowns[device.id] = 30;
-      } else {
-        newCountdowns[device.id] = countdowns[device.id];
-      }
+    setCountdowns(prev => {
+      const newCountdowns: Record<number, number> = {};
+      dashboardData.forEach(device => {
+        newCountdowns[device.id] = prev[device.id] ?? 30;
+      });
+      return newCountdowns;
     });
-    setCountdowns(newCountdowns);
-  }, [dashboardData.length]);
+  }, [dashboardData]);
 
   // Setup SSE for live updates
   useEffect(() => {
