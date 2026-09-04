@@ -4,11 +4,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AdminTokenPanel } from '@/components/settings/AdminTokenPanel';
 import { CampusesSection } from '@/components/settings/CampusesSection';
 import { DevicesSection } from '@/components/settings/DevicesSection';
-import { AlarmsSection } from '@/components/settings/AlarmsSection';
 import { useAdminToken } from '@/hooks/use-admin-token';
 import { clearAdminToken, setAdminToken } from '@/lib/adminToken';
 
-const TABS = ['campuses', 'devices', 'alarms'] as const;
+const TABS = ['campuses', 'devices'] as const;
 type Tab = (typeof TABS)[number];
 
 function isTab(value: string | null): value is Tab {
@@ -54,16 +53,12 @@ export default function Settings() {
         <TabsList aria-label="Settings sections">
           <TabsTrigger value="campuses">Campuses</TabsTrigger>
           <TabsTrigger value="devices">Devices</TabsTrigger>
-          <TabsTrigger value="alarms">Alarms</TabsTrigger>
         </TabsList>
         <TabsContent value="campuses" className="pt-4">
           <CampusesSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
         </TabsContent>
         <TabsContent value="devices" className="pt-4">
           <DevicesSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
-        </TabsContent>
-        <TabsContent value="alarms" className="pt-4">
-          <AlarmsSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
         </TabsContent>
       </Tabs>
     </div>

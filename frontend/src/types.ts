@@ -6,20 +6,15 @@ export interface Campus {
   shortcode: string;
 }
 
-// The types below still describe the legacy routes and are replaced by later tickets.
-
+/** A Device as the API lists it, with the Campus it belongs to. */
 export interface Device {
-  ID: number;
-  Name: string;
-  Campus: string;
-  Location: string;
+  id: number;
+  hostname: string;
+  closet: string;
+  campus: Campus;
 }
 
-export interface Alarm {
-  ID: number;
-  EMAIL: string;
-  TEMP: number;
-}
+// The types below still describe the legacy routes and are replaced by later tickets.
 
 export interface TemperatureData {
   ID: number;

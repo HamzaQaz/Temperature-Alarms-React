@@ -1,4 +1,4 @@
-import type { Device, Campus, Alarm, TemperatureData, DashboardData } from './types';
+import type { Device, Campus, TemperatureData, DashboardData } from './types';
 import { getAdminToken } from './lib/adminToken';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
@@ -82,21 +82,14 @@ export const addCampus = (name: string, shortcode: string): Promise<Campus> =>
 export const deleteCampus = (id: number): Promise<void> =>
   request(`/api/campuses/${id}`, { method: 'DELETE' });
 
-// ==================== DEVICES (legacy shape until ticket 05) ====================
+// ==================== DEVICES ====================
 
 export const getDevices = (): Promise<Device[]> => request('/api/devices');
 
-export const addDevice = (name: string, campus: string, location: string): Promise<Device> =>
-  request('/api/devices', { method: 'POST', body: { name, campus, location } });
+export const addDevice = (hostname: string, campusId: number, closet: string): Promise<Device> =>
+  request('/api/devices', { method: 'POST', body: { hostname, campusId, closet } });
 
-export const deleteDevice = (id: number, name: string): Promise<void> =>
-  request(`/api/devices/${id}?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
-
-// ==================== ALARMS (removed by ticket 05) ====================
-
-export const getAlarms = (): Promise<Alarm[]> => request('/api/alarms');
-
-export const deleteAlarm = (id: number): Promise<void> => request(`/api/alarms/${id}`, { method: 'DELETE' });
+export const deleteDevice = (id: number): Promise<void> => request(`/api/devices/${id}`, { method: 'DELETE' });
 
 // ==================== READINGS (legacy shape until tickets 07 and 10) ====================
 

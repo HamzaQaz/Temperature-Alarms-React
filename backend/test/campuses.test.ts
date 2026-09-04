@@ -2,21 +2,18 @@ import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Pool } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
-import { startServer, TEST_ADMIN_TOKEN, type RunningServer } from './helpers/server';
-
-interface Campus {
-  id: number;
-  name: string;
-  shortcode: string;
-}
+import { startServer, type RunningServer } from './helpers/server';
+import { api, asAdmin, errorOf, json, type Campus } from './helpers/api';
 
 describe('/api/campuses', () => {
   let pool: Pool;
   let server: RunningServer;
+  let client: ReturnType<typeof api>;
 
   before(async () => {
     pool = createTestPool();
     server = await startServer(pool);
+    client = api(server);
   });
   beforeEach(() => resetDatabase(pool));
   after(async () => {
@@ -24,16 +21,9 @@ describe('/api/campuses', () => {
     await pool.end();
   });
 
-  const url = () => `${server.url}/api/campuses`;
-  const asAdmin = (init: RequestInit = {}): RequestInit => ({
-    ...init,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_ADMIN_TOKEN}`, ...init.headers },
-  });
-  const addCampus = (body: unknown, init: RequestInit = asAdmin()) =>
-    fetch(url(), { ...init, method: 'POST', body: JSON.stringify(body) });
-  const json = async <T = Campus>(response: Response): Promise<T> => (await response.json()) as T;
-  const errorOf = async (response: Response) => (await json<{ error: string }>(response)).error;
-  const listed = async () => json<Campus[]>(await fetch(url()));
+  const url = (path = '') => client.campuses.url(path);
+  const listed = () => client.campuses.list();
+  const addCampus = (body: unknown, init?: RequestInit) => client.campuses.add(body, init);
 
   test('lists nothing on a fresh database, without a token', async () => {
     const response = await fetch(url());
@@ -44,7 +34,7 @@ describe('/api/campuses', () => {
   test('adds a campus with the Admin token and lists it back in camelCase', async () => {
     const created = await addCampus({ name: 'Central High School', shortcode: 'CHS' });
     assert.equal(created.status, 201);
-    const body = await json(created);
+    const body = await json<Campus>(created);
     assert.equal(typeof body.id, 'number');
     assert.deepEqual(body, { id: body.id, name: 'Central High School', shortcode: 'CHS' });
 
@@ -80,7 +70,7 @@ describe('/api/campuses', () => {
   test('trims and upper-cases the shortcode', async () => {
     const response = await addCampus({ name: '  Central High School ', shortcode: ' chs ' });
     assert.equal(response.status, 201);
-    const body = await json(response);
+    const body = await json<Campus>(response);
     assert.equal(body.name, 'Central High School');
     assert.equal(body.shortcode, 'CHS');
   });
@@ -94,34 +84,34 @@ describe('/api/campuses', () => {
   });
 
   describe('DELETE /api/campuses/:id', () => {
-    const createId = async () => (await json(await addCampus({ name: 'Central High School', shortcode: 'CHS' }))).id;
+    const createId = async () => (await json<Campus>(await addCampus({ name: 'Central High School', shortcode: 'CHS' }))).id;
 
     test('deletes a campus with the Admin token', async () => {
       const id = await createId();
-      const response = await fetch(`${url()}/${id}`, asAdmin({ method: 'DELETE' }));
+      const response = await fetch(url(`/${id}`), asAdmin({ method: 'DELETE' }));
       assert.equal(response.status, 204);
       assert.deepEqual(await listed(), []);
     });
 
     test('requires the Admin token', async () => {
       const id = await createId();
-      const missing = await fetch(`${url()}/${id}`, { method: 'DELETE' });
+      const missing = await fetch(url(`/${id}`), { method: 'DELETE' });
       assert.equal(missing.status, 401);
-      const wrong = await fetch(`${url()}/${id}`, { method: 'DELETE', headers: { Authorization: 'Bearer nope' } });
+      const wrong = await fetch(url(`/${id}`), { method: 'DELETE', headers: { Authorization: 'Bearer nope' } });
       assert.equal(wrong.status, 401);
       assert.equal((await listed()).length, 1);
     });
 
     test('returns 404 for an unknown or malformed id', async () => {
-      assert.equal((await fetch(`${url()}/999`, asAdmin({ method: 'DELETE' }))).status, 404);
-      assert.equal((await fetch(`${url()}/abc`, asAdmin({ method: 'DELETE' }))).status, 404);
+      assert.equal((await fetch(url('/999'), asAdmin({ method: 'DELETE' }))).status, 404);
+      assert.equal((await fetch(url('/abc'), asAdmin({ method: 'DELETE' }))).status, 404);
     });
 
     test('refuses with 409 while devices still belong to the campus', async () => {
       const id = await createId();
-      // Until ticket 05 adds POST /api/devices, the only way to give a campus a device is the table.
-      await pool.query('INSERT INTO devices (hostname, campus_id, closet) VALUES (?, ?, ?)', ['ESP_ABC123', id, 'IDF 1']);
-      const response = await fetch(`${url()}/${id}`, asAdmin({ method: 'DELETE' }));
+      const device = await client.devices.add({ hostname: 'ESP_ABC123', campusId: id, closet: 'IDF 1' });
+      assert.equal(device.status, 201);
+      const response = await fetch(url(`/${id}`), asAdmin({ method: 'DELETE' }));
       assert.equal(response.status, 409);
       assert.match(await errorOf(response), /device/i);
       assert.equal((await listed()).length, 1);

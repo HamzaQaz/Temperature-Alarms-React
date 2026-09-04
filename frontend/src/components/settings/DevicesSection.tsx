@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Plus } from 'lucide-react';
 import { addDevice, deleteDevice, getCampuses, getDevices } from '@/api';
 import { Button } from '@/components/ui/button';
@@ -8,47 +9,59 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
+import { HOSTNAME_EXAMPLE, hostnameProblem } from '@/lib/hostname';
 import { DeleteButton, EmptyRow, ErrorRow, InlineError, InlineForm, SectionHeader, SkeletonRows } from './section';
 
 interface DevicesSectionProps {
+  /** False while no Admin token is stored; changes are disabled and the token panel explains why. */
   canEdit: boolean;
   onUnauthorised: () => void;
 }
 
 const COLUMNS = 4;
+const HOSTNAME_LENGTH = HOSTNAME_EXAMPLE.length;
+const CLOSET_MAX = 50;
+const EMPTY_FORM = { hostname: '', campusId: '', closet: '' };
 
-/** Devices tab. Still on the legacy device shape; ticket 05 replaces the form and columns. */
 export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps) {
   const { state, reload } = useResource(getDevices);
   const campuses = useResource(getCampuses);
   const add = useChange(onUnauthorised);
   const remove = useChange(onUnauthorised);
   const [formOpen, setFormOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', campus: '', closet: '' });
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [hostnameTouched, setHostnameTouched] = useState(false);
 
   const closeForm = () => {
     setFormOpen(false);
-    setForm({ name: '', campus: '', closet: '' });
+    setForm(EMPTY_FORM);
+    setHostnameTouched(false);
     add.clearError();
   };
 
+  const hostnameError = form.hostname === '' ? null : hostnameProblem(form.hostname);
+  const showHostnameError = hostnameTouched && hostnameError !== null;
+  const canSubmit = form.hostname !== '' && hostnameError === null && form.campusId !== '' && form.closet.trim() !== '';
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (await add.run(() => addDevice(form.name.trim(), form.campus, form.closet.trim()))) {
+    setHostnameTouched(true);
+    if (!canSubmit) return;
+    if (await add.run(() => addDevice(form.hostname, Number(form.campusId), form.closet.trim()))) {
       closeForm();
       await reload();
     }
   };
 
   const campusOptions = campuses.state.status === 'ready' ? campuses.state.data : [];
-  const complete = form.name.trim() !== '' && form.campus !== '' && form.closet.trim() !== '';
+  const noCampuses = campuses.state.status === 'ready' && campusOptions.length === 0;
 
   return (
     <section className="space-y-4" aria-labelledby="devices-heading">
       <SectionHeader
         id="devices-heading"
         title="Devices"
-        description="One Device per Closet, identified by its ESP_ hostname."
+        description="One Device per Closet, identified by its ESP_ hostname. Deleting a Device deletes its Readings."
         action={
           <Button size="sm" onClick={() => setFormOpen(true)} disabled={!canEdit || formOpen}>
             <Plus aria-hidden />
@@ -61,27 +74,34 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
         <InlineForm onSubmit={submit}>
           <div className="grid gap-3 sm:grid-cols-3">
             <div className="space-y-2">
-              <Label htmlFor="device-name">Hostname</Label>
+              <Label htmlFor="device-hostname">Hostname</Label>
               <Input
-                id="device-name"
-                value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-                placeholder="ESP_A1B2C3"
-                className="font-mono"
+                id="device-hostname"
+                value={form.hostname}
+                onChange={(event) => setForm({ ...form, hostname: event.target.value.toUpperCase().trim() })}
+                onBlur={() => setHostnameTouched(true)}
+                placeholder={HOSTNAME_EXAMPLE}
+                maxLength={HOSTNAME_LENGTH}
+                autoCapitalize="characters"
+                autoComplete="off"
+                spellCheck={false}
+                className="font-mono uppercase"
+                aria-invalid={showHostnameError || undefined}
+                aria-describedby={showHostnameError ? 'device-hostname-error' : 'device-hostname-hint'}
                 autoFocus
                 required
               />
             </div>
             <div className="space-y-2">
               <Label htmlFor="device-campus">Campus</Label>
-              <Select value={form.campus} onValueChange={(campus) => setForm({ ...form, campus })}>
+              <Select value={form.campusId} onValueChange={(campusId) => setForm({ ...form, campusId })} disabled={noCampuses}>
                 <SelectTrigger id="device-campus" className="w-full">
-                  <SelectValue placeholder={campusOptions.length === 0 ? 'No campuses yet' : 'Choose a campus'} />
+                  <SelectValue placeholder={noCampuses ? 'No campuses yet' : 'Choose a campus'} />
                 </SelectTrigger>
                 <SelectContent>
                   {campusOptions.map((campus) => (
-                    <SelectItem key={campus.id} value={campus.shortcode}>
-                      {campus.name}
+                    <SelectItem key={campus.id} value={String(campus.id)}>
+                      {campus.name} <span className="text-muted-foreground">({campus.shortcode})</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -94,18 +114,40 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
                 value={form.closet}
                 onChange={(event) => setForm({ ...form, closet: event.target.value })}
                 placeholder="IDF 2"
+                maxLength={CLOSET_MAX}
+                aria-describedby="device-closet-hint"
                 required
               />
             </div>
           </div>
+          {showHostnameError ? (
+            <InlineError id="device-hostname-error" message={hostnameError} />
+          ) : (
+            <p id="device-hostname-hint" className="text-xs text-muted-foreground">
+              The hostname is ESP_ followed by the last six hex digits of the Device's MAC address. It is printed to serial on boot.
+            </p>
+          )}
+          <p id="device-closet-hint" className="sr-only">
+            Name the closet by its network role and number, like IDF 2 or MDF.
+          </p>
+          {noCampuses && (
+            <InlineError
+              message="A Device needs a Campus. Add one on the Campuses tab first."
+            />
+          )}
           <InlineError message={add.error} />
           <div className="flex flex-wrap gap-2">
-            <Button type="submit" size="sm" disabled={add.pending || !canEdit || !complete}>
+            <Button type="submit" size="sm" disabled={add.pending || !canEdit || !canSubmit}>
               {add.pending ? 'Saving…' : 'Save device'}
             </Button>
             <Button type="button" size="sm" variant="outline" onClick={closeForm} disabled={add.pending}>
               Cancel
             </Button>
+            {noCampuses && (
+              <Button asChild type="button" size="sm" variant="link">
+                <Link to="/settings?tab=campuses">Go to Campuses</Link>
+              </Button>
+            )}
           </div>
         </InlineForm>
       )}
@@ -132,18 +174,20 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
             )}
             {state.status === 'ready' &&
               state.data.map((device) => (
-                <TableRow key={device.ID}>
-                  <TableCell className="font-mono font-medium">{device.Name}</TableCell>
-                  <TableCell>{device.Campus}</TableCell>
-                  <TableCell>{device.Location}</TableCell>
+                <TableRow key={device.id}>
+                  <TableCell className="font-mono font-medium">{device.hostname}</TableCell>
+                  <TableCell>
+                    {device.campus.name} <span className="font-mono text-xs text-muted-foreground">{device.campus.shortcode}</span>
+                  </TableCell>
+                  <TableCell>{device.closet}</TableCell>
                   <TableCell className="text-right">
                     <DeleteButton
-                      label={`Delete ${device.Name}`}
-                      title={`Delete ${device.Name}?`}
-                      description="Its Readings go with it. The Device will need to be added again to show on the dashboard."
+                      label={`Delete ${device.hostname}`}
+                      title={`Delete ${device.hostname}?`}
+                      description={`Every Reading from ${device.closet} at ${device.campus.name} is deleted with it. Add the Device again to store new Readings.`}
                       disabled={!canEdit}
                       onConfirm={async () => {
-                        if (await remove.run(() => deleteDevice(device.ID, device.Name))) await reload();
+                        if (await remove.run(() => deleteDevice(device.id))) await reload();
                       }}
                     />
                   </TableCell>

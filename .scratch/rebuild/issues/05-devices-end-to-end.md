@@ -5,12 +5,12 @@ An admin adds a Device by hostname, Campus, and Closet name, and deletes one. Ho
 
 **Blocked by:** 04 — Campuses end to end with the Admin token
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `GET`, `POST`, and `DELETE` for devices, with the same token rules as campuses
-- [ ] Hostname must match `ESP_` plus six hex digits; the server rejects anything else with 422 and the form validates client-side too
-- [ ] Deleting a Device cascades to its Readings
-- [ ] Deleting a Campus with Devices returns 409 and the UI explains why
-- [ ] The Devices tab shows Campus name and Closet, adds with a Campus dropdown, and deletes behind a confirmation
-- [ ] The Alarms tab, its API routes, and its types are removed
-- [ ] HTTP tests cover list, add, invalid hostname, duplicate hostname, delete with cascade, and campus-with-devices refusal
+- [x] `GET`, `POST`, and `DELETE` for devices, with the same token rules as campuses
+- [x] Hostname must match `ESP_` plus six hex digits; the server rejects anything else with 422 and the form validates client-side too
+- [x] Deleting a Device cascades to its Readings
+- [x] Deleting a Campus with Devices returns 409 and the UI explains why
+- [x] The Devices tab shows Campus name and Closet, adds with a Campus dropdown, and deletes behind a confirmation
+- [x] The Alarms tab, its API routes, and its types are removed
+- [x] HTTP tests cover list, add, invalid hostname, duplicate hostname, delete with cascade, and campus-with-devices refusal

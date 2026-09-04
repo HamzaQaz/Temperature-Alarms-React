@@ -38,3 +38,6 @@ export const isDuplicateKey = (error: unknown): boolean => hasMysqlErrorCode(err
 
 /** True when a delete failed because other rows still reference the row. */
 export const isForeignKeyInUse = (error: unknown): boolean => hasMysqlErrorCode(error, 'ER_ROW_IS_REFERENCED_2');
+
+/** True when an insert or update pointed a foreign key at a row that does not exist. */
+export const isMissingForeignRow = (error: unknown): boolean => hasMysqlErrorCode(error, 'ER_NO_REFERENCED_ROW_2');
