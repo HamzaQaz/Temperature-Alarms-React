@@ -1,14 +1,18 @@
+/** Wire types: the API's camelCase shape is the only contract. */
+
+export interface Campus {
+  id: number;
+  name: string;
+  shortcode: string;
+}
+
+// The types below still describe the legacy routes and are replaced by later tickets.
+
 export interface Device {
   ID: number;
   Name: string;
   Campus: string;
   Location: string;
-}
-
-export interface Location {
-  ID: number;
-  NAME: string;
-  SHORTCODE: string;
 }
 
 export interface Alarm {

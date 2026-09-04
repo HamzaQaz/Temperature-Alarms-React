@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { getDashboardData, getLocations } from '../api';
-import type { DashboardData, Location } from '../types';
+import { getDashboardData, getCampuses } from '../api';
+import type { DashboardData, Campus } from '../types';
 import NumberFlow from '@number-flow/react';
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -21,7 +21,7 @@ const Dashboard: React.FC = () => {
   const filter = searchParams.get('filter') || '';
   
   const [dashboardData, setDashboardData] = useState<DashboardData[]>([]);
-  const [locations, setLocations] = useState<Location[]>([]);
+  const [campuses, setCampuses] = useState<Campus[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [countdowns, setCountdowns] = useState<Record<number, number>>({});
@@ -29,12 +29,12 @@ const Dashboard: React.FC = () => {
   const loadData = useCallback(async () => {
     try {
       setLoading(true);
-      const [data, locs] = await Promise.all([
+      const [data, campusList] = await Promise.all([
         getDashboardData(filter || undefined),
-        getLocations()
+        getCampuses()
       ]);
       setDashboardData(data);
-      setLocations(locs);
+      setCampuses(campusList);
       
       setError(null);
     } catch (err) {
@@ -155,10 +155,10 @@ const Dashboard: React.FC = () => {
 
       <Tabs value={filter || 'all'} onValueChange={handleFilterChange}>
         <TabsList>
-          <TabsTrigger value="all">All Locations</TabsTrigger>
-          {locations.map((location) => (
-            <TabsTrigger key={location.ID} value={location.SHORTCODE}>
-              {location.NAME}
+          <TabsTrigger value="all">All campuses</TabsTrigger>
+          {campuses.map((campus) => (
+            <TabsTrigger key={campus.id} value={campus.shortcode}>
+              {campus.name}
             </TabsTrigger>
           ))}
         </TabsList>

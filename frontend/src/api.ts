@@ -1,111 +1,115 @@
-import type { Device, Location, Alarm, TemperatureData, DashboardData } from './types';
+import type { Device, Campus, Alarm, TemperatureData, DashboardData } from './types';
+import { getAdminToken } from './lib/adminToken';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
 
-// ==================== DEVICE API ====================
+/** A request the server answered with an error, or one that never reached it (status 0). */
+export class ApiError extends Error {
+  readonly status: number;
 
-export const getDevices = async (): Promise<Device[]> => {
-  const response = await fetch(`${API_BASE_URL}/api/devices`);
-  if (!response.ok) throw new Error('Failed to fetch devices');
-  return response.json();
-};
+  constructor(status: number, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
 
-export const addDevice = async (name: string, campus: string, location: string): Promise<Device> => {
-  const response = await fetch(`${API_BASE_URL}/api/devices`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, campus, location })
-  });
-  if (!response.ok) throw new Error('Failed to add device');
-  return response.json();
-};
+/** The server rejected the Admin token (or none was sent). */
+export class UnauthorisedError extends ApiError {
+  constructor() {
+    super(401, 'The Admin token was not accepted');
+    this.name = 'UnauthorisedError';
+  }
+}
 
-export const deleteDevice = async (id: number, name: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/devices/${id}?name=${name}`, {
-    method: 'DELETE'
-  });
-  if (!response.ok) throw new Error('Failed to delete device');
-};
+/** A message a person can act on, whatever was thrown. */
+export function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return 'Something went wrong';
+}
 
-// ==================== LOCATION API ====================
+interface RequestOptions {
+  method?: 'GET' | 'POST' | 'DELETE';
+  body?: unknown;
+}
 
-export const getLocations = async (): Promise<Location[]> => {
-  const response = await fetch(`${API_BASE_URL}/api/locations`);
-  if (!response.ok) throw new Error('Failed to fetch locations');
-  return response.json();
-};
+async function errorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: unknown };
+    if (typeof body.error === 'string' && body.error !== '') return body.error;
+  } catch {
+    // Not JSON; fall through to the status line.
+  }
+  return `The server answered ${response.status} ${response.statusText}`.trim();
+}
 
-export const addLocation = async (name: string, shortcode: string): Promise<Location> => {
-  const response = await fetch(`${API_BASE_URL}/api/locations`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, shortcode })
-  });
-  if (!response.ok) throw new Error('Failed to add location');
-  return response.json();
-};
+/**
+ * The one place requests are made. Reads carry no token; anything else carries
+ * the stored Admin token and turns a 401 into an UnauthorisedError.
+ */
+async function request<T>(path: string, { method = 'GET', body }: RequestOptions = {}): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  if (method !== 'GET') {
+    const token = getAdminToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
 
-export const deleteLocation = async (id: number): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/locations/${id}`, {
-    method: 'DELETE'
-  });
-  if (!response.ok) throw new Error('Failed to delete location');
-};
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch (error) {
+    throw new ApiError(0, 'Could not reach the server', { cause: error });
+  }
 
-// ==================== ALARM API ===================
+  if (response.status === 401) throw new UnauthorisedError();
+  if (!response.ok) throw new ApiError(response.status, await errorMessage(response));
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
 
-export const getAlarms = async (): Promise<Alarm[]> => {
-  const response = await fetch(`${API_BASE_URL}/api/alarms`);
-  if (!response.ok) throw new Error('Failed to fetch alarms');
-  return response.json();
-};
+// ==================== CAMPUSES ====================
 
-export const addAlarm = async (email: string, temp: number): Promise<Alarm> => {
-  const response = await fetch(`${API_BASE_URL}/api/alarms`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, temp })
-  });
-  if (!response.ok) throw new Error('Failed to add alarm');
-  return response.json();
-};
+export const getCampuses = (): Promise<Campus[]> => request('/api/campuses');
 
-export const deleteAlarm = async (id: number): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/alarms/${id}`, {
-    method: 'DELETE'
-  });
-  if (!response.ok) throw new Error('Failed to delete alarm');
-};
+export const addCampus = (name: string, shortcode: string): Promise<Campus> =>
+  request('/api/campuses', { method: 'POST', body: { name, shortcode } });
 
-// ==================== TEMPERATURE DATA API ====================
+export const deleteCampus = (id: number): Promise<void> =>
+  request(`/api/campuses/${id}`, { method: 'DELETE' });
 
-export const getTemperature = async (deviceName: string): Promise<TemperatureData> => {
-  const response = await fetch(`${API_BASE_URL}/api/temperature/${deviceName}`);
-  if (!response.ok) throw new Error('Failed to fetch temperature');
-  return response.json();
-};
+// ==================== DEVICES (legacy shape until ticket 05) ====================
 
-export const getTemperatureHistory = async (deviceName: string, date?: string): Promise<TemperatureData[]> => {
-  const url = date 
-    ? `${API_BASE_URL}/api/temperature/${deviceName}/history?date=${date}`
-    : `${API_BASE_URL}/api/temperature/${deviceName}/history`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('Failed to fetch temperature history');
-  return response.json();
-};
+export const getDevices = (): Promise<Device[]> => request('/api/devices');
 
-export const resetTemperatureHistory = async (deviceName: string): Promise<void> => {
-  const response = await fetch(`${API_BASE_URL}/api/temperature/${deviceName}/history`, {
-    method: 'DELETE'
-  });
-  if (!response.ok) throw new Error('Failed to reset temperature history');
-};
+export const addDevice = (name: string, campus: string, location: string): Promise<Device> =>
+  request('/api/devices', { method: 'POST', body: { name, campus, location } });
 
-export const getDashboardData = async (filter?: string): Promise<DashboardData[]> => {
-  const url = filter 
-    ? `${API_BASE_URL}/api/dashboard?filter=${filter}`
-    : `${API_BASE_URL}/api/dashboard`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error('Failed to fetch dashboard data');
-  return response.json();
-};
+export const deleteDevice = (id: number, name: string): Promise<void> =>
+  request(`/api/devices/${id}?name=${encodeURIComponent(name)}`, { method: 'DELETE' });
+
+// ==================== ALARMS (removed by ticket 05) ====================
+
+export const getAlarms = (): Promise<Alarm[]> => request('/api/alarms');
+
+export const deleteAlarm = (id: number): Promise<void> => request(`/api/alarms/${id}`, { method: 'DELETE' });
+
+// ==================== READINGS (legacy shape until tickets 07 and 10) ====================
+
+export const getTemperature = (deviceName: string): Promise<TemperatureData> =>
+  request(`/api/temperature/${encodeURIComponent(deviceName)}`);
+
+export const getTemperatureHistory = (deviceName: string, date?: string): Promise<TemperatureData[]> =>
+  request(
+    `/api/temperature/${encodeURIComponent(deviceName)}/history${date ? `?date=${encodeURIComponent(date)}` : ''}`,
+  );
+
+export const resetTemperatureHistory = (deviceName: string): Promise<void> =>
+  request(`/api/temperature/${encodeURIComponent(deviceName)}/history`, { method: 'DELETE' });
+
+export const getDashboardData = (filter?: string): Promise<DashboardData[]> =>
+  request(`/api/dashboard${filter ? `?filter=${encodeURIComponent(filter)}` : ''}`);

@@ -28,3 +28,13 @@ export function createPool(config: DatabaseConfig): Pool {
   });
   return pool;
 }
+
+function hasMysqlErrorCode(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && (error as { code?: string }).code === code;
+}
+
+/** True when a write failed because it would repeat a unique key. */
+export const isDuplicateKey = (error: unknown): boolean => hasMysqlErrorCode(error, 'ER_DUP_ENTRY');
+
+/** True when a delete failed because other rows still reference the row. */
+export const isForeignKeyInUse = (error: unknown): boolean => hasMysqlErrorCode(error, 'ER_ROW_IS_REFERENCED_2');
