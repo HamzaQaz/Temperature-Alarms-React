@@ -13,3 +13,7 @@ An operator upgrading a production database runs the migration and every Reading
 - [ ] Running the migration twice does not duplicate Readings
 - [ ] Legacy tables are left in place; the deploy guide gains a paragraph on verifying counts and dropping them by hand
 - [ ] A test builds two legacy tables from fixtures in the old formats, including at least one unparseable row, and asserts counts, timestamps, idempotence, and that the legacy tables still exist
+
+## Comments
+
+**2026-09-04, from the ticket 03 code review.** Migration `0001-initial-schema` runs a bare `CREATE TABLE devices` and `CREATE TABLE campuses`. A production database already has the PHP-era `devices` (Name, Campus, Location) and `locations` (NAME, SHORTCODE) tables, so the first migration will fail there as written, and this ticket assumes new-shape `devices` rows already exist when it resolves a Device by hostname. No ticket currently converts legacy `devices`/`locations` into the new shape. Decide before starting this ticket: either a preceding migration renames the legacy tables aside (e.g. `legacy_devices`, `legacy_locations`) and copies their rows into `campuses`/`devices`, or the deploy guide has the operator do that by hand. ADR 0002 calls `campuses` "the table formerly called `locations`", so the copy is the intended reading.

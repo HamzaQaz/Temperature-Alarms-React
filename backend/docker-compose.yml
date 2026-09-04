@@ -1,0 +1,19 @@
+# Throwaway MySQL for the backend test suite. Data lives in tmpfs and is gone on `down`.
+# Start with `npm run test:db`; point the tests elsewhere with TEST_DATABASE_URL.
+services:
+  test-db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: temperature_alarms_test
+      MYSQL_USER: temp
+      MYSQL_PASSWORD: temp
+    ports:
+      - "3307:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
