@@ -5,12 +5,12 @@ A Device posts a Reading and it is stored against the right Device with a server
 
 **Blocked by:** 05 — Devices end to end
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] `POST /api/readings` accepts `{device, temp, humidity}` with the Device token as a bearer token and returns 201
-- [ ] 401 on missing or wrong Device token, 404 on unknown hostname, 422 on missing or non-numeric temp or humidity
-- [ ] Temperature and humidity are stored as integers; the timestamp is set by the server in UTC
-- [ ] Hyphens in a posted hostname are normalised to underscores as the old code did, so existing boards still match
-- [ ] The old `/api/write` route is removed
-- [ ] The write rate limiter is kept and applies only to this route
-- [ ] HTTP tests cover the success path and each rejection
+- [x] `POST /api/readings` accepts `{device, temp, humidity}` with the Device token as a bearer token and returns 201
+- [x] 401 on missing or wrong Device token, 404 on unknown hostname, 422 on missing or non-numeric temp or humidity
+- [x] Temperature and humidity are stored as integers; the timestamp is set by the server in UTC
+- [x] Hyphens in a posted hostname are normalised to underscores as the old code did, so existing boards still match
+- [x] The old `/api/write` route is removed
+- [x] The write rate limiter is kept and applies only to this route
+- [x] HTTP tests cover the success path and each rejection

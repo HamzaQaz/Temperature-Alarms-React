@@ -1,5 +1,5 @@
 import type { RunningServer } from './server';
-import { TEST_ADMIN_TOKEN } from './server';
+import { TEST_ADMIN_TOKEN, TEST_DEVICE_TOKEN } from './server';
 
 export interface Campus {
   id: number;
@@ -14,11 +14,30 @@ export interface Device {
   campus: Campus;
 }
 
-/** A JSON request carrying the Admin token, with any header overridable. */
-export const asAdmin = (init: RequestInit = {}): RequestInit => ({
-  ...init,
-  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_ADMIN_TOKEN}`, ...init.headers },
-});
+export interface Reading {
+  tempF: number;
+  humidity: number;
+  recordedAt: string;
+}
+
+export interface RecordedReading {
+  device: string;
+  reading: Reading;
+}
+
+/** A JSON request carrying a bearer token, with any header overridable. */
+const asBearer =
+  (token: string) =>
+  (init: RequestInit = {}): RequestInit => ({
+    ...init,
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}`, ...init.headers },
+  });
+
+/** A JSON request as the admin (Settings page) would send it. */
+export const asAdmin = asBearer(TEST_ADMIN_TOKEN);
+
+/** A JSON request as a Device would send it. */
+export const asDevice = asBearer(TEST_DEVICE_TOKEN);
 
 export const json = async <T>(response: Response): Promise<T> => (await response.json()) as T;
 
@@ -41,6 +60,14 @@ export function api(server: RunningServer) {
       url: (path = '') => `${server.url}/api/devices${path}`,
       list: async () => json<Device[]>(await fetch(`${server.url}/api/devices`)),
       add: (body: unknown, init?: RequestInit) => post('/api/devices', body, init),
+      /** Adds a device that is expected to succeed and returns it. */
+      create: async (campusId: number, hostname = 'ESP_A1B2C3', closet = 'IDF 2') =>
+        json<Device>(await post('/api/devices', { hostname, campusId, closet })),
+    },
+    readings: {
+      url: (path = '') => `${server.url}/api/readings${path}`,
+      /** Posts a reading as a Device would: with the Device token unless init says otherwise. */
+      add: (body: unknown, init: RequestInit = asDevice()) => post('/api/readings', body, init),
     },
   };
 }

@@ -124,11 +124,8 @@ describe('/api/devices', () => {
 
     test('deletes a device with the Admin token and its readings go with it', async () => {
       const device = await createDevice();
-      // Until ticket 06 adds POST /api/readings, the only way to give a device readings is the table.
-      await pool.query(
-        'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, 72, 40, NOW()), (?, 73, 41, NOW())',
-        [device.id, device.id],
-      );
+      await client.readings.add({ device: device.hostname, temp: 72, humidity: 40 });
+      await client.readings.add({ device: device.hostname, temp: 73, humidity: 41 });
       assert.equal(await readingCount(device.id), 2);
 
       const response = await fetch(url(`/${device.id}`), asAdmin({ method: 'DELETE' }));
