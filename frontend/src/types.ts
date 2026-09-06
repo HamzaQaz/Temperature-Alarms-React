@@ -14,7 +14,38 @@ export interface Device {
   campus: Campus;
 }
 
-// The types below still describe the legacy routes and are replaced by later tickets.
+/** One temperature and humidity sample sent by a Device at a single moment. */
+export interface Reading {
+  tempF: number;
+  humidity: number | null;
+  /** ISO instant in UTC; rendered in the browser's zone. */
+  recordedAt: string;
+}
+
+export type ClosetType = 'IDF' | 'MDF';
+
+/** A Device as the dashboard shows it: where it is and what it last reported. */
+export interface DashboardDevice {
+  id: number;
+  hostname: string;
+  campus: Campus;
+  closet: string;
+  closetType: ClosetType | null;
+  latestReading: Reading | null;
+  /** Computed on the server: the last Reading arrived within three Report intervals. */
+  online: boolean;
+  secondsSinceReading: number | null;
+}
+
+export interface Dashboard {
+  /** How often a healthy Device sends a Reading, so the UI never hardcodes it. */
+  reportIntervalSeconds: number;
+  /** Three Report intervals: how long without a Reading before a Device is Offline. */
+  offlineAfterSeconds: number;
+  devices: DashboardDevice[];
+}
+
+// The type below still describes the legacy history route and is replaced by ticket 10.
 
 export interface TemperatureData {
   ID: number;
@@ -24,15 +55,4 @@ export interface TemperatureData {
   TIME: string;
   TEMP: number;
   HUMIDITY: number | null;
-}
-
-export interface DashboardData {
-  id: number;
-  name: string;
-  campus: string;
-  location: string;
-  temperature: number | null;
-  humidity: number | null;
-  date: string | null;
-  time: string | null;
 }

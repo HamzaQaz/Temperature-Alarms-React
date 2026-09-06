@@ -3,6 +3,7 @@ import type { Pool } from 'mysql2/promise';
 import type { Server } from 'node:http';
 import { createApp } from '../../src/app';
 import type { Config } from '../../src/config';
+import type { AppDeps } from '../../src/deps';
 import { testDatabaseConfig } from './database';
 
 export const TEST_ADMIN_TOKEN = 'test-admin-token';
@@ -27,8 +28,12 @@ export interface RunningServer {
 }
 
 /** Start the real Express app on a random port and hand back its base URL. */
-export async function startServer(pool: Pool, config: Config = testConfig()): Promise<RunningServer> {
-  const app: Express = createApp({ config, pool });
+export async function startServer(
+  pool: Pool,
+  config: Config = testConfig(),
+  overrides: Partial<Omit<AppDeps, 'pool' | 'config'>> = {},
+): Promise<RunningServer> {
+  const app: Express = createApp({ config, pool, ...overrides });
   const server: Server = await new Promise((resolve) => {
     const s = app.listen(0, '127.0.0.1', () => resolve(s));
   });

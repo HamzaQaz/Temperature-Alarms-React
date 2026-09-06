@@ -3,6 +3,7 @@ import rateLimit from 'express-rate-limit';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireDeviceToken } from '../auth';
 import type { AppDeps } from '../deps';
+import { closetType } from '../closet';
 
 interface DeviceIdRow extends RowDataPacket {
   id: number;
@@ -85,7 +86,77 @@ export function readingsRouter({ pool, config }: AppDeps): Router {
   return router;
 }
 
-/** Dashboard and its SSE stream (GET /api/dashboard, /api/dashboard/stream). Filled in by tickets 07 and 09. */
-export function dashboardRouter(_deps: AppDeps): Router {
-  return Router();
+interface DashboardRow extends RowDataPacket {
+  id: number;
+  hostname: string;
+  closet: string;
+  campusId: number;
+  campusName: string;
+  campusShortcode: string;
+  tempF: number | null;
+  humidity: number | null;
+  recordedAt: Date | null;
+}
+
+/** Offline after three consecutive missed reports; Online while the last Reading is within that window. */
+const MISSED_REPORTS_BEFORE_OFFLINE = 3;
+
+/**
+ * Every Device with its latest Reading, in one statement. The correlated subquery walks
+ * ix_readings_device_recorded backwards one step per Device.
+ */
+const SELECT_DASHBOARD = `
+  SELECT d.id, d.hostname, d.closet,
+         c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode,
+         r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt
+  FROM devices d
+  JOIN campuses c ON c.id = d.campus_id
+  LEFT JOIN readings r ON r.id = (
+    SELECT r2.id FROM readings r2
+    WHERE r2.device_id = d.id
+    ORDER BY r2.recorded_at DESC, r2.id DESC
+    LIMIT 1
+  )`;
+const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
+
+function toDashboardDevice(row: DashboardRow, now: Date, offlineAfterSeconds: number) {
+  const { id, hostname, closet, campusId, campusName, campusShortcode, tempF, humidity, recordedAt } = row;
+  const latest = recordedAt === null || tempF === null ? null : { tempF, humidity, recordedAt };
+  const secondsSinceReading = latest === null ? null : Math.max(0, Math.floor((now.getTime() - latest.recordedAt.getTime()) / 1000));
+  return {
+    id,
+    hostname,
+    campus: { id: campusId, name: campusName, shortcode: campusShortcode },
+    closet,
+    closetType: closetType(closet),
+    latestReading: latest === null ? null : { ...latest, recordedAt: latest.recordedAt.toISOString() },
+    online: secondsSinceReading !== null && secondsSinceReading <= offlineAfterSeconds,
+    secondsSinceReading,
+  };
+}
+
+/** Dashboard (GET /api/dashboard?campus=SHORTCODE). Its SSE stream is added by ticket 09. */
+export function dashboardRouter({ pool, config, now = () => new Date() }: AppDeps): Router {
+  const router = Router();
+  const { reportIntervalSeconds } = config;
+  const offlineAfterSeconds = MISSED_REPORTS_BEFORE_OFFLINE * reportIntervalSeconds;
+
+  router.get('/', async (req, res, next) => {
+    const campus = typeof req.query.campus === 'string' ? req.query.campus.trim() : '';
+    // Shortcodes match in any case, as the old filter did.
+    const [where, params] = campus === '' ? ['', []] : ['WHERE LOWER(c.shortcode) = LOWER(?)', [campus]];
+    try {
+      const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, params);
+      const at = now();
+      res.json({
+        reportIntervalSeconds,
+        offlineAfterSeconds,
+        devices: rows.map((row) => toDashboardDevice(row, at, offlineAfterSeconds)),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  return router;
 }

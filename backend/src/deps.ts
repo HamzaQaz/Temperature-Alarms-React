@@ -5,4 +5,6 @@ import type { Config } from './config';
 export interface AppDeps {
   config: Config;
   pool: Pool;
+  /** The current time. Defaults to the wall clock; tests pin it. */
+  now?: () => Date;
 }

@@ -1,4 +1,4 @@
-import type { Device, Campus, TemperatureData, DashboardData } from './types';
+import type { Device, Campus, TemperatureData, Dashboard } from './types';
 import { getAdminToken } from './lib/adminToken';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
@@ -91,10 +91,13 @@ export const addDevice = (hostname: string, campusId: number, closet: string): P
 
 export const deleteDevice = (id: number): Promise<void> => request(`/api/devices/${id}`, { method: 'DELETE' });
 
-// ==================== READINGS (legacy shape until tickets 07 and 10) ====================
+// ==================== DASHBOARD ====================
 
-export const getTemperature = (deviceName: string): Promise<TemperatureData> =>
-  request(`/api/temperature/${encodeURIComponent(deviceName)}`);
+/** Every Device with its latest Reading, optionally only those at one Campus. */
+export const getDashboard = (campus?: string): Promise<Dashboard> =>
+  request(`/api/dashboard${campus ? `?campus=${encodeURIComponent(campus)}` : ''}`);
+
+// ==================== HISTORY (legacy shape until ticket 10) ====================
 
 export const getTemperatureHistory = (deviceName: string, date?: string): Promise<TemperatureData[]> =>
   request(
@@ -103,6 +106,3 @@ export const getTemperatureHistory = (deviceName: string, date?: string): Promis
 
 export const resetTemperatureHistory = (deviceName: string): Promise<void> =>
   request(`/api/temperature/${encodeURIComponent(deviceName)}/history`, { method: 'DELETE' });
-
-export const getDashboardData = (filter?: string): Promise<DashboardData[]> =>
-  request(`/api/dashboard${filter ? `?filter=${encodeURIComponent(filter)}` : ''}`);

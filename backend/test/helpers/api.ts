@@ -16,13 +16,31 @@ export interface Device {
 
 export interface Reading {
   tempF: number;
-  humidity: number;
+  humidity: number | null;
   recordedAt: string;
 }
 
 export interface RecordedReading {
   device: string;
   reading: Reading;
+}
+
+export interface DashboardDevice {
+  id: number;
+  hostname: string;
+  campus: Campus;
+  closet: string;
+  closetType: 'IDF' | 'MDF' | null;
+  latestReading: Reading | null;
+  online: boolean;
+  secondsSinceReading: number | null;
+}
+
+export interface Dashboard {
+  reportIntervalSeconds: number;
+  /** Three Report intervals: how long without a Reading before a Device is Offline. */
+  offlineAfterSeconds: number;
+  devices: DashboardDevice[];
 }
 
 /** A JSON request carrying a bearer token, with any header overridable. */
@@ -68,6 +86,14 @@ export function api(server: RunningServer) {
       url: (path = '') => `${server.url}/api/readings${path}`,
       /** Posts a reading as a Device would: with the Device token unless init says otherwise. */
       add: (body: unknown, init: RequestInit = asDevice()) => post('/api/readings', body, init),
+    },
+    dashboard: {
+      url: (query = '') => `${server.url}/api/dashboard${query}`,
+      /** The dashboard, optionally filtered by campus shortcode. */
+      get: async (campus?: string) => {
+        const query = campus === undefined ? '' : `?campus=${encodeURIComponent(campus)}`;
+        return json<Dashboard>(await fetch(`${server.url}/api/dashboard${query}`));
+      },
     },
   };
 }
