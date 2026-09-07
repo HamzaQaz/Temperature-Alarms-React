@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { getCampuses, getDashboard } from '@/api';
+import { LiveStatus } from '@/components/LiveStatus';
 import { DeviceCard } from '@/components/DeviceCard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -10,8 +11,9 @@ import { hasWarningOrWorse, isWarningOrWorse } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useNow } from '@/hooks/use-now';
+import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
-import type { Dashboard as DashboardPayload, DashboardDevice } from '@/types';
+import type { Dashboard as DashboardPayload, DashboardDevice, ReadingEvent } from '@/types';
 
 const ALL = 'all';
 
@@ -57,9 +59,34 @@ export default function Dashboard() {
   );
 }
 
-interface LoadedDashboard extends DashboardPayload {
-  /** When this payload arrived, so ages and countdowns can tick from it. */
-  loadedAt: number;
+/** A Device as loaded, plus when its `secondsSinceReading` was true so the age can tick from there. */
+interface LiveDevice extends DashboardDevice {
+  asOf: number;
+}
+
+interface LoadedDashboard extends Omit<DashboardPayload, 'devices'> {
+  devices: LiveDevice[];
+}
+
+async function loadDashboard(campus: string): Promise<LoadedDashboard> {
+  const payload = await getDashboard(campus || undefined);
+  const asOf = Date.now();
+  return { ...payload, devices: payload.devices.map((device) => ({ ...device, asOf })) };
+}
+
+/**
+ * The card for the Device that just reported, with the Reading, badges and border it
+ * carries, aged from now. A card already showing a newer Reading (a reload that raced
+ * the stream) is left alone, so replaying an event is always safe.
+ */
+function applyReading(dashboard: LoadedDashboard, event: ReadingEvent): LoadedDashboard {
+  const index = dashboard.devices.findIndex((d) => d.hostname === event.device);
+  if (index === -1) return dashboard;
+  const device = dashboard.devices[index];
+  if (device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt) return dashboard;
+  const devices = dashboard.devices.slice();
+  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, secondsSinceReading: 0, asOf: Date.now() };
+  return { ...dashboard, devices };
 }
 
 interface DashboardContentProps {
@@ -69,12 +96,15 @@ interface DashboardContentProps {
 }
 
 function DashboardContent({ campus, campusName, onShowAll }: DashboardContentProps) {
-  const load = useCallback(
-    async (): Promise<LoadedDashboard> => ({ ...(await getDashboard(campus || undefined)), loadedAt: Date.now() }),
-    [campus],
-  );
-  const { state, reload } = useResource(load);
+  const load = useCallback(() => loadDashboard(campus), [campus]);
+  const { state, reload, update } = useResource(load);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Each Reading lands on its card as it arrives. After a dropped stream, reload: anything sent meanwhile was missed.
+  const stream = useReadingStream({
+    onReading: (event) => update((dashboard) => applyReading(dashboard, event)),
+    onReconnect: () => void reload(),
+  });
 
   const refresh = async () => {
     setRefreshing(true);
@@ -101,7 +131,7 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
     );
   }
 
-  const { devices, reportIntervalSeconds, offlineAfterSeconds, loadedAt } = state.data;
+  const { devices, reportIntervalSeconds, offlineAfterSeconds } = state.data;
 
   return (
     <div className="space-y-6">
@@ -109,10 +139,13 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
         <p className="text-sm text-muted-foreground">
           Devices report every {reportIntervalSeconds} seconds. Offline means nothing has arrived for {offlineAfterSeconds} seconds.
         </p>
-        <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
-          <RefreshCw className={refreshing ? 'motion-safe:animate-spin' : undefined} aria-hidden />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-3">
+          <LiveStatus status={stream} />
+          <Button variant="outline" size="sm" onClick={refresh} disabled={refreshing}>
+            <RefreshCw className={refreshing ? 'motion-safe:animate-spin' : undefined} aria-hidden />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       <Summary devices={devices} />
@@ -120,30 +153,27 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
       {devices.length === 0 ? (
         <EmptyState campus={campus} campusName={campusName} onShowAll={onShowAll} />
       ) : (
-        <DeviceGrid devices={devices} reportIntervalSeconds={reportIntervalSeconds} loadedAt={loadedAt} />
+        <DeviceGrid devices={devices} reportIntervalSeconds={reportIntervalSeconds} />
       )}
     </div>
   );
 }
 
 interface DeviceGridProps {
-  devices: DashboardDevice[];
+  devices: LiveDevice[];
   reportIntervalSeconds: number;
-  loadedAt: number;
 }
 
-function DeviceGrid({ devices, reportIntervalSeconds, loadedAt }: DeviceGridProps) {
+function DeviceGrid({ devices, reportIntervalSeconds }: DeviceGridProps) {
   const now = useNow();
-  const elapsed = Math.max(0, Math.floor((now - loadedAt) / 1000));
+  // Each card ages from the moment its own data was true, so a live Reading resets only that card's age.
+  const age = (device: LiveDevice): number | null =>
+    device.secondsSinceReading === null ? null : device.secondsSinceReading + Math.max(0, Math.floor((now - device.asOf) / 1000));
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-4" aria-label="Devices">
       {devices.map((device) => (
         <li key={device.id} className="flex">
-          <DeviceCard
-            device={device}
-            secondsSinceReading={device.secondsSinceReading === null ? null : device.secondsSinceReading + elapsed}
-            reportIntervalSeconds={reportIntervalSeconds}
-          />
+          <DeviceCard device={device} secondsSinceReading={age(device)} reportIntervalSeconds={reportIntervalSeconds} />
         </li>
       ))}
     </ul>

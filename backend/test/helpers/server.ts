@@ -43,6 +43,11 @@ export async function startServer(
   if (address === null || typeof address === 'string') throw new Error('Server did not bind to a TCP port');
   return {
     url: `http://127.0.0.1:${address.port}`,
-    close: () => new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+        // An open SSE stream would otherwise keep the server alive until the client hung up.
+        server.closeAllConnections();
+      }),
   };
 }

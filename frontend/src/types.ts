@@ -50,6 +50,15 @@ export interface DashboardDevice {
   conditions: Condition[];
 }
 
+/** What the live stream sends when a Device posts a Reading: the card's new state, matched by hostname. */
+export interface ReadingEvent {
+  type: 'reading';
+  device: string;
+  reading: Reading;
+  online: boolean;
+  conditions: Condition[];
+}
+
 export interface Dashboard {
   /** How often a healthy Device sends a Reading, so the UI never hardcodes it. */
   reportIntervalSeconds: number;

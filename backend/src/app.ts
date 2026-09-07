@@ -1,6 +1,7 @@
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
-import type { AppDeps } from './deps';
+import type { AppDeps, RouteDeps } from './deps';
+import { createBroadcaster } from './sse';
 import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
 import { campusesRouter } from './routes/campuses';
@@ -8,7 +9,8 @@ import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter } from './routes/readings';
 
 /** The Express app, without a listening socket, so tests can drive it directly. */
-export function createApp(deps: AppDeps): Express {
+export function createApp(appDeps: AppDeps): Express {
+  const deps: RouteDeps = { ...appDeps, sse: appDeps.sse ?? createBroadcaster() };
   const app = express();
   app.set('trust proxy', true);
   app.use(corsMiddleware(deps.config));

@@ -2,9 +2,11 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireDeviceToken } from '../auth';
-import type { AppDeps } from '../deps';
+import type { RouteDeps } from '../deps';
 import { closetType } from '../closet';
-import { conditionsFor, offlineAfterSeconds, type ConditionRules } from '../conditions';
+import { conditionsFor, isOffline, offlineAfterSeconds, type ConditionRules } from '../conditions';
+import type { Config } from '../config';
+import type { ReadingPayload } from '../sse';
 
 interface DeviceIdRow extends RowDataPacket {
   id: number;
@@ -45,9 +47,16 @@ function serverNow(): Date {
   return new Date(Math.floor(Date.now() / 1000) * 1000);
 }
 
-/** Reading ingest (POST /api/readings): a Device posts `{device, temp, humidity}` with the Device token. */
-export function readingsRouter({ pool, config }: AppDeps): Router {
+/** The part of the configuration the Conditions module needs. */
+const conditionRules = ({ reportIntervalSeconds, thresholds }: Config): ConditionRules => ({ reportIntervalSeconds, thresholds });
+
+/**
+ * Reading ingest (POST /api/readings): a Device posts `{device, temp, humidity}` with the
+ * Device token. Each recorded Reading is broadcast to every open dashboard.
+ */
+export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
   const router = Router();
+  const rules = conditionRules(config);
 
   // Boards report every Report interval, so a healthy IP never approaches this. Only writes are limited this way.
   const writeLimiter = rateLimit({
@@ -78,7 +87,11 @@ export function readingsRouter({ pool, config }: AppDeps): Router {
         'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
         [device.id, tempF, humidity, recordedAt],
       );
-      res.status(201).json({ device: device.hostname, reading: { tempF, humidity, recordedAt: recordedAt.toISOString() } });
+      const reading: ReadingPayload = { tempF, humidity, recordedAt: recordedAt.toISOString() };
+      res.status(201).json({ device: device.hostname, reading });
+      // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
+      const conditions = conditionsFor({ reading: { tempF, humidity }, secondsSinceReading: 0, ...rules });
+      sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions });
     } catch (error) {
       next(error);
     }
@@ -128,20 +141,24 @@ function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules) 
     campus: { id: campusId, name: campusName, shortcode: campusShortcode },
     closet,
     closetType: closetType(closet),
-    latestReading: latest === null ? null : { ...latest, recordedAt: latest.recordedAt.toISOString() },
-    // Online is the absence of the Offline Condition, so the flag and the badge can never disagree.
-    online: !conditions.some((c) => c.name === 'Offline'),
+    latestReading: latest === null ? null : ({ ...latest, recordedAt: latest.recordedAt.toISOString() } satisfies ReadingPayload),
+    online: !isOffline(conditions),
     secondsSinceReading,
     /** Worst first; the browser renders these and computes none of its own. */
     conditions,
   };
 }
 
-/** Dashboard (GET /api/dashboard?campus=SHORTCODE). Its SSE stream is added by ticket 09. */
-export function dashboardRouter({ pool, config, now = () => new Date() }: AppDeps): Router {
+/**
+ * Dashboard (GET /api/dashboard?campus=SHORTCODE) and its live stream
+ * (GET /api/dashboard/stream), which carries every Reading as it is ingested.
+ */
+export function dashboardRouter({ pool, config, sse, now = () => new Date() }: RouteDeps): Router {
   const router = Router();
   const { reportIntervalSeconds, thresholds } = config;
-  const rules: ConditionRules = { reportIntervalSeconds, thresholds };
+  const rules = conditionRules(config);
+
+  router.get('/stream', sse.handler);
 
   router.get('/', async (req, res, next) => {
     const campus = typeof req.query.campus === 'string' ? req.query.campus.trim() : '';

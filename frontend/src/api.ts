@@ -97,6 +97,12 @@ export const deleteDevice = (id: number): Promise<void> => request(`/api/devices
 export const getDashboard = (campus?: string): Promise<Dashboard> =>
   request(`/api/dashboard${campus ? `?campus=${encodeURIComponent(campus)}` : ''}`);
 
+/**
+ * The live stream of Readings (Server-Sent Events). The browser reconnects on its own after
+ * a drop; callers watch `readyState` and reload their data once it is open again.
+ */
+export const openDashboardStream = (): EventSource => new EventSource(`${API_BASE_URL}/api/dashboard/stream`);
+
 // ==================== HISTORY (legacy shape until ticket 10) ====================
 
 export const getTemperatureHistory = (deviceName: string, date?: string): Promise<TemperatureData[]> =>

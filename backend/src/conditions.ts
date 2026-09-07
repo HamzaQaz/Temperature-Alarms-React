@@ -73,6 +73,9 @@ export interface ConditionsInput extends ConditionRules {
 }
 
 /** How long without a Reading before a Device is Offline: three Report intervals by default. */
+/** Online is the absence of the Offline Condition, so the flag and the badge can never disagree. */
+export const isOffline = (conditions: Condition[]): boolean => conditions.some((c) => c.name === 'Offline');
+
 export function offlineAfterSeconds(reportIntervalSeconds: number, thresholds: Thresholds = DEFAULT_THRESHOLDS): number {
   return thresholds.missedReportsBeforeOffline * reportIntervalSeconds;
 }
