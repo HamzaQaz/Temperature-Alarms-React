@@ -67,14 +67,32 @@ export interface Dashboard {
   devices: DashboardDevice[];
 }
 
-// The type below still describes the legacy history route and is replaced by ticket 10.
+export interface DaySummary {
+  min: number;
+  max: number;
+  /** To one decimal place. */
+  avg: number;
+}
 
-export interface TemperatureData {
-  ID: number;
-  CAMPUS: string;
-  LOCATION: string;
-  DATE: string;
-  TIME: string;
-  TEMP: number;
-  HUMIDITY: number | null;
+/** One local day of a Device's Readings, oldest first, with the day's numbers. */
+export interface History {
+  device: {
+    id: number;
+    hostname: string;
+    closet: string;
+    closetType: ClosetType | null;
+    campus: Campus;
+  };
+  /** The day shown, YYYY-MM-DD in `timeZone`. */
+  date: string;
+  /** The IANA zone the day was cut in: this browser's, as sent with the request. */
+  timeZone: string;
+  /** The day's bounds as UTC instants: from inclusive, to exclusive. */
+  from: string;
+  to: string;
+  readings: Reading[];
+  summary: {
+    tempF: DaySummary | null;
+    humidity: DaySummary | null;
+  };
 }

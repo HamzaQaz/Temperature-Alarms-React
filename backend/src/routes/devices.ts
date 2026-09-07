@@ -4,7 +4,7 @@ import { requireAdminToken } from '../auth';
 import type { AppDeps } from '../deps';
 import { isDuplicateKey, isMissingForeignRow } from '../db';
 
-interface DeviceRow extends RowDataPacket {
+export interface DeviceRow extends RowDataPacket {
   id: number;
   hostname: string;
   closet: string;
@@ -23,13 +23,14 @@ interface DeviceInput {
 const HOSTNAME_PATTERN = /^ESP_[0-9A-F]{6}$/;
 const CLOSET_MAX = 50;
 
-const SELECT_DEVICES = `
+/** A Device with its Campus, as every route lists it. Append a WHERE or ORDER BY. */
+export const SELECT_DEVICES = `
   SELECT d.id, d.hostname, d.closet,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode
   FROM devices d
   JOIN campuses c ON c.id = d.campus_id`;
 
-function toDevice({ id, hostname, closet, campusId, campusName, campusShortcode }: DeviceRow) {
+export function toDevice({ id, hostname, closet, campusId, campusName, campusShortcode }: DeviceRow) {
   return { id, hostname, closet, campus: { id: campusId, name: campusName, shortcode: campusShortcode } };
 }
 

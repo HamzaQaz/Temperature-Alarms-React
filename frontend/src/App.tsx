@@ -59,7 +59,7 @@ function AnimatedRoutes() {
             <Settings />
           </motion.div>
         } />
-        <Route path="/history" element={
+        <Route path="/history/:deviceId?" element={
           <motion.div
             initial="initial"
             animate="in"

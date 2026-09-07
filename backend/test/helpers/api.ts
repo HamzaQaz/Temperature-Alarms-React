@@ -43,6 +43,36 @@ export interface DashboardDevice {
   conditions: Condition[];
 }
 
+export interface DaySummary {
+  min: number;
+  max: number;
+  /** To one decimal place. */
+  avg: number;
+}
+
+/** One local day of a Device's Readings, oldest first, with the day's numbers. */
+export interface History {
+  device: {
+    id: number;
+    hostname: string;
+    closet: string;
+    closetType: 'IDF' | 'MDF' | null;
+    campus: Campus;
+  };
+  /** The day asked for, YYYY-MM-DD. */
+  date: string;
+  /** The IANA zone the day was cut in. */
+  timeZone: string;
+  /** The day's bounds as UTC instants: from inclusive, to exclusive. */
+  from: string;
+  to: string;
+  readings: Reading[];
+  summary: {
+    tempF: DaySummary | null;
+    humidity: DaySummary | null;
+  };
+}
+
 export interface Dashboard {
   reportIntervalSeconds: number;
   /** Three Report intervals: how long without a Reading before a Device is Offline. */
@@ -88,6 +118,11 @@ export function api(server: RunningServer) {
       /** Adds a device that is expected to succeed and returns it. */
       create: async (campusId: number, hostname = 'ESP_A1B2C3', closet = 'IDF 2') =>
         json<Device>(await post('/api/devices', { hostname, campusId, closet })),
+      /** One day of a Device's history. `query` is appended verbatim, e.g. `?date=2026-09-05&tz=America/Chicago`. */
+      history: (id: number, query = '') => fetch(`${server.url}/api/devices/${id}/history${query}`),
+      /** Deletes every Reading the Device has, as the admin unless init says otherwise. */
+      resetHistory: (id: number, init: RequestInit = asAdmin()) =>
+        fetch(`${server.url}/api/devices/${id}/history`, { ...init, method: 'DELETE' }),
     },
     readings: {
       url: (path = '') => `${server.url}/api/readings${path}`,

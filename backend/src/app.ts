@@ -6,7 +6,7 @@ import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
 import { campusesRouter } from './routes/campuses';
 import { devicesRouter } from './routes/devices';
-import { readingsRouter, dashboardRouter } from './routes/readings';
+import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
 
 /** The Express app, without a listening socket, so tests can drive it directly. */
 export function createApp(appDeps: AppDeps): Express {
@@ -30,6 +30,7 @@ export function createApp(appDeps: AppDeps): Express {
 
   app.use('/api/health', healthRouter(deps.pool));
   app.use('/api/campuses', campusesRouter(deps));
+  app.use('/api/devices/:id/history', historyRouter(deps));
   app.use('/api/devices', devicesRouter(deps));
   app.use('/api/readings', readingsRouter(deps));
   app.use('/api/dashboard', dashboardRouter(deps));

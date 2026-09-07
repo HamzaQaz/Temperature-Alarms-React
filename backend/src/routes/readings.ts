@@ -1,11 +1,13 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import { requireDeviceToken } from '../auth';
+import { requireAdminToken, requireDeviceToken } from '../auth';
 import type { RouteDeps } from '../deps';
 import { closetType } from '../closet';
+import { SELECT_DEVICES, toDevice, type DeviceRow } from './devices';
 import { conditionsFor, isOffline, offlineAfterSeconds, type ConditionRules } from '../conditions';
 import type { Config } from '../config';
+import { isTimeZone, localDay, serverTimeZone, todayIn, type LocalDay } from '../localDay';
 import type { ReadingPayload } from '../sse';
 
 interface DeviceIdRow extends RowDataPacket {
@@ -172,6 +174,108 @@ export function dashboardRouter({ pool, config, sse, now = () => new Date() }: R
         offlineAfterSeconds: offlineAfterSeconds(reportIntervalSeconds, thresholds),
         devices: rows.map((row) => toDashboardDevice(row, at, rules)),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  return router;
+}
+
+interface HistoryReadingRow extends RowDataPacket {
+  tempF: number;
+  humidity: number | null;
+  recordedAt: Date;
+}
+
+interface DaySummary {
+  min: number;
+  max: number;
+  /** To one decimal place: the table holds whole numbers, so more would be noise. */
+  avg: number;
+}
+
+/** Min, max, and average of the values, or null when there are none (an empty day, or a day with no humidity). */
+function summarise(values: number[]): DaySummary | null {
+  if (values.length === 0) return null;
+  const sum = values.reduce((a, b) => a + b, 0);
+  return { min: Math.min(...values), max: Math.max(...values), avg: Math.round((sum / values.length) * 10) / 10 };
+}
+
+/** The day asked for by `?date=` and `?tz=`, or the message explaining why there is none. */
+function parseDay(query: Request['query'], now: Date): LocalDay | { error: string } {
+  const tz = typeof query.tz === 'string' && query.tz.trim() !== '' ? query.tz.trim() : serverTimeZone();
+  if (!isTimeZone(tz)) return { error: `Unknown time zone ${tz}; use an IANA name like America/Chicago` };
+  const date = typeof query.date === 'string' && query.date.trim() !== '' ? query.date.trim() : todayIn(now, tz);
+  const day = localDay(date, tz);
+  if (day === undefined) return { error: `The date must be a real day written YYYY-MM-DD, got ${date}` };
+  return day;
+}
+
+/**
+ * One Device's history (mounted at /api/devices/:id/history).
+ * GET returns one local day of Readings with the day's numbers; never more than a day,
+ * so the page stays fast however long the Device has been reporting.
+ * DELETE resets the Device's whole history, with the Admin token.
+ */
+export function historyRouter({ pool, config, now = () => new Date() }: RouteDeps): Router {
+  // mergeParams: the Device id is in the mount path, not this router's own, so it is untyped here.
+  const router = Router({ mergeParams: true });
+  const deviceIdOf = (req: Request): string => (req.params as { id?: string }).id ?? '';
+
+  const findDevice = async (rawId: string): Promise<DeviceRow | undefined> => {
+    const id = Number(rawId);
+    if (!Number.isInteger(id) || id <= 0) return undefined;
+    const [rows] = await pool.query<DeviceRow[]>(`${SELECT_DEVICES} WHERE d.id = ?`, [id]);
+    return rows[0];
+  };
+
+  router.get('/', async (req, res, next) => {
+    const day = parseDay(req.query, now());
+    if ('error' in day) {
+      res.status(422).json({ error: day.error });
+      return;
+    }
+    try {
+      const device = await findDevice(deviceIdOf(req));
+      if (device === undefined) {
+        res.status(404).json({ error: 'Device not found' });
+        return;
+      }
+      const [rows] = await pool.query<HistoryReadingRow[]>(
+        `SELECT temp_f AS tempF, humidity, recorded_at AS recordedAt
+         FROM readings
+         WHERE device_id = ? AND recorded_at >= ? AND recorded_at < ?
+         ORDER BY recorded_at, id`,
+        [device.id, day.from, day.to],
+      );
+      const readings: ReadingPayload[] = rows.map(({ tempF, humidity, recordedAt }) => ({ tempF, humidity, recordedAt: recordedAt.toISOString() }));
+      res.json({
+        device: { ...toDevice(device), closetType: closetType(device.closet) },
+        date: day.date,
+        timeZone: day.timeZone,
+        from: day.from.toISOString(),
+        to: day.to.toISOString(),
+        readings,
+        summary: {
+          tempF: summarise(readings.map((r) => r.tempF)),
+          humidity: summarise(readings.flatMap((r) => (r.humidity === null ? [] : [r.humidity]))),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete('/', requireAdminToken(config), async (req, res, next) => {
+    try {
+      const device = await findDevice(deviceIdOf(req));
+      if (device === undefined) {
+        res.status(404).json({ error: 'Device not found' });
+        return;
+      }
+      await pool.query<ResultSetHeader>('DELETE FROM readings WHERE device_id = ?', [device.id]);
+      res.status(204).end();
     } catch (error) {
       next(error);
     }

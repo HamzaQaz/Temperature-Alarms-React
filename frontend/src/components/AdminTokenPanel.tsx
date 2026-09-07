@@ -11,13 +11,15 @@ interface AdminTokenPanelProps {
   rejected: boolean;
   onSave: (token: string) => void;
   onForget: () => void;
+  /** What on this page sends the token, e.g. "Adding or deleting anything here". */
+  action?: string;
 }
 
 /**
  * Asks for the Admin token once and shows where it lives afterwards.
  * Expands on its own when no token is stored or the server rejected the last one.
  */
-export function AdminTokenPanel({ hasToken, rejected, onSave, onForget }: AdminTokenPanelProps) {
+export function AdminTokenPanel({ hasToken, rejected, onSave, onForget, action = 'Adding or deleting anything here' }: AdminTokenPanelProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -75,7 +77,7 @@ export function AdminTokenPanel({ hasToken, rejected, onSave, onForget }: AdminT
           <p className="text-sm text-muted-foreground">
             {rejected
               ? 'The server rejected the Admin token. Enter the current one to keep going. Nothing was changed.'
-              : 'Adding or deleting anything here sends the shared Admin token. Viewing the dashboard never needs it. It is kept in this browser only.'}
+              : `${action} sends the shared Admin token. Viewing the dashboard never needs it. It is kept in this browser only.`}
           </p>
         </div>
       </div>

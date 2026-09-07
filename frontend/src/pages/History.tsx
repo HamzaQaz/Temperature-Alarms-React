@@ -1,17 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
-import { getTemperatureHistory, resetTemperatureHistory } from '../api';
-import type { TemperatureData } from '../types';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { ChevronLeft, TrendingUp, TrendingDown, Thermometer, Trash2 } from "lucide-react";
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import type { ChartConfig } from "@/components/ui/chart";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-} from "@/components/ui/chart";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import NumberFlow from '@number-flow/react';
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
+import { getHistory, resetHistory } from '@/api';
+import { AdminTokenPanel } from '@/components/AdminTokenPanel';
+import { LiveStatus } from '@/components/LiveStatus';
+import { Placeholder } from '@/components/Placeholder';
+import { NoValue, Tile } from '@/components/Tile';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,410 +18,513 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
-import NumberFlow from '@number-flow/react';
+} from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useAdminToken } from '@/hooks/use-admin-token';
+import { useChange } from '@/hooks/use-change';
+import { useReadingStream } from '@/hooks/use-reading-stream';
+import { useResource } from '@/hooks/use-resource';
+import { clearAdminToken, getAdminToken, setAdminToken } from '@/lib/adminToken';
+import { addDays, formatDayLong, formatDayShort, formatHour, formatTime, formatTimeSeconds, isDateString, today } from '@/lib/localDate';
+import { cn } from '@/lib/utils';
+import type { DaySummary, History as HistoryPayload, Reading } from '@/types';
 
-const History: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
-  const device = searchParams.get('device') || '';
-  const date = searchParams.get('date') || '';
+/** How long after a Reading arrives on the stream before the day is reloaded, so a burst costs one request. */
+const LIVE_RELOAD_DELAY_MS = 2_000;
+const ROWS_PER_PAGE = 100;
 
-  const [history, setHistory] = useState<TemperatureData[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [isResetting, setIsResetting] = useState(false);
-  const itemsPerPage = 50;
+/**
+ * One day of one Device's history: a chart, the day's numbers, and the Readings themselves.
+ * The Device comes from the path and the day from `?date=`, defaulting to today, so a
+ * day can be bookmarked and stepped through across midnight.
+ */
+export default function History() {
+  const { deviceId: deviceIdParam } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deviceId = Number(deviceIdParam);
+  const dateParam = searchParams.get('date') ?? '';
+  const followsToday = !isDateString(dateParam);
+  // With no date in the URL the page follows today; a render after midnight moves it to the new day.
+  const [, rerender] = useReducer((n: number) => n + 1, 0);
+  const date = followsToday ? today() : dateParam;
 
-  const loadHistory = useCallback(async () => {
-    if (!device) return;
-    
-    try {
-      setLoading(true);
-      const data = await getTemperatureHistory(device, date || undefined);
-      setHistory(data);
-      setError(null);
-    } catch (err) {
-      setError('Failed to load history data');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  }, [device, date]);
+  if (!Number.isInteger(deviceId) || deviceId <= 0) return <NoDevice />;
 
-  useEffect(() => {
-    loadHistory();
-  }, [loadHistory]);
+  const showDay = (day: string) => setSearchParams(day === today() ? {} : { date: day });
 
-  const handleResetHistory = async () => {
-    if (!device) return;
-    
-    try {
-      setIsResetting(true);
-      await resetTemperatureHistory(device);
-      await loadHistory(); // Reload to show empty state
-    } catch (err) {
-      setError('Failed to reset history');
-      console.error(err);
-    } finally {
-      setIsResetting(false);
-    }
-  };
+  // Keyed by device and day so a step to another day shows placeholders, not the previous day's chart.
+  return <DayView key={`${deviceId}:${date}`} deviceId={deviceId} date={date} followsToday={followsToday} onShowDay={showDay} onDayRolledOver={rerender} />;
+}
 
-  // Set up SSE connection for live updates
-  useEffect(() => {
-    if (!device) return;
+function NoDevice() {
+  return (
+    <div className="flex-1 space-y-6">
+      <PageHeading title="History" subtitle="One day of a Device's Readings." />
+      <Placeholder>
+        <p className="font-medium">Pick a Device first</p>
+        <p className="max-w-sm text-sm text-muted-foreground">Every card on the dashboard has a History button that opens that Device's day.</p>
+        <Button asChild variant="outline" size="sm">
+          <Link to="/">Go to the dashboard</Link>
+        </Button>
+      </Placeholder>
+    </div>
+  );
+}
 
-    const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-    const eventSource = new EventSource(`${apiUrl}/api/dashboard/stream`);
-    let reloadTimeout: number | null = null;
+interface PageHeadingProps {
+  title: string;
+  subtitle: React.ReactNode;
+  tag?: React.ReactNode;
+  actions?: React.ReactNode;
+}
 
-    eventSource.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        // Data can be either an array or a single object
-        const devices = Array.isArray(data) ? data : [data];
-        // If this device got updated, reload history (debounced)
-        const updatedDevice = devices.find((d: { name?: string }) => d.name === device);
-        if (updatedDevice) {
-          // Clear existing timeout
-          if (reloadTimeout) clearTimeout(reloadTimeout);
-          // Debounce reload to prevent too many requests
-          reloadTimeout = setTimeout(() => {
-            loadHistory();
-          }, 2000); // Wait 2 seconds before reloading
-        }
-      } catch (err) {
-        console.error('Error parsing SSE data:', err);
+function PageHeading({ title, subtitle, tag, actions }: PageHeadingProps) {
+  return (
+    <header className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex min-w-0 items-start gap-3">
+        <Button asChild variant="outline" size="icon" className="mt-0.5 shrink-0">
+          <Link to="/" aria-label="Back to the dashboard">
+            <ArrowLeft aria-hidden />
+          </Link>
+        </Button>
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-3xl font-bold tracking-tight">{title}</h2>
+            {tag}
+          </div>
+          <p className="text-muted-foreground">{subtitle}</p>
+        </div>
+      </div>
+      {actions}
+    </header>
+  );
+}
+
+interface DayViewProps {
+  deviceId: number;
+  date: string;
+  /** True when the URL names no day, so the page should move on to the next day at midnight. */
+  followsToday: boolean;
+  onShowDay: (day: string) => void;
+  /** A Reading has arrived after the day on screen while the page follows today. */
+  onDayRolledOver: () => void;
+}
+
+function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: DayViewProps) {
+  const load = useCallback(() => getHistory(deviceId, date), [deviceId, date]);
+  const { state, reload } = useResource(load);
+
+  // The day is reloaded, not patched, when a Reading for this Device lands on it: the
+  // summary and the chart both change, and the server is the one that cuts the day.
+  const loaded = state.status === 'ready' ? state.data : undefined;
+  const reloadTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useEffect(() => () => clearTimeout(reloadTimer.current), []);
+  const stream = useReadingStream({
+    onReading: (event) => {
+      if (loaded === undefined || event.device !== loaded.device.hostname) return;
+      const at = event.reading.recordedAt;
+      if (at >= loaded.to && followsToday) {
+        // Past midnight on a page left open: the Reading belongs to the new day, so show that day.
+        onDayRolledOver();
+        return;
       }
-    };
+      if (at < loaded.from || at >= loaded.to) return;
+      clearTimeout(reloadTimer.current);
+      reloadTimer.current = setTimeout(() => void reload(), LIVE_RELOAD_DELAY_MS);
+    },
+    onReconnect: () => void reload(),
+  });
 
-    eventSource.onerror = (error) => {
-      console.error('SSE Error:', error);
-      eventSource.close();
-    };
-
-    return () => {
-      if (reloadTimeout) clearTimeout(reloadTimeout);
-      eventSource.close();
-    };
-  }, [device, loadHistory]);
-
-  const formatTime = (time: string) => {
-    const parts = time.split(':');
-    if (parts.length >= 2) {
-      const hour = parseInt(parts[0]);
-      const minute = parts[1];
-      const ampm = hour >= 12 ? 'AM' : 'PM';
-      const displayHour = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
-      return `${displayHour}:${minute} ${ampm}`;
-    }
-    return time;
+  // Reset needs the Admin token. A 401 opens the same prompt Settings uses: "needed" when
+  // none was stored, "rejected" when the stored one was refused (and is then forgotten).
+  const token = useAdminToken();
+  const [prompt, setPrompt] = useState<'closed' | 'needed' | 'rejected'>('closed');
+  const onUnauthorised = useCallback(() => {
+    setPrompt(getAdminToken() === null ? 'needed' : 'rejected');
+    clearAdminToken();
+  }, []);
+  const change = useChange(onUnauthorised);
+  const reset = async () => {
+    if (await change.run(() => resetHistory(deviceId))) await reload();
   };
 
-  // Transform data for chart - sample if too many points to avoid freezing
-  const maxChartPoints = 100;
-  const sampledHistory = history.length > maxChartPoints 
-    ? history.filter((_, i) => i % Math.ceil(history.length / maxChartPoints) === 0)
-    : history;
+  if (state.status === 'loading') return <DaySkeleton />;
 
-  const chartData = sampledHistory
-    .slice()
-    .reverse() // Reverse so oldest is on left, newest on right
-    .map((record) => ({
-      time: formatTime(record.TIME),
-      temperature: record.TEMP,
-      fullDate: record.DATE,
-    }));
+  if (state.status === 'error') {
+    return (
+      <div className="flex-1 space-y-6">
+        <PageHeading title="History" subtitle={formatDayLong(date)} />
+        <Placeholder role="alert">
+          <p className="flex items-center gap-2 text-sm">
+            <AlertCircle className="size-4 text-destructive" aria-hidden />
+            {state.message}
+          </p>
+          {state.message === 'Device not found' ? (
+            <Button asChild variant="outline" size="sm">
+              <Link to="/">Back to the dashboard</Link>
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" onClick={() => void reload()}>
+              Try again
+            </Button>
+          )}
+        </Placeholder>
+      </div>
+    );
+  }
 
-  const chartConfig = {
-    temperature: {
-      label: "Temperature",
-      color: "hsl(217.2 91.2% 59.8%)", // Blue color
-    },
-  } satisfies ChartConfig;
-
-  // Calculate stats
-  const avgTemp = history.length > 0
-    ? Math.round(history.reduce((sum, h) => sum + h.TEMP, 0) / history.length)
-    : 0;
-  
-  const maxTemp = history.length > 0 ? Math.max(...history.map(h => h.TEMP)) : 0;
-  const minTemp = history.length > 0 ? Math.min(...history.map(h => h.TEMP)) : 0;
-  
-  const tempTrend = history.length >= 2
-    ? history[history.length - 1].TEMP - history[0].TEMP
-    : 0;
-
-  // Pagination
-  const totalPages = Math.ceil(history.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const endIndex = startIndex + itemsPerPage;
-  const paginatedHistory = history.slice(startIndex, endIndex);
+  const history = state.data;
+  const { device, readings, summary } = history;
+  const isToday = date === today();
 
   return (
-    <div className="flex-1 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={() => navigate('/')}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </Button>
-          <div>
-            <h2 className="text-3xl font-bold tracking-tight">Temperature History</h2>
-            <p className="text-muted-foreground">{device}</p>
+    <div className="flex-1 space-y-6">
+      <PageHeading
+        title={device.closet}
+        subtitle={
+          <>
+            {device.campus.name} · <span className="font-mono text-sm">{device.hostname}</span>
+          </>
+        }
+        tag={
+          device.closetType && (
+            <Badge variant="outline" className={cn(device.closetType === 'MDF' && 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300')}>
+              {device.closetType}
+            </Badge>
+          )
+        }
+        actions={
+          <div className="flex items-center gap-3">
+            {/* A past day never changes, so only today says whether Readings are arriving. */}
+            {isToday && <LiveStatus status={stream} />}
+            {/* Not gated on the day shown: reset is the whole history, and a junk board's Readings may all be on other days. */}
+            <ResetButton closet={device.closet} disabled={change.pending} pending={change.pending} onConfirm={() => void reset()} />
           </div>
-        </div>
-        
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="destructive" size="sm" disabled={loading || history.length === 0}>
-              <Trash2 className="h-4 w-4 mr-2" />
-              Reset History
+        }
+      />
+
+      {prompt !== 'closed' && (
+        <AdminTokenPanel
+          action="Resetting a Device's history"
+          hasToken={token !== null}
+          rejected={prompt === 'rejected'}
+          onSave={(value) => {
+            setAdminToken(value);
+            setPrompt('closed');
+          }}
+          onForget={() => {
+            clearAdminToken();
+            setPrompt('closed');
+          }}
+        />
+      )}
+
+      {change.error && (
+        <p role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+          <AlertCircle className="size-4 shrink-0 text-destructive" aria-hidden />
+          {change.error}
+        </p>
+      )}
+
+      <DayPicker date={date} onShowDay={onShowDay} />
+
+      <DaySummaryTiles summary={summary} readings={readings} />
+
+      {readings.length === 0 ? (
+        <Placeholder>
+          <p className="font-medium">No Readings on {formatDayShort(date)}</p>
+          <p className="max-w-sm text-sm text-muted-foreground">
+            {isToday ? 'Nothing has arrived from this Device yet today. New Readings appear here as they come in.' : 'This Device sent nothing that day, or its Readings have since been deleted.'}
+          </p>
+          {!isToday && (
+            <Button variant="outline" size="sm" onClick={() => onShowDay(today())}>
+              Show today
             </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Are you sure?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This will permanently delete all temperature history for <strong>{device}</strong>. 
-                This action cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction onClick={handleResetHistory} disabled={isResetting}>
-                {isResetting ? 'Resetting...' : 'Reset History'}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
-
-      {loading && (
-        <div className="flex items-center justify-center p-8">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto"></div>
-            <p className="mt-2 text-sm text-muted-foreground">Loading history...</p>
-          </div>
-        </div>
-      )}
-
-      {error && (
-        <div className="bg-destructive/20 text-destructive border border-destructive rounded-lg p-4">
-          {error}
-        </div>
-      )}
-
-      {!loading && !error && history.length === 0 && (
-        <Card>
-          <CardContent className="p-8 text-center">
-            <p className="text-muted-foreground">No history data available for this device.</p>
-          </CardContent>
-        </Card>
-      )}
-
-      {!loading && !error && history.length > 0 && (
+          )}
+        </Placeholder>
+      ) : (
         <>
-          {/* Stats Cards */}
-          <div className="grid gap-4 md:grid-cols-4">
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Average</p>
-                    <h3 className="text-2xl font-bold">
-                      <NumberFlow value={avgTemp} suffix="°F" />
-                    </h3>
-                  </div>
-                  <Thermometer className="h-8 w-8 text-muted-foreground" />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Maximum</p>
-                    <h3 className="text-2xl font-bold">
-                      <NumberFlow value={maxTemp} suffix="°F" />
-                    </h3>
-                  </div>
-                  <TrendingUp className="h-8 w-8 text-red-500" />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Minimum</p>
-                    <h3 className="text-2xl font-bold">
-                      <NumberFlow value={minTemp} suffix="°F" />
-                    </h3>
-                  </div>
-                  <TrendingDown className="h-8 w-8 text-blue-500" />
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Trend</p>
-                    <h3 className={`text-2xl font-bold ${tempTrend > 0 ? 'text-red-500' : tempTrend < 0 ? 'text-blue-500' : ''}`}>
-                      <NumberFlow value={Math.abs(tempTrend)} suffix="°" prefix={tempTrend > 0 ? '+' : tempTrend < 0 ? '-' : ''} />
-                    </h3>
-                  </div>
-                  {tempTrend > 0 ? (
-                    <TrendingUp className="h-8 w-8 text-red-500" />
-                  ) : tempTrend < 0 ? (
-                    <TrendingDown className="h-8 w-8 text-blue-500" />
-                  ) : (
-                    <Thermometer className="h-8 w-8 text-muted-foreground" />
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Chart Card */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Temperature Over Time</CardTitle>
-              <CardDescription>
-                {date || 'Showing all recorded temperatures'}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ChartContainer config={chartConfig}>
-                <LineChart
-                  accessibilityLayer
-                  data={chartData}
-                  margin={{
-                    left: 12,
-                    right: 12,
-                    top: 12,
-                    bottom: 12,
-                  }}
-                >
-                  <CartesianGrid vertical={false} />
-                  <XAxis
-                    dataKey="time"
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                    minTickGap={32}
-                  />
-                  <YAxis
-                    tickLine={false}
-                    axisLine={false}
-                    tickMargin={8}
-                    tickFormatter={(value) => `${value}°F`}
-                  />
-                  <ChartTooltip
-                    cursor={false}
-                    content={<ChartTooltipContent 
-                      hideLabel 
-                      formatter={(value) => `${value}°F`}
-                    />}
-                  />
-                  <Line
-                    dataKey="temperature"
-                    type="monotone"
-                    stroke="var(--color-temperature)"
-                    strokeWidth={2}
-                    dot={{
-                      fill: "var(--color-temperature)",
-                    }}
-                    activeDot={{
-                      r: 6,
-                    }}
-                  />
-                </LineChart>
-              </ChartContainer>
-            </CardContent>
-          </Card>
-
-          {/* Data Table Card */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Detailed Records</CardTitle>
-              <CardDescription>
-                Showing {startIndex + 1}-{Math.min(endIndex, history.length)} of {history.length} records
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="relative w-full overflow-auto">
-                <table className="w-full caption-bottom text-sm">
-                  <thead className="[&_tr]:border-b">
-                    <tr className="border-b transition-colors hover:bg-muted/50">
-                      <th className="h-12 px-4 text-left align-middle font-medium">Date</th>
-                      <th className="h-12 px-4 text-left align-middle font-medium">Time</th>
-                      <th className="h-12 px-4 text-left align-middle font-medium">Campus</th>
-                      <th className="h-12 px-4 text-left align-middle font-medium">Location</th>
-                      <th className="h-12 px-4 text-left align-middle font-medium">Temperature</th>
-                    </tr>
-                  </thead>
-                  <tbody className="[&_tr:last-child]:border-0">
-                    {paginatedHistory.map((record) => (
-                      <tr
-                        key={record.ID}
-                        className="border-b transition-colors hover:bg-muted/50"
-                      >
-                        <td className="p-4 align-middle">{record.DATE}</td>
-                        <td className="p-4 align-middle">{formatTime(record.TIME)}</td>
-                        <td className="p-4 align-middle">{record.CAMPUS}</td>
-                        <td className="p-4 align-middle">{record.LOCATION}</td>
-                        <td className="p-4 align-middle font-semibold">
-                          {record.TEMP}°F
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              
-              {/* Pagination Controls */}
-              {totalPages > 1 && (
-                <div className="flex items-center justify-between px-2 py-4">
-                  <div className="text-sm text-muted-foreground">
-                    Page {currentPage} of {totalPages}
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                      disabled={currentPage === 1}
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                      disabled={currentPage === totalPages}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          <DayChart history={history} />
+          <ReadingsTable readings={readings} date={date} />
         </>
       )}
     </div>
   );
-};
+}
 
-export default History;
+interface ResetButtonProps {
+  closet: string;
+  disabled: boolean;
+  pending: boolean;
+  onConfirm: () => void;
+}
+
+/** Reset is destructive and permanent, so it sits behind a confirmation that names the Device. */
+function ResetButton({ closet, disabled, pending, onConfirm }: ResetButtonProps) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" size="sm" disabled={disabled} className="text-destructive hover:text-destructive">
+          <Trash2 aria-hidden />
+          {pending ? 'Resetting…' : 'Reset history'}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Reset the history of {closet}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Every Reading this Device has ever sent is deleted, not just the day on screen. The Device itself stays and keeps reporting. This cannot be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep it</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm} className="bg-destructive text-white hover:bg-destructive/90">
+            Delete all Readings
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+interface DayPickerProps {
+  date: string;
+  onShowDay: (day: string) => void;
+}
+
+/** Previous, the day itself (a native date field, so any day is one pick away), next, and a way back to today. */
+function DayPicker({ date, onShowDay }: DayPickerProps) {
+  const isToday = date === today();
+  return (
+    <nav aria-label="Day" className="flex flex-wrap items-center gap-2">
+      <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, -1))} aria-label="Previous day">
+        <ChevronLeft aria-hidden />
+      </Button>
+      <label className="relative">
+        <span className="sr-only">Day shown</span>
+        <input
+          type="date"
+          value={date}
+          max={today()}
+          onChange={(event) => {
+            if (isDateString(event.target.value)) onShowDay(event.target.value);
+          }}
+          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        />
+      </label>
+      <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, 1))} disabled={isToday} aria-label="Next day">
+        <ChevronRight aria-hidden />
+      </Button>
+      <p className="ml-1 text-sm font-medium">{isToday ? `Today, ${formatDayLong(date)}` : formatDayLong(date)}</p>
+      {!isToday && (
+        <Button variant="ghost" size="sm" onClick={() => onShowDay(today())}>
+          Today
+        </Button>
+      )}
+    </nav>
+  );
+}
+
+const lowHigh = (s: DaySummary, unit: string): string => `Low ${s.min}${unit} · High ${s.max}${unit}`;
+
+/** The day's numbers, in the dashboard's tiles: averages headline, lows and highs beneath. */
+function DaySummaryTiles({ summary, readings }: { summary: HistoryPayload['summary']; readings: Reading[] }) {
+  const span =
+    readings.length === 0 ? 'None yet' : readings.length === 1 ? `At ${formatTime(readings[0].recordedAt)}` : `${formatTime(readings[0].recordedAt)} to ${formatTime(readings[readings.length - 1].recordedAt)}`;
+  return (
+    <dl className="grid gap-4 sm:grid-cols-3">
+      <Tile
+        label="Average temperature"
+        value={summary.tempF === null ? <NoValue /> : <NumberFlow value={summary.tempF.avg} suffix="°F" />}
+        note={summary.tempF === null ? 'No Readings' : lowHigh(summary.tempF, '°')}
+      />
+      <Tile
+        label="Average humidity"
+        value={summary.humidity === null ? <NoValue /> : <NumberFlow value={summary.humidity.avg} suffix="%" />}
+        note={summary.humidity === null ? (readings.length === 0 ? 'No Readings' : 'No humidity in these Readings') : lowHigh(summary.humidity, '%')}
+      />
+      <Tile label="Readings" value={<NumberFlow value={readings.length} />} note={span} />
+    </dl>
+  );
+}
+
+const chartConfig = {
+  tempF: { label: 'Temperature', color: 'var(--chart-1)' },
+  humidity: { label: 'Humidity', color: 'var(--chart-2)' },
+} satisfies ChartConfig;
+
+const MS_PER_HOUR = 3_600_000;
+
+/** An axis range on multiples of five with a step of room either side, so ticks land on round numbers and a flat day is not a line along the edge. */
+function niceDomain(values: number[], step = 5): [number, number] {
+  if (values.length === 0) return [0, step];
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  return [Math.floor((min - 1) / step) * step, Math.ceil((max + 1) / step) * step];
+}
+
+/** Both series over the whole day, midnight to midnight, so a quiet hour reads as a gap and not as a shorter day. */
+function DayChart({ history }: { history: HistoryPayload }) {
+  const from = Date.parse(history.from);
+  const to = Date.parse(history.to);
+  const data = useMemo(() => history.readings.map((r) => ({ at: Date.parse(r.recordedAt), tempF: r.tempF, humidity: r.humidity })), [history.readings]);
+  // A tick every three hours from midnight; the closing midnight is the last one.
+  const ticks = useMemo(() => {
+    const out: number[] = [];
+    for (let t = from; t <= to; t += 3 * MS_PER_HOUR) out.push(t);
+    return out;
+  }, [from, to]);
+  const tempDomain = useMemo(() => niceDomain(data.map((d) => d.tempF)), [data]);
+  const humidityDomain = useMemo(() => niceDomain(data.flatMap((d) => (d.humidity === null ? [] : [d.humidity]))), [data]);
+  // Dots on a few points help; on a full day of 30-second Readings they are noise.
+  const sparse = data.length <= 48;
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Over the day</CardTitle>
+        <CardDescription>Temperature on the left axis, humidity on the right.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <ChartContainer config={chartConfig} className="aspect-auto h-64 w-full sm:h-80">
+          <LineChart accessibilityLayer data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+            <CartesianGrid vertical={false} />
+            <XAxis
+              dataKey="at"
+              type="number"
+              scale="time"
+              domain={[from, to]}
+              ticks={ticks}
+              tickFormatter={(value: number) => (value === to ? '12 AM' : formatHour(value))}
+              tickLine={false}
+              axisLine={false}
+              tickMargin={8}
+              minTickGap={24}
+            />
+            {/* Whole degrees and whole percent, as the DHT11 reports them. */}
+            <YAxis yAxisId="tempF" width={44} tickLine={false} axisLine={false} tickMargin={4} tickFormatter={(v: number) => `${v}°`} domain={tempDomain} allowDecimals={false} />
+            <YAxis yAxisId="humidity" orientation="right" width={40} tickLine={false} axisLine={false} tickMargin={4} tickFormatter={(v: number) => `${v}%`} domain={humidityDomain} allowDecimals={false} />
+            <ChartTooltip
+              cursor={{ strokeDasharray: '3 3' }}
+              content={
+                <ChartTooltipContent
+                  labelFormatter={(_label, payload) => {
+                    const at = payload?.[0]?.payload?.at as number | undefined;
+                    return at === undefined ? '' : formatTimeSeconds(at);
+                  }}
+                  formatter={(value, name) => (
+                    <div className="flex flex-1 items-center justify-between gap-4">
+                      <span className="text-muted-foreground">{chartConfig[name as keyof typeof chartConfig]?.label ?? name}</span>
+                      <span className="font-mono font-medium tabular-nums">
+                        {value}
+                        {name === 'tempF' ? '°F' : '%'}
+                      </span>
+                    </div>
+                  )}
+                />
+              }
+            />
+            <ChartLegend content={<ChartLegendContent />} />
+            <Line yAxisId="tempF" dataKey="tempF" type="monotone" stroke="var(--color-tempF)" strokeWidth={2} dot={sparse} activeDot={{ r: 4 }} isAnimationActive={false} />
+            <Line yAxisId="humidity" dataKey="humidity" type="monotone" stroke="var(--color-humidity)" strokeWidth={2} strokeDasharray="4 3" dot={sparse} activeDot={{ r: 4 }} isAnimationActive={false} />
+          </LineChart>
+        </ChartContainer>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Every Reading of the day, newest first, a page at a time so a full day of 2,880 Readings stays quick. */
+function ReadingsTable({ readings, date }: { readings: Reading[]; date: string }) {
+  const [page, setPage] = useState(1);
+  const newestFirst = useMemo(() => readings.slice().reverse(), [readings]);
+  const pages = Math.max(1, Math.ceil(newestFirst.length / ROWS_PER_PAGE));
+  const current = Math.min(page, pages);
+  const start = (current - 1) * ROWS_PER_PAGE;
+  const rows = newestFirst.slice(start, start + ROWS_PER_PAGE);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Readings</CardTitle>
+        <CardDescription>
+          Newest first. {readings.length === 1 ? 'One Reading' : `${readings.length.toLocaleString()} Readings`} on {formatDayShort(date)}.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {/* The page keeps its shape whatever the day holds: the rows scroll inside, under a header that stays put. */}
+        <div className="max-h-[30rem] overflow-y-auto rounded-md border">
+        <Table>
+          <TableHeader className="sticky top-0 z-10 bg-card">
+            <TableRow>
+              <TableHead className="pl-4">Time</TableHead>
+              <TableHead className="text-right">Temperature</TableHead>
+              <TableHead className="pr-4 text-right">Humidity</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((reading, i) => (
+              // Two Readings can share a second (a board retrying a POST), so the instant alone is not a key.
+              <TableRow key={`${reading.recordedAt}#${start + i}`}>
+                <TableCell className="pl-4 tabular-nums">
+                  <time dateTime={reading.recordedAt}>{formatTimeSeconds(reading.recordedAt)}</time>
+                </TableCell>
+                <TableCell className="text-right font-medium tabular-nums">{reading.tempF}°F</TableCell>
+                <TableCell className="pr-4 text-right tabular-nums">
+                  {reading.humidity === null ? <span className="text-muted-foreground">—</span> : `${reading.humidity}%`}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        </div>
+        {pages > 1 && (
+          <nav aria-label="Readings pages" className="flex flex-wrap items-center justify-between gap-3 pt-4">
+            <p className="text-sm text-muted-foreground tabular-nums">
+              {start + 1}–{Math.min(start + ROWS_PER_PAGE, newestFirst.length)} of {newestFirst.length.toLocaleString()}
+            </p>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setPage(current - 1)} disabled={current === 1}>
+                Newer
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setPage(current + 1)} disabled={current === pages}>
+                Older
+              </Button>
+            </div>
+          </nav>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DaySkeleton() {
+  return (
+    <div className="flex-1 space-y-6" aria-busy aria-label="Loading the day">
+      <div className="flex items-start gap-3">
+        <Skeleton className="size-9 rounded-md" />
+        <div className="space-y-2">
+          <Skeleton className="h-8 w-40" />
+          <Skeleton className="h-4 w-64" />
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Skeleton className="size-9 rounded-md" />
+        <Skeleton className="h-9 w-36 rounded-md" />
+        <Skeleton className="size-9 rounded-md" />
+        <Skeleton className="ml-1 h-4 w-56" />
+      </div>
+      <div className="grid gap-4 sm:grid-cols-3">
+        {Array.from({ length: 3 }, (_, i) => (
+          <Skeleton key={i} className="h-[6.5rem] rounded-xl" />
+        ))}
+      </div>
+      <Skeleton className="h-96 rounded-xl" />
+    </div>
+  );
+}

@@ -154,7 +154,7 @@ export function DeviceCard({ device, secondsSinceReading, reportIntervalSeconds 
         )}
 
         <Button asChild size="sm" variant="outline" className="shrink-0">
-          <Link to={`/history?device=${encodeURIComponent(device.hostname)}`} aria-label={`History for ${device.closet}`}>
+          <Link to={`/history/${device.id}`} aria-label={`History for ${device.closet}`}>
             <History aria-hidden />
             History
           </Link>

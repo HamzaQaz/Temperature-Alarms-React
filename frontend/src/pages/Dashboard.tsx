@@ -5,8 +5,9 @@ import { AlertCircle, RefreshCw } from 'lucide-react';
 import { getCampuses, getDashboard } from '@/api';
 import { LiveStatus } from '@/components/LiveStatus';
 import { DeviceCard } from '@/components/DeviceCard';
+import { Placeholder } from '@/components/Placeholder';
+import { NoValue, Tile } from '@/components/Tile';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent } from '@/components/ui/card';
 import { hasWarningOrWorse, isWarningOrWorse } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -218,42 +219,6 @@ function Summary({ devices }: { devices: DashboardDevice[] }) {
       <Tile label="Average temperature" value={avgTemp === null ? <NoValue /> : <NumberFlow value={avgTemp} suffix="°F" />} note={reportingNote} />
       <Tile label="Average humidity" value={avgHumidity === null ? <NoValue /> : <NumberFlow value={avgHumidity} suffix="%" />} note={reportingNote} />
     </dl>
-  );
-}
-
-const NoValue = () => (
-  <span className="font-normal text-muted-foreground" aria-label="No value">
-    –
-  </span>
-);
-
-interface TileProps {
-  label: string;
-  value: React.ReactNode;
-  note: string;
-  noteTone?: 'muted' | 'warn';
-}
-
-function Tile({ label, value, note, noteTone = 'muted' }: TileProps) {
-  return (
-    <Card className="gap-1 py-4">
-      <CardContent className="px-5">
-        <dt className="text-sm text-muted-foreground">{label}</dt>
-        <dd className="mt-1 text-3xl font-semibold tabular-nums leading-none tracking-tight">{value}</dd>
-        <dd className={noteTone === 'warn' ? 'mt-2 text-xs font-medium text-amber-700 dark:text-amber-400' : 'mt-2 text-xs text-muted-foreground'}>
-          {note}
-        </dd>
-      </CardContent>
-    </Card>
-  );
-}
-
-/** The dashed panel that stands in for the device grid when there is nothing to show. */
-function Placeholder({ children, ...props }: React.ComponentProps<'div'>) {
-  return (
-    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-16 text-center" {...props}>
-      {children}
-    </div>
   );
 }
 

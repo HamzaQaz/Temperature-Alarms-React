@@ -1,4 +1,4 @@
-import type { Device, Campus, TemperatureData, Dashboard } from './types';
+import type { Device, Campus, Dashboard, History } from './types';
 import { getAdminToken } from './lib/adminToken';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
@@ -103,12 +103,18 @@ export const getDashboard = (campus?: string): Promise<Dashboard> =>
  */
 export const openDashboardStream = (): EventSource => new EventSource(`${API_BASE_URL}/api/dashboard/stream`);
 
-// ==================== HISTORY (legacy shape until ticket 10) ====================
+// ==================== HISTORY ====================
 
-export const getTemperatureHistory = (deviceName: string, date?: string): Promise<TemperatureData[]> =>
-  request(
-    `/api/temperature/${encodeURIComponent(deviceName)}/history${date ? `?date=${encodeURIComponent(date)}` : ''}`,
-  );
+/** The zone this browser is in, so the server cuts the day where the technician's midnight falls. */
+const browserTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-export const resetTemperatureHistory = (deviceName: string): Promise<void> =>
-  request(`/api/temperature/${encodeURIComponent(deviceName)}/history`, { method: 'DELETE' });
+/** One local day of a Device's Readings with the day's numbers. Today when `date` is omitted. */
+export const getHistory = (deviceId: number, date?: string): Promise<History> => {
+  const query = new URLSearchParams({ tz: browserTimeZone() });
+  if (date) query.set('date', date);
+  return request(`/api/devices/${deviceId}/history?${query}`);
+};
+
+/** Delete every Reading the Device has. Needs the Admin token. */
+export const resetHistory = (deviceId: number): Promise<void> =>
+  request(`/api/devices/${deviceId}/history`, { method: 'DELETE' });
