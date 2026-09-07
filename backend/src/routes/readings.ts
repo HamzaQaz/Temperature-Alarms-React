@@ -4,6 +4,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireDeviceToken } from '../auth';
 import type { AppDeps } from '../deps';
 import { closetType } from '../closet';
+import { conditionsFor, offlineAfterSeconds, type ConditionRules } from '../conditions';
 
 interface DeviceIdRow extends RowDataPacket {
   id: number;
@@ -98,9 +99,6 @@ interface DashboardRow extends RowDataPacket {
   recordedAt: Date | null;
 }
 
-/** Offline after three consecutive missed reports; Online while the last Reading is within that window. */
-const MISSED_REPORTS_BEFORE_OFFLINE = 3;
-
 /**
  * Every Device with its latest Reading, in one statement. The correlated subquery walks
  * ix_readings_device_recorded backwards one step per Device.
@@ -119,10 +117,11 @@ const SELECT_DASHBOARD = `
   )`;
 const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
 
-function toDashboardDevice(row: DashboardRow, now: Date, offlineAfterSeconds: number) {
+function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules) {
   const { id, hostname, closet, campusId, campusName, campusShortcode, tempF, humidity, recordedAt } = row;
   const latest = recordedAt === null || tempF === null ? null : { tempF, humidity, recordedAt };
   const secondsSinceReading = latest === null ? null : Math.max(0, Math.floor((now.getTime() - latest.recordedAt.getTime()) / 1000));
+  const conditions = conditionsFor({ reading: latest, secondsSinceReading, ...rules });
   return {
     id,
     hostname,
@@ -130,16 +129,19 @@ function toDashboardDevice(row: DashboardRow, now: Date, offlineAfterSeconds: nu
     closet,
     closetType: closetType(closet),
     latestReading: latest === null ? null : { ...latest, recordedAt: latest.recordedAt.toISOString() },
-    online: secondsSinceReading !== null && secondsSinceReading <= offlineAfterSeconds,
+    // Online is the absence of the Offline Condition, so the flag and the badge can never disagree.
+    online: !conditions.some((c) => c.name === 'Offline'),
     secondsSinceReading,
+    /** Worst first; the browser renders these and computes none of its own. */
+    conditions,
   };
 }
 
 /** Dashboard (GET /api/dashboard?campus=SHORTCODE). Its SSE stream is added by ticket 09. */
 export function dashboardRouter({ pool, config, now = () => new Date() }: AppDeps): Router {
   const router = Router();
-  const { reportIntervalSeconds } = config;
-  const offlineAfterSeconds = MISSED_REPORTS_BEFORE_OFFLINE * reportIntervalSeconds;
+  const { reportIntervalSeconds, thresholds } = config;
+  const rules: ConditionRules = { reportIntervalSeconds, thresholds };
 
   router.get('/', async (req, res, next) => {
     const campus = typeof req.query.campus === 'string' ? req.query.campus.trim() : '';
@@ -150,8 +152,8 @@ export function dashboardRouter({ pool, config, now = () => new Date() }: AppDep
       const at = now();
       res.json({
         reportIntervalSeconds,
-        offlineAfterSeconds,
-        devices: rows.map((row) => toDashboardDevice(row, at, offlineAfterSeconds)),
+        offlineAfterSeconds: offlineAfterSeconds(reportIntervalSeconds, thresholds),
+        devices: rows.map((row) => toDashboardDevice(row, at, rules)),
       });
     } catch (error) {
       next(error);

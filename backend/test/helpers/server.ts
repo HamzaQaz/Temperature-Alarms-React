@@ -3,6 +3,7 @@ import type { Pool } from 'mysql2/promise';
 import type { Server } from 'node:http';
 import { createApp } from '../../src/app';
 import type { Config } from '../../src/config';
+import { DEFAULT_THRESHOLDS } from '../../src/conditions';
 import type { AppDeps } from '../../src/deps';
 import { testDatabaseConfig } from './database';
 
@@ -18,6 +19,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     deviceToken: TEST_DEVICE_TOKEN,
     reportIntervalSeconds: 30,
     retentionDays: 90,
+    thresholds: DEFAULT_THRESHOLDS,
     ...overrides,
   };
 }

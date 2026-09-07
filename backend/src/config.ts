@@ -1,4 +1,5 @@
 import type { DatabaseConfig } from './db';
+import { DEFAULT_THRESHOLDS, type Thresholds } from './conditions';
 
 /** Everything the backend reads from the environment, read once at startup. */
 export interface Config {
@@ -14,6 +15,8 @@ export interface Config {
   reportIntervalSeconds: number;
   /** How long raw Readings are kept before the retention job deletes them. */
   retentionDays: number;
+  /** Where Hot, Cold, Dry, and Offline begin. Mold risk is a fixed rule (see conditions.ts). */
+  thresholds: Thresholds;
 }
 
 export class ConfigError extends Error {
@@ -38,14 +41,36 @@ function required(env: Env, name: string): string {
   return value;
 }
 
-function positiveInteger(env: Env, name: string, fallback: number): number {
+/** An integer from the environment, or the fallback when unset. `min` rejects anything below it. */
+function integer(env: Env, name: string, fallback: number, { min }: { min?: number } = {}): number {
   const raw = present(env, name);
   if (raw === undefined) return fallback;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new ConfigError(`${name} must be a positive integer, got "${raw}"`);
+  if (!Number.isInteger(value) || (min !== undefined && value < min)) {
+    const kind = min === 1 ? 'a positive integer' : min === undefined ? 'an integer' : `an integer of at least ${min}`;
+    throw new ConfigError(`${name} must be ${kind}, got "${raw}"`);
   }
   return value;
+}
+
+const positiveInteger = (env: Env, name: string, fallback: number): number => integer(env, name, fallback, { min: 1 });
+
+/** Thresholds from the environment, each defaulting to the agreed number. Hot critical must sit above Hot warning, and Cold below it. */
+function thresholds(env: Env): Thresholds {
+  const t: Thresholds = {
+    hotWarningF: integer(env, 'HOT_WARNING_F', DEFAULT_THRESHOLDS.hotWarningF),
+    hotCriticalF: integer(env, 'HOT_CRITICAL_F', DEFAULT_THRESHOLDS.hotCriticalF),
+    coldWarningF: integer(env, 'COLD_WARNING_F', DEFAULT_THRESHOLDS.coldWarningF),
+    dryWarningPercent: integer(env, 'DRY_WARNING_PERCENT', DEFAULT_THRESHOLDS.dryWarningPercent),
+    missedReportsBeforeOffline: positiveInteger(env, 'MISSED_REPORTS_BEFORE_OFFLINE', DEFAULT_THRESHOLDS.missedReportsBeforeOffline),
+  };
+  if (t.hotCriticalF <= t.hotWarningF) {
+    throw new ConfigError(`HOT_CRITICAL_F (${t.hotCriticalF}) must be above HOT_WARNING_F (${t.hotWarningF})`);
+  }
+  if (t.coldWarningF >= t.hotWarningF) {
+    throw new ConfigError(`COLD_WARNING_F (${t.coldWarningF}) must be below HOT_WARNING_F (${t.hotWarningF})`);
+  }
+  return t;
 }
 
 /** Build the config from an environment, throwing a ConfigError that names every problem. */
@@ -68,5 +93,6 @@ export function loadConfig(env: Env = process.env): Config {
     deviceToken: required(env, 'DEVICE_TOKEN'),
     reportIntervalSeconds: positiveInteger(env, 'REPORT_INTERVAL_SECONDS', 30),
     retentionDays: positiveInteger(env, 'RETENTION_DAYS', 90),
+    thresholds: thresholds(env),
   };
 }

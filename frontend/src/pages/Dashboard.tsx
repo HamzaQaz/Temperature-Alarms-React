@@ -6,7 +6,7 @@ import { getCampuses, getDashboard } from '@/api';
 import { DeviceCard } from '@/components/DeviceCard';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { getMoldRiskLevel } from '@/lib/moldRisk';
+import { hasWarningOrWorse, isWarningOrWorse } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useNow } from '@/hooks/use-now';
@@ -155,12 +155,14 @@ const mean = (values: number[]): number | null =>
 
 /** Headline before the detail. Averages ignore Devices with no Reading so an empty closet does not drag them to zero. */
 function Summary({ devices }: { devices: DashboardDevice[] }) {
-  const { offline, alerts, reporting, avgTemp, avgHumidity } = useMemo(() => {
+  const { offline, attention, attentionNames, reporting, avgTemp, avgHumidity } = useMemo(() => {
     const readings = devices.flatMap((d) => (d.latestReading ? [d.latestReading] : []));
+    const flagged = devices.filter(hasWarningOrWorse);
     return {
       offline: devices.filter((d) => !d.online).length,
-      // Mold risk is the one Condition the browser still computes; ticket 08 counts server Conditions here instead.
-      alerts: readings.filter((r) => getMoldRiskLevel(r.tempF, r.humidity) !== 'none').length,
+      attention: flagged.length,
+      // Only the Conditions behind the count, in the server's worst-first order, without repeats.
+      attentionNames: [...new Set(flagged.flatMap((d) => d.conditions.filter(isWarningOrWorse).map((c) => c.name)))],
       reporting: readings.length,
       avgTemp: mean(readings.map((r) => r.tempF)),
       avgHumidity: mean(readings.flatMap((r) => (r.humidity === null ? [] : [r.humidity]))),
@@ -178,10 +180,10 @@ function Summary({ devices }: { devices: DashboardDevice[] }) {
         noteTone={offline > 0 ? 'warn' : 'muted'}
       />
       <Tile
-        label="Alerts"
-        value={<NumberFlow value={alerts} />}
-        note={alerts === 0 ? 'No mold risk' : `Mold risk in ${alerts} ${alerts === 1 ? 'closet' : 'closets'}`}
-        noteTone={alerts > 0 ? 'warn' : 'muted'}
+        label="Need attention"
+        value={<NumberFlow value={attention} />}
+        note={attention === 0 ? 'No Condition at warning or worse' : attentionNames.join(' · ')}
+        noteTone={attention > 0 ? 'warn' : 'muted'}
       />
       <Tile label="Average temperature" value={avgTemp === null ? <NoValue /> : <NumberFlow value={avgTemp} suffix="°F" />} note={reportingNote} />
       <Tile label="Average humidity" value={avgHumidity === null ? <NoValue /> : <NumberFlow value={avgHumidity} suffix="%" />} note={reportingNote} />

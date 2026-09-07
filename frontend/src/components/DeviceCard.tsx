@@ -4,10 +4,10 @@ import { History, Wifi, WifiOff } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card';
-import { getMoldRiskLevel } from '@/lib/moldRisk';
+import { levelLook, worstCondition } from '@/lib/conditions';
 import { formatAge, secondsUntilNextReport } from '@/lib/reportTiming';
 import { cn } from '@/lib/utils';
-import type { DashboardDevice } from '@/types';
+import type { Condition, DashboardDevice } from '@/types';
 
 interface DeviceCardProps {
   device: DashboardDevice;
@@ -49,37 +49,47 @@ function Measure({ label, value, unit, size, dimmed }: MeasureProps) {
   );
 }
 
-/** Online while the last Reading is within three Report intervals; the server decides. */
-function OnlineBadge({ online }: { online: boolean }) {
-  return online ? (
+/**
+ * Online, or the Offline Condition. The server decides; Offline is shown here rather than
+ * among the other badges so the card carries it once, in the place the eye already checks.
+ */
+function OnlineBadge({ offline }: { offline: Condition | undefined }) {
+  return offline === undefined ? (
     <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
       <Wifi aria-hidden />
       Online
     </Badge>
   ) : (
-    <Badge variant="secondary" className="text-muted-foreground">
+    <Badge className={levelLook(offline.level).badge}>
       <WifiOff aria-hidden />
       Offline
     </Badge>
   );
 }
 
+/** One badge per active Condition, sized to be read from across a room. */
+function ConditionBadge({ condition }: { condition: Condition }) {
+  return (
+    <Badge className={cn('px-2.5 py-1 text-sm font-semibold', levelLook(condition.level).badge)}>
+      {condition.name}
+      <span className="font-normal opacity-80">· {condition.level}</span>
+    </Badge>
+  );
+}
+
 /** One Device: where it is, what it last reported, and whether it is still reporting. */
 export function DeviceCard({ device, secondsSinceReading, reportIntervalSeconds }: DeviceCardProps) {
-  const { latestReading, online } = device;
+  const { latestReading, online, conditions } = device;
   const titleId = `device-${device.id}-title`;
-  // Mold risk is the one Condition the browser still computes; ticket 08 moves it to the server.
-  const moldRisk = latestReading ? getMoldRiskLevel(latestReading.tempF, latestReading.humidity) : 'none';
+  const offline = conditions.find((c) => c.name === 'Offline');
+  const readingConditions = conditions.filter((c) => c.name !== 'Offline');
+  const worst = worstCondition(conditions);
 
   return (
     <Card
       role="article"
       aria-labelledby={titleId}
-      className={cn(
-        'w-full gap-4 py-5 transition-colors',
-        moldRisk === 'high' && 'border-destructive',
-        moldRisk === 'moderate' && 'border-amber-500/70',
-      )}
+      className={cn('w-full gap-4 py-5 transition-colors', worst && levelLook(worst.level).border)}
     >
       <CardHeader className="gap-1 px-5">
         <div className="flex items-start justify-between gap-3">
@@ -101,7 +111,7 @@ export function DeviceCard({ device, secondsSinceReading, reportIntervalSeconds 
               )}
             </div>
           </div>
-          <OnlineBadge online={online} />
+          <OnlineBadge offline={offline} />
         </div>
       </CardHeader>
 
@@ -116,19 +126,18 @@ export function DeviceCard({ device, secondsSinceReading, reportIntervalSeconds 
             <Measure label="Humidity" value={latestReading.humidity} unit="%" size="md" dimmed={!online} />
           </div>
         )}
-        {moldRisk !== 'none' && (
-          <div className="flex flex-wrap gap-1.5">
-            <Badge
-              variant={moldRisk === 'high' ? 'destructive' : 'secondary'}
-              className={cn(moldRisk === 'moderate' && 'bg-amber-500/15 text-amber-700 dark:text-amber-400')}
-            >
-              Mold risk · {moldRisk}
-            </Badge>
-          </div>
+        {readingConditions.length > 0 && (
+          <ul className="flex flex-wrap gap-1.5" aria-label="Conditions">
+            {readingConditions.map((condition) => (
+              <li key={condition.name}>
+                <ConditionBadge condition={condition} />
+              </li>
+            ))}
+          </ul>
         )}
       </CardContent>
 
-      <CardFooter className="justify-between gap-3 border-t px-5 pt-4 text-sm text-muted-foreground">
+      <CardFooter className="mt-auto justify-between gap-3 border-t px-5 pt-4 text-sm text-muted-foreground">
         {latestReading === null || secondsSinceReading === null ? (
           <span>Never reported</span>
         ) : (

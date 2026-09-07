@@ -38,5 +38,5 @@ The single shared secret that authorises changes to Devices, Campuses, and histo
 The single shared secret every Device sends with each Reading.
 
 **Condition**:
-A named state a Device's latest Reading is in, computed from fixed global thresholds: Hot, Cold, Dry, Mold risk, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
+A named state a Device's latest Reading is in, computed on the server from global thresholds set once in the backend configuration: Hot, Cold, Dry, Mold risk, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
 _Avoid_: Alert, alarm, risk, status

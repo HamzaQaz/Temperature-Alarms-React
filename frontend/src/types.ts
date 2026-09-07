@@ -24,6 +24,17 @@ export interface Reading {
 
 export type ClosetType = 'IDF' | 'MDF';
 
+export type ConditionName = 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Offline';
+
+/** Worst first: critical, high, warning, moderate. Mold risk uses moderate/high; the rest warning/critical. */
+export type ConditionLevel = 'critical' | 'high' | 'warning' | 'moderate';
+
+/** A named state the Device's latest Reading is in, decided on the server from fixed thresholds. */
+export interface Condition {
+  name: ConditionName;
+  level: ConditionLevel;
+}
+
 /** A Device as the dashboard shows it: where it is and what it last reported. */
 export interface DashboardDevice {
   id: number;
@@ -32,9 +43,11 @@ export interface DashboardDevice {
   closet: string;
   closetType: ClosetType | null;
   latestReading: Reading | null;
-  /** Computed on the server: the last Reading arrived within three Report intervals. */
+  /** Computed on the server: the Device is not in the Offline Condition. */
   online: boolean;
   secondsSinceReading: number | null;
+  /** Every Condition the Device is in, worst first. The browser renders these and computes none. */
+  conditions: Condition[];
 }
 
 export interface Dashboard {

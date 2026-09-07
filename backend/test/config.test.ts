@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { loadConfig, ConfigError } from '../src/config';
+import { DEFAULT_THRESHOLDS } from '../src/conditions';
 
 const complete = {
   DB_USER: 'temp',
@@ -29,6 +30,7 @@ describe('loadConfig', () => {
     assert.equal(config.deviceToken, 'device-secret');
     assert.equal(config.reportIntervalSeconds, 30);
     assert.equal(config.retentionDays, 90);
+    assert.deepEqual(config.thresholds, DEFAULT_THRESHOLDS);
   });
 
   test('honours every optional override', () => {
@@ -40,6 +42,11 @@ describe('loadConfig', () => {
       DB_PORT: '3307',
       REPORT_INTERVAL_SECONDS: '60',
       RETENTION_DAYS: '30',
+      HOT_WARNING_F: '80',
+      HOT_CRITICAL_F: '95',
+      COLD_WARNING_F: '-10',
+      DRY_WARNING_PERCENT: '25',
+      MISSED_REPORTS_BEFORE_OFFLINE: '5',
     });
     assert.equal(config.port, 4000);
     assert.equal(config.corsOrigin, 'https://example.test');
@@ -47,6 +54,14 @@ describe('loadConfig', () => {
     assert.equal(config.database.port, 3307);
     assert.equal(config.reportIntervalSeconds, 60);
     assert.equal(config.retentionDays, 30);
+    assert.deepEqual(config.thresholds, { hotWarningF: 80, hotCriticalF: 95, coldWarningF: -10, dryWarningPercent: 25, missedReportsBeforeOffline: 5 });
+  });
+
+  test('rejects thresholds that are not integers or are out of order', () => {
+    assert.throws(() => loadConfig({ ...complete, HOT_WARNING_F: 'warm' }), /HOT_WARNING_F/);
+    assert.throws(() => loadConfig({ ...complete, MISSED_REPORTS_BEFORE_OFFLINE: '0' }), /MISSED_REPORTS_BEFORE_OFFLINE/);
+    assert.throws(() => loadConfig({ ...complete, HOT_CRITICAL_F: '82' }), /HOT_CRITICAL_F \(82\) must be above HOT_WARNING_F \(82\)/);
+    assert.throws(() => loadConfig({ ...complete, COLD_WARNING_F: '82' }), /COLD_WARNING_F \(82\) must be below HOT_WARNING_F \(82\)/);
   });
 
   test('names every missing required variable in one message', () => {

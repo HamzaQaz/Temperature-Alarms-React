@@ -4,6 +4,7 @@ import type { Pool } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, json, type Dashboard, type RecordedReading } from './helpers/api';
+import { DEFAULT_THRESHOLDS } from '../src/conditions';
 
 describe('GET /api/dashboard', () => {
   let pool: Pool;
@@ -50,6 +51,7 @@ describe('GET /api/dashboard', () => {
       latestReading: latest.reading,
       online: true,
       secondsSinceReading: entry.secondsSinceReading,
+      conditions: [],
     });
     assert.ok(entry.secondsSinceReading !== null && entry.secondsSinceReading >= 0 && entry.secondsSinceReading <= 5, `just posted: ${entry.secondsSinceReading}`);
   });
@@ -80,8 +82,53 @@ describe('GET /api/dashboard', () => {
         latestReading: null,
         online: false,
         secondsSinceReading: null,
+        conditions: [{ name: 'Offline', level: 'warning' }],
       },
     ]);
+  });
+
+  describe('conditions', () => {
+    const conditionsAfter = async (temp: number, humidity: number) => {
+      const campus = await addCampus();
+      await addDevice(campus.id, 'ESP_A1B2C3', 'IDF 2');
+      await postReading('ESP_A1B2C3', temp, humidity);
+      const { devices } = await client.dashboard.get();
+      return devices[0].conditions;
+    };
+
+    test('a comfortable closet has none', async () => {
+      assert.deepEqual(await conditionsAfter(72, 40), []);
+    });
+
+    test('lists every active Condition with its level, worst first', async () => {
+      assert.deepEqual(await conditionsAfter(85, 75), [
+        { name: 'Mold risk', level: 'high' },
+        { name: 'Hot', level: 'warning' },
+      ]);
+    });
+
+    test('is judged on the latest Reading only, so an old spike does not linger', async () => {
+      const campus = await addCampus();
+      await addDevice(campus.id, 'ESP_A1B2C3', 'IDF 2');
+      await postReading('ESP_A1B2C3', 95, 40);
+      await postReading('ESP_A1B2C3', 72, 40);
+      const { devices } = await client.dashboard.get();
+      assert.deepEqual(devices[0].conditions, []);
+    });
+
+    test('follows the configured thresholds', async () => {
+      const strict = await startServer(pool, testConfig({ thresholds: { ...DEFAULT_THRESHOLDS, hotWarningF: 70, hotCriticalF: 75 } }));
+      try {
+        const campus = await addCampus();
+        await addDevice(campus.id, 'ESP_A1B2C3', 'IDF 2');
+        await postReading('ESP_A1B2C3', 76, 40);
+        const { devices } = await api(strict).dashboard.get();
+        assert.deepEqual(devices[0].conditions, [{ name: 'Hot', level: 'critical' }]);
+        assert.deepEqual((await client.dashboard.get()).devices[0].conditions, [], 'the default server sees the same Reading as fine');
+      } finally {
+        await strict.close();
+      }
+    });
   });
 
   describe('?campus= filter', () => {
@@ -157,11 +204,11 @@ describe('GET /api/dashboard', () => {
 
       const entries = [await entryFor('ESP_000001'), await entryFor('ESP_000002'), await entryFor('ESP_000003')];
       assert.deepEqual(
-        entries.map((e) => [e.online, e.secondsSinceReading]),
+        entries.map((e) => [e.online, e.secondsSinceReading, e.conditions]),
         [
-          [true, 89],
-          [true, 90],
-          [false, 91],
+          [true, 89, []],
+          [true, 90, []],
+          [false, 91, [{ name: 'Offline', level: 'warning' }]],
         ],
       );
     });
@@ -190,7 +237,10 @@ describe('GET /api/dashboard', () => {
         assert.equal(reportIntervalSeconds, 60);
         assert.equal(offlineAfterSeconds, 180);
         assert.equal(devices[0].online, true);
-        assert.equal((await entryFor('ESP_000001')).online, false, 'the 30 s server calls the same reading offline');
+        assert.deepEqual(devices[0].conditions, []);
+        const onThirtySeconds = await entryFor('ESP_000001');
+        assert.equal(onThirtySeconds.online, false, 'the 30 s server calls the same reading offline');
+        assert.deepEqual(onThirtySeconds.conditions, [{ name: 'Offline', level: 'warning' }]);
       } finally {
         await slow.close();
       }

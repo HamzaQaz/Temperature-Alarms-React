@@ -25,6 +25,11 @@ export interface RecordedReading {
   reading: Reading;
 }
 
+export interface Condition {
+  name: 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Offline';
+  level: 'critical' | 'high' | 'warning' | 'moderate';
+}
+
 export interface DashboardDevice {
   id: number;
   hostname: string;
@@ -34,6 +39,8 @@ export interface DashboardDevice {
   latestReading: Reading | null;
   online: boolean;
   secondsSinceReading: number | null;
+  /** Every Condition the Device is in, worst first. */
+  conditions: Condition[];
 }
 
 export interface Dashboard {
