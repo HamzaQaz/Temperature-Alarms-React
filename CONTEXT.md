@@ -5,7 +5,7 @@ Live temperature and humidity monitoring for network closets across school campu
 ## Language
 
 **Device**:
-One NodeMCU board with a DHT11 sensor, installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC).
+One NodeMCU board with a DHT11 sensor, installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings.
 _Avoid_: Sensor, node, board, table
 
 **Reading**:

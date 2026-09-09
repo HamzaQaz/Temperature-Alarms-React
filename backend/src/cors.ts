@@ -15,7 +15,7 @@ export function corsMiddleware(config: Config): RequestHandler {
         callback(new CorsError(origin));
       }
     },
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   });
 }

@@ -135,7 +135,7 @@ export function WrappingCell({ className, ...props }: React.ComponentProps<typeo
   return <TableCell className={cn('max-w-[18rem] whitespace-normal break-words', className)} {...props} />;
 }
 
-/** The panel an inline add form sits in, so every tab's form looks the same. */
+/** The panel an inline form (add or edit) sits in, so every form in Settings looks the same. */
 export function InlineForm({ onSubmit, children, ...props }: React.ComponentProps<'form'>) {
   return (
     <form

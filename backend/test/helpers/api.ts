@@ -115,6 +115,9 @@ export function api(server: RunningServer) {
       url: (path = '') => `${server.url}/api/devices${path}`,
       list: async () => json<Device[]>(await fetch(`${server.url}/api/devices`)),
       add: (body: unknown, init?: RequestInit) => post('/api/devices', body, init),
+      /** Changes a Device's closet or campus, as the admin unless init says otherwise. */
+      edit: (id: number, body: unknown, init: RequestInit = asAdmin()) =>
+        fetch(`${server.url}/api/devices/${id}`, { ...init, method: 'PATCH', body: JSON.stringify(body) }),
       /** Adds a device that is expected to succeed and returns it. */
       create: async (campusId: number, hostname = 'ESP_A1B2C3', closet = 'IDF 2') =>
         json<Device>(await post('/api/devices', { hostname, campusId, closet })),

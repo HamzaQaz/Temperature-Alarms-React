@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus } from 'lucide-react';
+import { Pencil, Plus } from 'lucide-react';
 import { addDevice, deleteDevice, getCampuses, getDevices } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -9,7 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
+import { CLOSET_MAX } from '@/lib/closet';
 import { HOSTNAME_EXAMPLE, hostnameProblem } from '@/lib/hostname';
+import type { Device } from '@/types';
+import { EditDeviceForm } from './EditDeviceForm';
 import {
   DeleteButton,
   EmptyRow,
@@ -31,7 +34,6 @@ interface DevicesSectionProps {
 
 const COLUMNS = 4;
 const HOSTNAME_LENGTH = HOSTNAME_EXAMPLE.length;
-const CLOSET_MAX = 50;
 const EMPTY_FORM = { hostname: '', campusId: '', closet: '' };
 
 export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps) {
@@ -44,8 +46,20 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
   const [hostnameTouched, setHostnameTouched] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  /** The Device whose row is the edit form, if any. */
+  const [editing, setEditing] = useState<Device | null>(null);
+  /** The Device whose edit button should take focus once its row is back on screen. */
+  const [returnFocusTo, setReturnFocusTo] = useState<number | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
   const hostnameInput = useRef<HTMLInputElement>(null);
+  const editButtons = useRef(new Map<number, HTMLButtonElement>());
+
+  // The edit form replaces the row, so its button is only mounted again after the next render.
+  useEffect(() => {
+    if (returnFocusTo === null) return;
+    editButtons.current.get(returnFocusTo)?.focus();
+    setReturnFocusTo(null);
+  }, [returnFocusTo]);
 
   const hostnameError = form.hostname === '' ? (submitted ? 'Enter the hostname.' : null) : hostnameProblem(form.hostname);
   const showHostnameError = (hostnameTouched || submitted) && hostnameError !== null;
@@ -83,6 +97,33 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
     hostnameInput.current?.focus();
   };
 
+  const startEdit = (device: Device) => {
+    setStatus(null);
+    setEditing(device);
+  };
+
+  const finishEdit = (id: number) => {
+    setEditing(null);
+    setReturnFocusTo(id);
+  };
+
+  const describeEdit = (before: Device, after: Device) => {
+    const closetChanged = after.closet !== before.closet;
+    const campusChanged = after.campus.id !== before.campus.id;
+    if (closetChanged && campusChanged) return `${after.hostname} is now ${after.closet} at ${after.campus.name}.`;
+    if (campusChanged) return `${after.hostname} moved to ${after.campus.name}.`;
+    if (closetChanged) return `${after.hostname} is now ${after.closet}.`;
+    return null;
+  };
+
+  // Only one form at a time, so there is one primary button on the page (DESIGN.md).
+  const saveEdit = async (before: Device, after: Device) => {
+    const change = describeEdit(before, after);
+    setStatus(change ?? `${after.hostname} unchanged.`);
+    finishEdit(after.id);
+    if (change !== null) await reload();
+  };
+
   const removeDevice = async (id: number, hostname: string) => {
     const result = await remove.run(() => deleteDevice(id));
     if (result.ok) {
@@ -104,7 +145,7 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
         title="Devices"
         description="One Device per Closet, identified by its ESP_ hostname. Deleting a Device deletes its Readings."
         action={
-          <Button ref={addButton} size="sm" onClick={openForm} disabled={!canEdit || formOpen}>
+          <Button ref={addButton} size="sm" onClick={openForm} disabled={!canEdit || formOpen || editing !== null}>
             <Plus aria-hidden />
             Add device
           </Button>
@@ -202,7 +243,7 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
               <TableHead>Hostname</TableHead>
               <TableHead>Campus</TableHead>
               <TableHead>Closet</TableHead>
-              <TableHead className="w-14">
+              <TableHead className="w-24">
                 <span className="sr-only">Actions</span>
               </TableHead>
             </TableRow>
@@ -214,26 +255,56 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
               <EmptyRow colSpan={COLUMNS} title="No devices yet" hint="Add a Device by its hostname to see it on the dashboard." />
             )}
             {state.status === 'ready' &&
-              state.data.map((device) => (
-                <TableRow key={device.id}>
-                  <TableCell className="font-mono font-medium">{device.hostname}</TableCell>
-                  <WrappingCell>
-                    {device.campus.name} <span className="font-mono text-xs text-muted-foreground">{device.campus.shortcode}</span>
-                  </WrappingCell>
-                  <WrappingCell>{device.closet}</WrappingCell>
-                  <TableCell className="text-right">
-                    <DeleteButton
-                      label={`Delete ${device.hostname}`}
-                      title={`Delete ${device.hostname}?`}
-                      description={`Every Reading from ${device.closet} at ${device.campus.name} is deleted with it. Add the Device again to store new Readings.`}
-                      disabled={!canEdit}
-                      error={remove.error}
-                      onConfirm={() => removeDevice(device.id, device.hostname)}
-                      onDismiss={remove.clearError}
-                    />
-                  </TableCell>
-                </TableRow>
-              ))}
+              state.data.map((device) =>
+                editing?.id === device.id ? (
+                  <TableRow key={device.id} className="hover:bg-transparent">
+                    <TableCell colSpan={COLUMNS} className="whitespace-normal p-2">
+                      <EditDeviceForm
+                        device={editing}
+                        campuses={campusOptions}
+                        canEdit={canEdit}
+                        onSaved={(updated) => saveEdit(editing, updated)}
+                        onCancel={() => finishEdit(device.id)}
+                        onUnauthorised={onUnauthorised}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  <TableRow key={device.id}>
+                    <TableCell className="font-mono font-medium">{device.hostname}</TableCell>
+                    <WrappingCell>
+                      {device.campus.name} <span className="font-mono text-xs text-muted-foreground">{device.campus.shortcode}</span>
+                    </WrappingCell>
+                    <WrappingCell>{device.closet}</WrappingCell>
+                    <TableCell className="whitespace-nowrap text-right">
+                      <Button
+                        ref={(element) => {
+                          if (element) editButtons.current.set(device.id, element);
+                          else editButtons.current.delete(device.id);
+                        }}
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={!canEdit || editing !== null || formOpen}
+                        aria-label={`Edit ${device.hostname}`}
+                        title={canEdit ? `Edit ${device.hostname}` : 'Enter the Admin token to edit'}
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={() => startEdit(device)}
+                      >
+                        <Pencil aria-hidden />
+                      </Button>
+                      <DeleteButton
+                        label={`Delete ${device.hostname}`}
+                        title={`Delete ${device.hostname}?`}
+                        description={`Every Reading from ${device.closet} at ${device.campus.name} is deleted with it. Add the Device again to store new Readings.`}
+                        disabled={!canEdit}
+                        error={remove.error}
+                        onConfirm={() => removeDevice(device.id, device.hostname)}
+                        onDismiss={remove.clearError}
+                      />
+                    </TableCell>
+                  </TableRow>
+                ),
+              )}
           </TableBody>
         </Table>
       </div>

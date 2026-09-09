@@ -29,7 +29,7 @@ export function describeError(error: unknown): string {
 }
 
 interface RequestOptions {
-  method?: 'GET' | 'POST' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
 }
 
@@ -88,6 +88,16 @@ export const getDevices = (): Promise<Device[]> => request('/api/devices');
 
 export const addDevice = (hostname: string, campusId: number, closet: string): Promise<Device> =>
   request('/api/devices', { method: 'POST', body: { hostname, campusId, closet } });
+
+/** What an edit may change. The hostname is not editable: a replaced board is a new Device. */
+export interface DeviceEdit {
+  closet?: string;
+  campusId?: number;
+}
+
+/** Correct a Device's Closet or move it to another Campus; its Readings stay. Needs the Admin token. */
+export const editDevice = (id: number, changes: DeviceEdit): Promise<Device> =>
+  request(`/api/devices/${id}`, { method: 'PATCH', body: changes });
 
 export const deleteDevice = (id: number): Promise<void> => request(`/api/devices/${id}`, { method: 'DELETE' });
 

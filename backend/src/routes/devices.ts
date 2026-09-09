@@ -3,7 +3,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireAdminToken } from '../auth';
 import type { AppDeps } from '../deps';
 import { isDuplicateKey, isMissingForeignRow } from '../db';
-import { parseDevice } from '../deviceInput';
+import { parseDevice, parseDeviceEdit } from '../deviceInput';
 
 export interface DeviceRow extends RowDataPacket {
   id: number;
@@ -25,7 +25,7 @@ export function toDevice({ id, hostname, closet, campusId, campusName, campusSho
   return { id, hostname, closet, campus: { id: campusId, name: campusName, shortcode: campusShortcode } };
 }
 
-/** Device routes: anyone may list; adding and deleting need the Admin token. */
+/** Device routes: anyone may list; adding, editing, and deleting need the Admin token. */
 export function devicesRouter({ pool, config }: AppDeps): Router {
   const router = Router();
   const adminOnly = requireAdminToken(config);
@@ -58,6 +58,49 @@ export function devicesRouter({ pool, config }: AppDeps): Router {
         res.status(409).json({ error: `A device with the hostname ${hostname} already exists` });
         return;
       }
+      if (isMissingForeignRow(error)) {
+        res.status(422).json({ error: 'That campus does not exist' });
+        return;
+      }
+      next(error);
+    }
+  });
+
+  // A Device's closet or campus can be corrected without losing its Readings. The hostname
+  // cannot: it is how the board identifies itself, so a replaced board is a new Device.
+  router.patch('/:id', adminOnly, async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      res.status(404).json({ error: 'Device not found' });
+      return;
+    }
+    const parsed = parseDeviceEdit(req.body);
+    if ('error' in parsed) {
+      res.status(422).json({ error: parsed.error });
+      return;
+    }
+    const assignments: string[] = [];
+    const values: Array<string | number> = [];
+    if (parsed.closet !== undefined) {
+      assignments.push('closet = ?');
+      values.push(parsed.closet);
+    }
+    if (parsed.campusId !== undefined) {
+      assignments.push('campus_id = ?');
+      values.push(parsed.campusId);
+    }
+    try {
+      const [result] = await pool.query<ResultSetHeader>(`UPDATE devices SET ${assignments.join(', ')} WHERE id = ?`, [
+        ...values,
+        id,
+      ]);
+      if (result.affectedRows === 0) {
+        res.status(404).json({ error: 'Device not found' });
+        return;
+      }
+      const [rows] = await pool.query<DeviceRow[]>(`${SELECT_DEVICES} WHERE d.id = ?`, [id]);
+      res.json(toDevice(rows[0]));
+    } catch (error) {
       if (isMissingForeignRow(error)) {
         res.status(422).json({ error: 'That campus does not exist' });
         return;

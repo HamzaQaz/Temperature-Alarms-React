@@ -79,7 +79,7 @@ All responses are JSON. The table below is the contract the rebuild is convergin
 | --- | --- | --- |
 | Health | `GET /api/health` | none |
 | Campuses | `GET`, `POST /api/campuses`, `DELETE /api/campuses/:id` | Admin token on writes |
-| Devices | `GET`, `POST /api/devices`, `DELETE /api/devices/:id` | Admin token on writes |
+| Devices | `GET`, `POST /api/devices`, `PATCH /api/devices/:id` (`closet` and `campusId` only; the hostname never changes, a replaced board is a new Device), `DELETE /api/devices/:id` | Admin token on writes |
 | Readings | `POST /api/readings` | Device token |
 | Dashboard | `GET /api/dashboard?campus=CODE`, `GET /api/dashboard/stream` (SSE) | none |
 | History | `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` (one local day, oldest first, with min, max, and average; `tz` defaults to the server's zone, `date` to today), `DELETE /api/devices/:id/history` | Admin token on delete |
