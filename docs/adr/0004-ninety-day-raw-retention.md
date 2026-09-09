@@ -10,3 +10,4 @@ At a 30-second Report interval each Device writes about a million Readings a yea
 
 - Data older than 90 days is gone for good. Anyone wanting it must export before then.
 - History queries are always bounded by a date range and a row limit; the page never loads a whole Device's history.
+- The job deletes by recorded time alone, in bounded batches, so `readings` carries an index on `recorded_at` beside the one on Device and recorded time. Every insert pays for it; at one Reading per Device per 30 seconds that is negligible.

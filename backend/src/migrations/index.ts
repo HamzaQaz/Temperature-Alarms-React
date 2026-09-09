@@ -5,6 +5,7 @@ import { legacyTablesAside } from './0000-legacy-tables-aside';
 import { initialSchema } from './0001-initial-schema';
 import { legacyCampusesAndDevices } from './0002-legacy-campuses-and-devices';
 import { legacyReadings } from './0003-legacy-readings';
+import { readingsRecordedAtIndex } from './0004-readings-recorded-at-index';
 
 /** What a migration may consult and report to while it runs. */
 export interface MigrationContext {
@@ -21,7 +22,13 @@ export interface Migration {
 }
 
 /** Every migration, in the order it applies. Add new ones at the end. */
-export const migrations: Migration[] = [legacyTablesAside, initialSchema, legacyCampusesAndDevices, legacyReadings];
+export const migrations: Migration[] = [
+  legacyTablesAside,
+  initialSchema,
+  legacyCampusesAndDevices,
+  legacyReadings,
+  readingsRecordedAtIndex,
+];
 
 /** The context the running backend hands its migrations: the configured legacy zone, logging to stdout. */
 export const migrationContext = ({ legacyTimeZone }: Pick<Config, 'legacyTimeZone'>): MigrationContext => ({

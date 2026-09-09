@@ -40,3 +40,7 @@ The single shared secret every Device sends with each Reading.
 **Condition**:
 A named state a Device's latest Reading is in, computed on the server from global thresholds set once in the backend configuration: Hot, Cold, Dry, Mold risk, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
 _Avoid_: Alert, alarm, risk, status
+
+**Retention window**:
+How long a Reading is kept before the backend deletes it, in a pass that runs once a day and whenever the backend starts. 90 days unless the configuration says otherwise (docs/adr/0004). Nothing is rolled up first; a Reading past the window is gone.
+_Avoid_: Purge, cleanup, archive, expiry

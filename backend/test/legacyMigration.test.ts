@@ -191,13 +191,14 @@ describe('upgrading a production database', () => {
     assert.ok(all.some((r) => r.hostname === 'ESP_2EB804' && r.tempF === 66 && r.recordedAt === '2024-07-05T06:00:00.000Z'));
   });
 
-  test('the migration runner records all four migrations as applied', async () => {
+  test('the migration runner records every migration as applied', async () => {
     const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
     assert.deepEqual(rows.map((r) => r.id), [
       '0000-legacy-tables-aside',
       '0001-initial-schema',
       '0002-legacy-campuses-and-devices',
       '0003-legacy-readings',
+      '0004-readings-recorded-at-index',
     ]);
   });
 });

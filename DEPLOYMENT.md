@@ -117,6 +117,8 @@ pm2 restart temperature-api
 pm2 monit
 ```
 
+Once a day, and once at every start, the backend deletes Readings older than `RETENTION_DAYS` (90 unless `.env` says otherwise; see ADR 0004) and logs a line like `retention: removed 12480 readings older than ...`. Nothing is archived first: export anything you want to keep before it ages out.
+
 ## 5. nginx
 
 Create `/etc/nginx/sites-available/YOUR_DOMAIN`:

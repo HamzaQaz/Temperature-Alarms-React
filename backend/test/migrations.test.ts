@@ -24,6 +24,21 @@ async function insertDevice(campusId: number, hostname = 'ESP_A1B2C3', closet = 
   return result.insertId;
 }
 
+/** Every secondary index on readings, as index name to its columns in order. */
+async function readingsIndexes(): Promise<Map<string, string[]>> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT index_name AS indexName, seq_in_index AS seq, column_name AS columnName
+       FROM information_schema.statistics
+      WHERE table_schema = DATABASE() AND table_name = 'readings' AND index_name <> 'PRIMARY'
+      ORDER BY index_name, seq_in_index`,
+  );
+  const byIndex = new Map<string, string[]>();
+  for (const r of rows) {
+    byIndex.set(r.indexName, [...(byIndex.get(r.indexName) ?? []), r.columnName]);
+  }
+  return byIndex;
+}
+
 describe('migration runner', () => {
   beforeEach(() => resetDatabase(pool));
 
@@ -35,6 +50,7 @@ describe('migration runner', () => {
       '0001-initial-schema',
       '0002-legacy-campuses-and-devices',
       '0003-legacy-readings',
+      '0004-readings-recorded-at-index',
     ]);
   });
 
@@ -42,7 +58,7 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 4);
+    assert.equal(rows[0].n, 5);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {
@@ -92,16 +108,7 @@ describe('initial schema', () => {
   });
 
   test('readings are indexed on device and recorded time', async () => {
-    const [rows] = await pool.query<RowDataPacket[]>(
-      `SELECT index_name AS indexName, seq_in_index AS seq, column_name AS columnName
-         FROM information_schema.statistics
-        WHERE table_schema = DATABASE() AND table_name = 'readings' AND index_name <> 'PRIMARY'
-        ORDER BY index_name, seq_in_index`,
-    );
-    const byIndex = new Map<string, string[]>();
-    for (const r of rows) {
-      byIndex.set(r.indexName, [...(byIndex.get(r.indexName) ?? []), r.columnName]);
-    }
+    const byIndex = await readingsIndexes();
     assert.ok(
       [...byIndex.values()].some((cols) => cols[0] === 'device_id' && cols[1] === 'recorded_at'),
       `no (device_id, recorded_at) index; found ${JSON.stringify([...byIndex])}`,
@@ -129,5 +136,17 @@ describe('initial schema', () => {
     const [rows] = await pool.query<RowDataPacket[]>('SELECT created_at FROM devices WHERE id = ?', [device]);
     const createdAt = rows[0].created_at as Date;
     assert.ok(Math.abs(createdAt.getTime() - Date.now()) < 5_000, `created_at ${createdAt.toISOString()} is not now`);
+  });
+});
+
+describe('0004 readings recorded_at index', () => {
+  beforeEach(() => resetDatabase(pool));
+
+  test('readings are indexed on recorded time alone, for the retention job (docs/adr/0004)', async () => {
+    const byIndex = await readingsIndexes();
+    assert.ok(
+      [...byIndex.values()].some((cols) => cols.length === 1 && cols[0] === 'recorded_at'),
+      `no (recorded_at) index; found ${JSON.stringify([...byIndex])}`,
+    );
   });
 });
