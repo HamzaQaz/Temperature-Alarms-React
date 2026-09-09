@@ -9,7 +9,7 @@ services:
       MYSQL_USER: temp
       MYSQL_PASSWORD: temp
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     tmpfs:
       - /var/lib/mysql
     healthcheck:

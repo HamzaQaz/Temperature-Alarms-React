@@ -37,7 +37,8 @@ The full wiring diagram, library versions, and flashing steps live in the [firmw
 ### Prerequisites
 
 - Node.js 20 or newer
-- MySQL or MariaDB
+- MySQL 8 for the backend you run by hand
+- Docker, for the throwaway test database (or any reachable MySQL 8; see [Tests and checks](#tests-and-checks))
 
 ### Backend
 
@@ -48,7 +49,7 @@ cp .env.example .env   # fill in database credentials
 npm run dev            # http://localhost:3001
 ```
 
-The backend expects a MySQL database named in `.env` and creates the schema itself on start through its migration runner. See `backend/.env.example` for every setting the server reads, and `DEPLOYMENT.md` for upgrading a database from the old per-Device tables.
+The backend expects a MySQL database named in `.env` and creates the schema itself on start through its migration runner. It refuses to start without `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `ADMIN_TOKEN`, and `DEVICE_TOKEN`, naming whatever is missing. See `backend/.env.example` for every setting the server reads, and `DEPLOYMENT.md` for upgrading a database from the old per-Device tables.
 
 ### Frontend
 
@@ -71,20 +72,51 @@ npm run build:all
 npm run start:backend
 ```
 
+### Tests and checks
+
+The backend suite runs every route through the Express app against a real MySQL, so it needs a database it can wipe. `backend/docker-compose.yml` provides one: MySQL 8.4 on `127.0.0.1:3307`, data in tmpfs, gone on `down`.
+
+```bash
+cd backend
+npm run test:db        # docker compose up, waits for healthy
+npm test               # node --test, one file at a time
+npm run typecheck      # tsc over src and test
+npm run test:db:down   # docker compose down -v
+```
+
+Without Docker, point the suite at any MySQL 8 you can spare with `TEST_DATABASE_URL=mysql://user:password@host:port/database`. The database name must contain `test`: the suite drops every table in it before each test.
+
+The frontend has no component tests; lint and typecheck are the checks, and `npm run build` runs the typecheck first.
+
+```bash
+cd frontend
+npm run lint           # eslint
+npx tsc -b             # typecheck only
+```
+
+Both packages pass these on a clean clone; run them before a commit.
+
 ## API
 
-All responses are JSON. The table below is the contract the rebuild is converging on; until the backend tickets land, the running server still exposes the older route names. Exact request and response shapes will be documented here.
+Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with the status: 400 for malformed JSON, 401 for a missing or wrong token, 404 for an unknown Campus or Device, 409 for a conflict, 422 for a body that failed validation, 429 when a rate limit is hit. Shortcodes and hostnames are stored upper-case, so `chs` and `CHS` name the same Campus.
 
-| Group | Routes | Auth |
+| Route | Auth | Request and response |
 | --- | --- | --- |
-| Health | `GET /api/health` | none |
-| Campuses | `GET`, `POST /api/campuses`, `DELETE /api/campuses/:id` | Admin token on writes |
-| Devices | `GET`, `POST /api/devices`, `PATCH /api/devices/:id` (`closet` and `campusId` only; the hostname never changes, a replaced board is a new Device), `DELETE /api/devices/:id` | Admin token on writes |
-| Readings | `POST /api/readings` | Device token |
-| Dashboard | `GET /api/dashboard?campus=CODE`, `GET /api/dashboard/stream` (SSE) | none |
-| History | `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` (one local day, oldest first, with min, max, and average; `tz` defaults to the server's zone, `date` to today), `DELETE /api/devices/:id/history` | Admin token on delete |
+| `GET /api/health` | none | `{status, database}`; 503 when the database cannot be reached |
+| `GET /api/campuses` | none | `[{id, name, shortcode}]` by name |
+| `POST /api/campuses` | Admin | `{name, shortcode}` → 201 Campus; 409 when the shortcode exists |
+| `DELETE /api/campuses/:id` | Admin | 204; 409 while the Campus still has Devices |
+| `GET /api/devices` | none | `[{id, hostname, closet, campus}]` by Campus name, then closet |
+| `POST /api/devices` | Admin | `{hostname, campusId, closet}` → 201 Device; hostname must be `ESP_` plus six hex digits; 409 when it exists; 422 when the Campus does not |
+| `PATCH /api/devices/:id` | Admin | `{closet?, campusId?}` → the updated Device. The hostname never changes: a replaced board is a new Device, and a body carrying `hostname` is 422 |
+| `DELETE /api/devices/:id` | Admin | 204; the Device's Readings go with it |
+| `POST /api/readings` | Device | `{device, temp, humidity}` from the board (`device` is its hostname, `temp` in °F) → 201 `{device, reading: {tempF, humidity, recordedAt}}`; 404 when no Device has that hostname; 422 when a number is missing. Limited to 20 writes a minute per address, then 429 |
+| `GET /api/dashboard?campus=SHORTCODE` | none | `{reportIntervalSeconds, offlineAfterSeconds, devices}`: every Device (or only that Campus's), by Campus name then closet, each with `latestReading`, `online`, `secondsSinceReading`, and its `conditions` worst first |
+| `GET /api/dashboard/stream` | none | Server-Sent Events: one message per Reading ingested, `{type: "reading", device, reading, online, conditions}`, plus a heartbeat comment every 25 seconds to keep proxies from closing the stream |
+| `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` | none | One local day of Readings, oldest first, with `summary` min, max, and average for each measure. `date` defaults to today and `tz` to the server's zone |
+| `DELETE /api/devices/:id/history` | Admin | 204; every Reading of that Device is gone |
 
-Tokens are sent as `Authorization: Bearer <token>`. See ADR 0003 for why there are two.
+Tokens are sent as `Authorization: Bearer <token>`. The Admin token is the one the Settings page keeps; the Device token is flashed into every Device. Neither works in the other's place. See ADR 0003 for why there are two and what that trades away. The Conditions the API reports are defined in [`CONTEXT.md`](CONTEXT.md); the thresholds behind them are the `HOT_`, `COLD_`, and `DRY_` settings in `backend/.env.example`.
 
 ## Firmware
 

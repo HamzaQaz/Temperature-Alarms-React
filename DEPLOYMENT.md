@@ -83,9 +83,19 @@ npm run install:all
 ```bash
 cd backend
 cp .env.example .env
-nano .env        # database credentials, CORS_ORIGIN=https://YOUR_DOMAIN
+nano .env
 npm run build
 ```
+
+The backend refuses to start until these are set, naming whatever is missing:
+
+| Variable | Value |
+| --- | --- |
+| `DB_USER`, `DB_PASSWORD`, `DB_NAME` | The MySQL user and database from step 2 (`DB_HOST` and `DB_PORT` default to `localhost:3306`) |
+| `ADMIN_TOKEN` | The secret the Settings page sends with every change. Generate one with `openssl rand -hex 32` and hand it to the people who administer Campuses and Devices |
+| `DEVICE_TOKEN` | The secret every Device sends with every Reading. Generate another one; it goes into each board's `config.h`, so rotating it means reflashing every Device (ADR 0003) |
+
+Also set `CORS_ORIGIN=https://YOUR_DOMAIN`, or the browser cannot call the API. Leave `REPORT_INTERVAL_SECONDS` at 30 unless the firmware interval changes with it, and set `LEGACY_TIME_ZONE` only when upgrading an old database (step 2). Every other setting has a default that `.env.example` shows.
 
 ### Frontend
 
@@ -184,6 +194,8 @@ sudo certbot --nginx -d YOUR_DOMAIN
 sudo certbot renew --dry-run
 ```
 
+Certbot adds its own `ssl_certificate` lines to the nginx file (delete the two commented placeholders afterwards) and installs a systemd timer that renews the certificate before it expires and reloads nginx; `systemctl list-timers certbot.timer` shows the next run, and the dry run above proves the renewal works. Nothing on the boards needs to change at renewal: a Device with an `https://` server URL sends over TLS without checking the certificate (see the firmware section of the README).
+
 ## 7. Firewall
 
 ```bash
@@ -211,6 +223,17 @@ curl -N https://YOUR_DOMAIN/api/dashboard/stream   # should stay open and print 
 pm2 logs temperature-api
 sudo tail -f /var/log/nginx/error.log
 ```
+
+Then walk the whole path once, before any Device is flashed: open `https://YOUR_DOMAIN/settings`, paste the Admin token, add a Campus and a Device, and post a Reading for that Device from the server with the Device token while the dashboard is open in a browser. The card should update without a reload, and the same request with a wrong token should be refused:
+
+```bash
+curl -i https://YOUR_DOMAIN/api/readings -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $DEVICE_TOKEN" -d '{"device":"ESP_A1B2C3","temp":72,"humidity":40}'   # 201
+curl -i https://YOUR_DOMAIN/api/readings -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer wrong' -d '{"device":"ESP_A1B2C3","temp":72,"humidity":40}'             # 401
+```
+
+The History link on the card should show that Reading in today's list. Reset history on that page removes every Reading of the Device, so use it before the real Device starts reporting; or register a throwaway Device for the test and delete it afterwards, since its Readings go with it.
 
 ## Database backups
 
