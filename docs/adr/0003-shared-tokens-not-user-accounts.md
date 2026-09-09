@@ -10,3 +10,4 @@ The site is public on the internet and had no authentication at all: anyone coul
 
 - Rotating the device token means reflashing every board. Keep it in one firmware config header.
 - If real logins are ever needed, the admin-token middleware is the single seam to replace.
+- The firmware sends the device token over TLS without checking the server certificate (a pinned certificate would need a reflash at every renewal), so the token trusts DNS on each closet's network. Accepted for the same reason as the tokens themselves: one admin, no accounts, no certificate distribution.

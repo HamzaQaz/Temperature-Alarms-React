@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="560" viewBox="0 0 760 560" font-family="system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="12">
+<title>NodeMCU (ESP8266) wired to a DHT11: DATA on GPIO 5 (D1), VCC on 3V3, GND on GND</title>
+<rect width="760" height="560" fill="#ffffff"/>
+<text x="20" y="32" font-size="18" font-weight="600" fill="#111">NodeMCU + DHT11 wiring</text>
+<text x="20" y="50" fill="#555">Top view, USB at the bottom. Data on GPIO 5 (D1), power from 3V3.</text>
+<rect x="150" y="56" width="140" height="450" rx="8" fill="#1f2a30" stroke="#0b1115" stroke-width="2"/>
+<rect x="188" y="60" width="64" height="70" rx="3" fill="#8d9ea8" stroke="#5c6c74"/>
+<text x="220" y="100" text-anchor="middle" fill="#1f2a30" font-size="11" font-weight="600">ESP-12E</text>
+<rect x="200" y="490" width="40" height="22" rx="2" fill="#b0bec5" stroke="#78909c"/>
+<text x="220" y="533" text-anchor="middle" fill="#555" font-size="11">micro USB</text>
+<text x="220" y="300" text-anchor="middle" fill="#cfd8dc" font-size="11">NodeMCU 1.0</text>
+<path d="M287,210 H360 V170 H520" fill="none" stroke="#c62828" stroke-width="3" stroke-linejoin="round"/>
+<path d="M287,238 H340 V290 H520" fill="none" stroke="#212121" stroke-width="3" stroke-linejoin="round"/>
+<path d="M287,98 H420 V162 a8,8 0 0 1 0,16 V210 H520" fill="none" stroke="#e0a800" stroke-width="3" stroke-linejoin="round"/>
+<circle cx="480" cy="170" r="4" fill="#c62828"/>
+<circle cx="480" cy="210" r="4" fill="#e0a800"/>
+<line x1="480" y1="170" x2="480" y2="210" stroke="#555" stroke-width="2"/>
+<rect x="473" y="180" width="14" height="20" rx="2" fill="#f5deb3" stroke="#6d4c41" stroke-width="1.5"/>
+<text x="466" y="194" text-anchor="end" fill="#333" font-weight="600">10 kΩ</text>
+<text x="466" y="207" text-anchor="end" fill="#666" font-size="10">pull-up</text>
+<rect x="153" y="64" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="74" text-anchor="end" fill="#333">A0</text>
+<rect x="153" y="92" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="102" text-anchor="end" fill="#333">RSV</text>
+<rect x="153" y="120" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="130" text-anchor="end" fill="#333">RSV</text>
+<rect x="153" y="148" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="158" text-anchor="end" fill="#333">SD3</text>
+<rect x="153" y="176" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="186" text-anchor="end" fill="#333">SD2</text>
+<rect x="153" y="204" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="214" text-anchor="end" fill="#333">SD1</text>
+<rect x="153" y="232" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="242" text-anchor="end" fill="#333">CMD</text>
+<rect x="153" y="260" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="270" text-anchor="end" fill="#333">SD0</text>
+<rect x="153" y="288" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="298" text-anchor="end" fill="#333">CLK</text>
+<rect x="153" y="316" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="326" text-anchor="end" fill="#333">GND</text>
+<rect x="153" y="344" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="354" text-anchor="end" fill="#333">3V3</text>
+<rect x="153" y="372" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="382" text-anchor="end" fill="#333">EN</text>
+<rect x="153" y="400" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="410" text-anchor="end" fill="#333">RST</text>
+<rect x="153" y="428" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="438" text-anchor="end" fill="#333">GND</text>
+<rect x="153" y="456" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="143" y="466" text-anchor="end" fill="#333">VIN</text>
+<rect x="275" y="64" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="74" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D0</text>
+<rect x="275" y="92" width="12" height="12" fill="#e0a800" stroke="#8a6a0e"/>
+<text x="297" y="102" fill="#333" font-weight="700" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D1 (GPIO 5)</text>
+<rect x="275" y="120" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="130" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D2</text>
+<rect x="275" y="148" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="158" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D3</text>
+<rect x="275" y="176" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="186" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D4</text>
+<rect x="275" y="204" width="12" height="12" fill="#c62828" stroke="#8a6a0e"/>
+<text x="297" y="214" fill="#333" font-weight="700" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">3V3</text>
+<rect x="275" y="232" width="12" height="12" fill="#212121" stroke="#8a6a0e"/>
+<text x="297" y="242" fill="#333" font-weight="700" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">GND</text>
+<rect x="275" y="260" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="270" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D5</text>
+<rect x="275" y="288" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="298" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D6</text>
+<rect x="275" y="316" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="326" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D7</text>
+<rect x="275" y="344" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="354" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">D8</text>
+<rect x="275" y="372" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="382" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">RX</text>
+<rect x="275" y="400" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="410" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">TX</text>
+<rect x="275" y="428" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="438" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">GND</text>
+<rect x="275" y="456" width="12" height="12" fill="#d4a017" stroke="#8a6a0e"/>
+<text x="297" y="466" fill="#333" stroke="#ffffff" stroke-width="4" paint-order="stroke" stroke-linejoin="round">3V3</text>
+<rect x="560" y="140" width="110" height="180" rx="6" fill="#1e88e5" stroke="#0d47a1" stroke-width="2"/>
+<line x1="572" y1="150" x2="572" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="584" y1="150" x2="584" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="596" y1="150" x2="596" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="608" y1="150" x2="608" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="620" y1="150" x2="620" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="632" y1="150" x2="632" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="644" y1="150" x2="644" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="656" y1="150" x2="656" y2="250" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="150" x2="656" y2="150" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="162" x2="656" y2="162" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="174" x2="656" y2="174" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="186" x2="656" y2="186" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="198" x2="656" y2="198" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="210" x2="656" y2="210" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="222" x2="656" y2="222" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="234" x2="656" y2="234" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<line x1="572" y1="246" x2="656" y2="246" stroke="#0d47a1" stroke-width="1" opacity="0.6"/>
+<text x="615" y="290" text-anchor="middle" fill="#ffffff" font-size="14" font-weight="700">DHT11</text>
+<text x="615" y="306" text-anchor="middle" fill="#e3f2fd" font-size="10">bare four-pin sensor</text>
+<rect x="520" y="167" width="40" height="6" fill="#b0bec5" stroke="#78909c"/>
+<text x="676" y="174" fill="#333" font-weight="600">VCC</text>
+<rect x="520" y="207" width="40" height="6" fill="#b0bec5" stroke="#78909c"/>
+<text x="676" y="214" fill="#333" font-weight="600">DATA</text>
+<rect x="520" y="247" width="40" height="6" fill="#b0bec5" stroke="#78909c"/>
+<text x="676" y="254" fill="#333" font-weight="600">NC</text>
+<rect x="520" y="287" width="40" height="6" fill="#b0bec5" stroke="#78909c"/>
+<text x="676" y="294" fill="#333" font-weight="600">GND</text>
+<g transform="translate(330,360)">
+<rect x="0" y="0" width="410" height="70" rx="6" fill="#f5f5f5" stroke="#ddd"/>
+<line x1="14" y1="18" x2="44" y2="18" stroke="#e0a800" stroke-width="3"/>
+<text x="54" y="22" fill="#333">D1 (GPIO 5) → DATA</text>
+<line x1="14" y1="38" x2="44" y2="38" stroke="#c62828" stroke-width="3"/>
+<text x="54" y="42" fill="#333">3V3 → VCC</text>
+<line x1="14" y1="58" x2="44" y2="58" stroke="#212121" stroke-width="3"/>
+<text x="54" y="62" fill="#333">GND → GND</text>
+</g>
+<g transform="translate(330,444)" fill="#333">
+<text x="0" y="0" font-weight="600">Pull-up</text>
+<text x="0" y="18">A bare four-pin DHT11 needs a 10 kΩ resistor between DATA and</text>
+<text x="0" y="34">VCC, as drawn, or every read comes back NaN. Three-pin modules</text>
+<text x="0" y="50">carry that resistor on the board: wire VCC, DATA, and GND the same</text>
+<text x="0" y="66">way and check the silkscreen, since the pin order varies by module.</text>
+<text x="0" y="92" fill="#666">Power from 3V3, never VIN. Leave NC unconnected.</text>
+</g>
+</svg>
