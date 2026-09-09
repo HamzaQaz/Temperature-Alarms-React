@@ -13,6 +13,10 @@
 // Must match DEVICE_TOKEN in the backend .env (docs/adr/0003).
 #define DEVICE_TOKEN "change-me-device"
 
+// GPIO the DHT11 DATA pin is on. 5 is D1, where dht11-pinout.svg wires a separate sensor.
+// A NodeMCU with the DHT11 soldered on (the "ESP8266 + DHT11" boards) has it on GPIO 4, D2.
+#define DHT_PIN 5
+
 // How often a Reading is sent. Must match REPORT_INTERVAL_SECONDS in the backend
 // .env, which is 30 unless changed there. The DHT11 cannot sample faster than every 2 s.
 #define REPORT_INTERVAL_SECONDS 30

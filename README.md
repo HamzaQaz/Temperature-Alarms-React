@@ -28,7 +28,7 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 | Part | Notes |
 | --- | --- |
 | NodeMCU (ESP8266) | Identifies itself by hostname: `ESP_` plus the last six hex digits of its MAC |
-| DHT11 | Temperature and humidity, data pin on GPIO 5 (D1) |
+| DHT11 | Temperature and humidity, data pin on GPIO 5 (D1) when wired separately, GPIO 4 (D2) on boards that carry it soldered on |
 
 The full wiring diagram, library versions, and flashing steps live in the [firmware section](#firmware).
 
@@ -128,7 +128,7 @@ The sketch in [`arduino/TemperatureAlarms/`](arduino/TemperatureAlarms/) is the 
 | `network.h/.cpp` | Join WiFi at boot, reconnect from the loop without a reboot, name the Device |
 | `sensor.h/.cpp` | Read the DHT11, skip a NaN sample and say so on serial |
 | `reporter.h/.cpp` | Build the JSON Reading and POST it with the Device token, log the HTTP status |
-| `config.example.h` | Template for the gitignored `config.h`: SSID, password, server URL, Device token, interval |
+| `config.example.h` | Template for the gitignored `config.h`: SSID, password, server URL, Device token, interval, sensor pin |
 
 There is no on-device web server, no retry loop, and no per-Device setting: each Device names itself `ESP_` plus the last six hex digits of its MAC, and that hostname is what you register in Settings. Your router's DHCP list shows the same digits as `ESP-xxxxxx`.
 
@@ -144,6 +144,8 @@ There is no on-device web server, no retry loop, and no per-Device setting: each
 
 A bare four-pin sensor needs a 10 kΩ pull-up between DATA and VCC or every read is NaN; its third pin stays unconnected. Three-pin modules carry that resistor already, so wire them the same way, but check the silkscreen because the pin order varies by module.
 
+A NodeMCU sold with the DHT11 already soldered on needs no wiring at all, but its sensor sits on D2 (GPIO 4), so set `DHT_PIN 4` in `config.h`. Every read comes back NaN until the pin matches the board.
+
 ### Libraries and board settings
 
 The sketch compiles clean against these versions; install them from the IDE's Boards Manager and Library Manager.
@@ -158,7 +160,7 @@ Board settings, under Tools: board **NodeMCU 1.0 (ESP-12E Module)**, upload spee
 
 ### Flashing
 
-1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials, the server URL without a trailing slash (the sketch appends `/api/readings`), the `DEVICE_TOKEN` from the backend `.env`, and the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`. `config.h` is gitignored.
+1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials, the server URL without a trailing slash (the sketch appends `/api/readings`), the `DEVICE_TOKEN` from the backend `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
 2. Open `TemperatureAlarms.ino` in the Arduino IDE, choose the board setting above and the port the NodeMCU appears on, and click Upload.
 3. Open the serial monitor at 115200 and watch the Device join WiFi.
 

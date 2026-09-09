@@ -3,8 +3,13 @@
 #include <Arduino.h>
 #include <DHT.h>
 
-// Data pin: GPIO 5, labelled D1 on the NodeMCU. See dht11-pinout.svg.
-static const uint8_t DHT_PIN = 5;
+#include "config.h"
+
+// Data pin, from config.h. GPIO 5 (D1) for a sensor wired per dht11-pinout.svg; boards with the
+// DHT11 soldered on carry it on GPIO 4 (D2), which config.h sets.
+#ifndef DHT_PIN
+#define DHT_PIN 5
+#endif
 
 static DHT dht(DHT_PIN, DHT11);
 
