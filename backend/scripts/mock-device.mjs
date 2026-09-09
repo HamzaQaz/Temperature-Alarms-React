@@ -5,10 +5,13 @@
  *
  *   node scripts/mock-device.mjs --hostname ESP_000001 --token dev-device
  *
+ * Inside the Compose stack the backend's own environment supplies the token and port, so
+ * `docker compose exec api node scripts/mock-device.mjs --hostname ESP_000001` is enough.
+ *
  * Options (all optional):
- *   --url       backend origin, default http://localhost:3001
+ *   --url       backend origin, default http://localhost:$PORT (3001 when PORT is unset)
  *   --hostname  ESP_ plus six hex digits, default ESP_000001
- *   --token     the backend's DEVICE_TOKEN, default dev-device
+ *   --token     the backend's DEVICE_TOKEN, default $DEVICE_TOKEN, then dev-device
  *   --interval  seconds between Readings, default 30 (match REPORT_INTERVAL_SECONDS)
  *   --temp      starting temperature in °F, default 72; drifts a little each Reading
  *   --humidity  starting humidity in %, default 40
@@ -21,9 +24,9 @@
 const args = Object.fromEntries(
   process.argv.slice(2).map((arg, i, all) => (arg.startsWith('--') ? [arg.slice(2), all[i + 1] ?? 'true'] : [])).filter((p) => p.length),
 );
-const url = (args.url ?? 'http://localhost:3001').replace(/\/$/, '');
+const url = (args.url ?? `http://localhost:${process.env.PORT ?? 3001}`).replace(/\/$/, '');
 const hostname = args.hostname ?? 'ESP_000001';
-const token = args.token ?? 'dev-device';
+const token = args.token ?? process.env.DEVICE_TOKEN ?? 'dev-device';
 const intervalMs = Number(args.interval ?? 30) * 1000;
 const count = args.count === undefined ? Infinity : Number(args.count);
 const nanEvery = args.nan === undefined ? 0 : Number(args.nan);

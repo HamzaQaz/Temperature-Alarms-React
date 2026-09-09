@@ -10,6 +10,7 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 - [0002 — A single `readings` table](docs/adr/0002-single-readings-table.md)
 - [0003 — Two shared tokens instead of user accounts](docs/adr/0003-shared-tokens-not-user-accounts.md)
 - [0004 — Ninety-day raw retention](docs/adr/0004-ninety-day-raw-retention.md)
+- [0005 — One Docker Compose file, built from the clone](docs/adr/0005-docker-compose-runs-the-whole-system.md)
 
 ## Repository layout
 
@@ -19,6 +20,8 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 ├── backend/     # Express + TypeScript API, MySQL
 ├── frontend/    # React + TypeScript + Vite, Tailwind, shadcn/ui
 ├── docs/adr/    # Architecture decision records
+├── compose.yaml # The whole system: db, api, and web on one port (docs/adr/0005)
+├── .env.example # The stack's settings; copy to .env
 ├── CONTEXT.md   # Domain vocabulary
 └── DEPLOYMENT.md
 ```
@@ -34,11 +37,27 @@ The full wiring diagram, library versions, and flashing steps live in the [firmw
 
 ## Local development
 
-### Prerequisites
+### Run the stack
 
-- Node.js 20 or newer
-- MySQL 8 for the backend you run by hand
-- Docker, for the throwaway test database (or any reachable MySQL 8; see [Tests and checks](#tests-and-checks))
+The way to run the system, on a laptop or a server, is the Docker Compose stack at the repo root: MySQL, the backend, and nginx serving the dashboard and proxying `/api/` on one port (ADR 0005). With Docker Desktop installed:
+
+```bash
+cp .env.example .env     # set ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD (openssl rand -hex 32 each)
+docker compose up -d --build
+docker compose ps        # db and api healthy, web running
+```
+
+Open `http://localhost/`, paste the Admin token on Settings, and add a Campus and a Device. The database lives on a named volume, so it survives `docker compose down`; `docker compose down -v` wipes it. `DEPLOYMENT.md` covers upgrades, backups, migrating an old database in, and TLS.
+
+To see a card move without a board, run the virtual Device inside the stack. It takes the Device token and port from the container, so only the hostname you registered is needed:
+
+```bash
+docker compose exec api node scripts/mock-device.mjs --hostname ESP_000001
+```
+
+### Working on the code
+
+Run the two packages by hand when you are changing them; each reloads on save. You need Node.js 20 or newer and a MySQL 8 the backend can use; the stack's `db` is not published, so it is not that one.
 
 ### Backend
 
@@ -59,6 +78,8 @@ npm install
 cp .env.example .env   # VITE_API_URL points at the backend
 npm run dev            # http://localhost:5173
 ```
+
+`VITE_API_URL` is the only setting the frontend reads. Unset, every request goes to the page's own origin, which is how `frontend/Dockerfile` builds it for the stack; the dev server needs it set because Vite serves on its own port.
 
 ### Root shortcuts
 
@@ -95,13 +116,15 @@ npm run lint           # eslint
 npm run typecheck      # tsc -b, including the tests
 ```
 
-To watch the dashboard react without a board, run a virtual Device against your dev backend. It posts a Reading every interval with the Device token and logs in the firmware's style, so `report: 404` means the hostname is not registered yet:
+To watch the dashboard react without a board, run the virtual Device against your dev backend. It posts a Reading every interval with the Device token and logs in the firmware's style, so `report: 404` means the hostname is not registered yet:
 
 ```bash
 cd backend
 node scripts/mock-device.mjs --hostname ESP_000001 --token dev-device --interval 30
 node scripts/mock-device.mjs --hostname ESP_000002 --count 3       # three Readings, then silence: watch the card go Offline
 ```
+
+Against the stack, the same script runs inside the `api` container with `docker compose exec api node scripts/mock-device.mjs ...`, where the token and port are already set.
 
 Both packages pass these on a clean clone; run them before a commit. The dashboard card shows "Expected Ns ago" once a Device misses a report, and Offline once the server has declared it (three missed reports); the page asks the server again at that moment, since the browser never computes a Condition itself.
 
@@ -169,7 +192,7 @@ Board settings, under Tools: board **NodeMCU 1.0 (ESP-12E Module)**, upload spee
 
 ### Flashing
 
-1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials, the server URL without a trailing slash (the sketch appends `/api/readings`), the `DEVICE_TOKEN` from the backend `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
+1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials, the server URL without a trailing slash (the sketch appends `/api/readings`): `http://<host>` where the stack runs, with a port only if `WEB_PORT` was changed, or `https://YOUR_DOMAIN` once TLS sits in front of it. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
 2. Open `TemperatureAlarms.ino` in the Arduino IDE, choose the board setting above and the port the NodeMCU appears on, and click Upload.
 3. Open the serial monitor at 115200 and watch the Device join WiFi.
 
@@ -197,7 +220,7 @@ Run through this once per Device, on a desk, before it goes into a closet.
 
 ## Deployment
 
-See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the nginx template, PM2 setup, and database provisioning.
+The Compose stack above is the deployment too: the same `docker compose up -d --build` on the district server, with `.env` holding the real tokens. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
 
 ## License
 

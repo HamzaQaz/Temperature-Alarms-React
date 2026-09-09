@@ -41,6 +41,16 @@ describe('/api/campuses', () => {
     assert.deepEqual(await listed(), [{ id: body.id, name: 'Central High School', shortcode: 'CHS' }]);
   });
 
+  test('accepts a browser on the same origin with no CORS_ORIGIN configured, and still refuses another origin', async () => {
+    // Behind the stack's nginx the page and /api/ share one origin, so the browser's Origin
+    // names the very host it is talking to. That must pass without any CORS setting.
+    const sameOrigin = await addCampus({ name: 'Central High School', shortcode: 'CHS' }, asAdmin({ headers: { Origin: server.url } }));
+    assert.equal(sameOrigin.status, 201);
+    const elsewhere = await addCampus({ name: 'Other', shortcode: 'OTH' }, asAdmin({ headers: { Origin: 'http://elsewhere.example' } }));
+    assert.equal(elsewhere.status, 403);
+    assert.equal((await listed()).length, 1);
+  });
+
   test('rejects an add without a token with a distinct 401', async () => {
     const response = await addCampus({ name: 'Central High School', shortcode: 'CHS' }, {
       headers: { 'Content-Type': 'application/json' },

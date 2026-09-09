@@ -1,7 +1,8 @@
 import type { Device, Campus, Dashboard, History } from './types';
 import { getAdminToken } from './lib/adminToken';
+import { apiBaseUrl } from './lib/apiBase';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:3001';
+const API_BASE_URL = apiBaseUrl(import.meta.env.VITE_API_URL);
 
 /** A request the server answered with an error, or one that never reached it (status 0). */
 export class ApiError extends Error {

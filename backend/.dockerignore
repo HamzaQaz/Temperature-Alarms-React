@@ -1,0 +1,11 @@
+node_modules
+dist
+logs
+.env
+.env.*
+test
+docker-compose.yml
+ecosystem.config.js
+nodemon.json
+Dockerfile
+.dockerignore

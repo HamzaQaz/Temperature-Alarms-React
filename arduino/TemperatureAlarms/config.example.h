@@ -7,8 +7,9 @@
 #define WIFI_PASSWORD "your-password"
 
 // Where the backend is served, without a trailing slash. Readings are posted to
-// SERVER_URL/api/readings. An https:// URL is sent over TLS (see the firmware README).
-#define SERVER_URL "https://YOUR_DOMAIN"
+// SERVER_URL/api/readings. The Compose stack is http://<host> (add :PORT only if WEB_PORT
+// was changed); an https:// URL is sent over TLS (see the firmware README).
+#define SERVER_URL "http://YOUR_HOST"
 
 // Must match DEVICE_TOKEN in the backend .env (docs/adr/0003).
 #define DEVICE_TOKEN "change-me-device"
