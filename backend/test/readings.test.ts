@@ -156,15 +156,24 @@ describe('POST /api/readings', () => {
     assert.deepEqual(await stored(), []);
   });
 
-  test('limits writes to 20 per minute per IP, and the limit applies only to this route', async () => {
-    await registerDevice();
+  test('limits a Device to 20 Readings a minute; another Device at the same address, and the rest of the API, are unaffected', async () => {
+    const first = await registerDevice();
+    await client.devices.create(first.campus.id, 'ESP_000002');
     for (let i = 0; i < 20; i++) {
       assert.equal((await post({ device: 'ESP_A1B2C3', temp: 70 + i, humidity: 40 })).status, 201, `write ${i + 1}`);
     }
     const limited = await post({ device: 'ESP_A1B2C3', temp: 99, humidity: 40 });
     assert.equal(limited.status, 429);
-    assert.match(await errorOf(limited), /too many write requests/i);
+    assert.match(await errorOf(limited), /too many readings from this device/i);
     assert.equal((await stored()).length, 20);
+
+    // The limit is per Device: a campus's boards share one address behind NAT.
+    assert.equal((await post({ device: 'esp-000002', temp: 70, humidity: 40 })).status, 201);
+    assert.equal((await stored()).length, 21);
+
+    // A wrong token is refused as such, never counted against the Device.
+    const wrongToken = await client.readings.add({ device: 'ESP_A1B2C3', temp: 70, humidity: 40 }, withToken('wrong'));
+    assert.equal(wrongToken.status, 401);
 
     // The rest of the API from the same IP is unaffected.
     assert.equal((await fetch(client.devices.url())).status, 200);

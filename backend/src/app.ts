@@ -25,6 +25,9 @@ export function createApp(appDeps: AppDeps): Express {
       legacyHeaders: false,
       message: { error: 'Too many requests from this IP, please try again later.' },
       validate: false,
+      // Readings have their own limit per Device (routes/readings.ts). Sixteen boards behind one
+      // campus address would exhaust a per-address allowance at one Reading each per 30 seconds.
+      skip: (req) => req.method === 'POST' && req.path === '/readings',
     }),
   );
 

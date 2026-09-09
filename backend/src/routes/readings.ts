@@ -1,5 +1,5 @@
 import { Router, type Request } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireAdminToken, requireDeviceToken } from '../auth';
 import type { RouteDeps } from '../deps';
@@ -60,17 +60,23 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
   const router = Router();
   const rules = conditionRules(config);
 
-  // Boards report every Report interval, so a healthy IP never approaches this. Only writes are limited this way.
+  // A Device reports every Report interval, so a healthy one never approaches this. The key is the
+  // hostname, not the address: every Device on a campus can sit behind one NAT, and one address's
+  // twelve boards must not share one allowance. Only requests carrying the Device token get this far.
   const writeLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 20,
     standardHeaders: true,
     legacyHeaders: false,
-    message: { error: 'Too many write requests from this IP, please try again later.' },
+    keyGenerator: (req) => {
+      const device = (req.body as Record<string, unknown> | undefined)?.device;
+      return typeof device === 'string' && device.trim() !== '' ? normaliseHostname(device) : ipKeyGenerator(req.ip ?? '');
+    },
+    message: { error: 'Too many Readings from this Device, please try again later.' },
     validate: false,
   });
 
-  router.post('/', writeLimiter, requireDeviceToken(config), async (req, res, next) => {
+  router.post('/', requireDeviceToken(config), writeLimiter, async (req, res, next) => {
     const parsed = parseReading(req.body);
     if ('error' in parsed) {
       res.status(422).json({ error: parsed.error });
