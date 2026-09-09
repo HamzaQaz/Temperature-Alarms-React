@@ -14,10 +14,14 @@ export function formatAge(seconds: number): string {
 }
 
 /**
- * Seconds until the Device's next Reading is due, assuming it reports every interval
- * since its last one. Runs interval → 1 and wraps, so it stays meaningful while a
- * healthy Device is a little late.
+ * Where the next Reading stands: due in so many seconds, or expected so many seconds ago
+ * and not here yet. It never wraps back to a fresh count, so a Device that has missed a
+ * report reads as late until a Reading arrives or the server calls it Offline.
  */
-export function secondsUntilNextReport(secondsSinceReading: number, reportIntervalSeconds: number): number {
-  return reportIntervalSeconds - (secondsSinceReading % reportIntervalSeconds);
+export type NextReport = { status: 'due'; seconds: number } | { status: 'late'; seconds: number };
+
+export function nextReport(secondsSinceReading: number, reportIntervalSeconds: number): NextReport {
+  const remaining = reportIntervalSeconds - secondsSinceReading;
+  // Math.abs, not negation: -0 at the boundary would render as "-0s".
+  return remaining > 0 ? { status: 'due', seconds: remaining } : { status: 'late', seconds: Math.abs(remaining) };
 }

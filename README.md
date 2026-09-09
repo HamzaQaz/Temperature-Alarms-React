@@ -86,15 +86,24 @@ npm run test:db:down   # docker compose down -v
 
 Without Docker, point the suite at any MySQL 8 you can spare with `TEST_DATABASE_URL=mysql://user:password@host:port/database`. The database name must contain `test`: the suite drops every table in it before each test.
 
-The frontend has no component tests; lint and typecheck are the checks, and `npm run build` runs the typecheck first.
+The frontend has no component tests. Its pure functions (timing, closet parsing, dates) have unit tests that run on Node's own test runner and type stripping, so there is nothing extra to install; lint and typecheck cover the rest, and `npm run build` runs the typecheck first.
 
 ```bash
 cd frontend
+npm test               # node --test over src/**/*.test.ts
 npm run lint           # eslint
-npx tsc -b             # typecheck only
+npm run typecheck      # tsc -b, including the tests
 ```
 
-Both packages pass these on a clean clone; run them before a commit.
+To watch the dashboard react without a board, run a virtual Device against your dev backend. It posts a Reading every interval with the Device token and logs in the firmware's style, so `report: 404` means the hostname is not registered yet:
+
+```bash
+cd backend
+node scripts/mock-device.mjs --hostname ESP_000001 --token dev-device --interval 30
+node scripts/mock-device.mjs --hostname ESP_000002 --count 3       # three Readings, then silence: watch the card go Offline
+```
+
+Both packages pass these on a clean clone; run them before a commit. The dashboard card shows "Expected Ns ago" once a Device misses a report, and Offline once the server has declared it (three missed reports); the page asks the server again at that moment, since the browser never computes a Condition itself.
 
 ## API
 

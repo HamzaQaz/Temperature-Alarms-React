@@ -31,5 +31,5 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 
 ## This repo
 
-- The current feature is `.scratch/rebuild/` — its spec is `spec.md` and its fourteen implementation tickets are under `issues/`.
+- The current feature is `.scratch/rebuild/` — its spec is `spec.md` and its implementation tickets are under `issues/` (01 to 14 from the spec, later numbers for work found afterwards).
 - Each ticket carries a `Blocked by:` line near the top listing the gating tickets by number. The frontier is every ticket whose blockers all have `Status: done`.

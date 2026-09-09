@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
@@ -156,7 +156,7 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
       {devices.length === 0 ? (
         <EmptyState campus={campus} campusName={campusName} onShowAll={onShowAll} />
       ) : (
-        <DeviceGrid devices={devices} reportIntervalSeconds={reportIntervalSeconds} />
+        <DeviceGrid devices={devices} reportIntervalSeconds={reportIntervalSeconds} offlineAfterSeconds={offlineAfterSeconds} onPastOffline={reload} />
       )}
     </div>
   );
@@ -165,13 +165,25 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
 interface DeviceGridProps {
   devices: LiveDevice[];
   reportIntervalSeconds: number;
+  offlineAfterSeconds: number;
+  /** Called when a card still shown Online has aged past the Offline threshold; must be stable. */
+  onPastOffline: () => void;
 }
 
-function DeviceGrid({ devices, reportIntervalSeconds }: DeviceGridProps) {
+function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPastOffline }: DeviceGridProps) {
   const now = useNow();
   // Each card ages from the moment its own data was true, so a live Reading resets only that card's age.
   const age = (device: LiveDevice): number | null =>
     device.secondsSinceReading === null ? null : device.secondsSinceReading + Math.max(0, Math.floor((now - device.asOf) / 1000));
+
+  // Offline is the server's call, and the server only speaks when a Reading arrives. So when a
+  // card shown Online has aged past the threshold, ask again: the answer carries Offline. The key
+  // changes every second while any such card remains, so a server a second behind is asked again.
+  const pastOffline = devices.filter((device) => device.online && (age(device) ?? -1) >= offlineAfterSeconds).map((device) => device.id);
+  const pastOfflineKey = pastOffline.length === 0 ? '' : `${pastOffline.join(',')}@${Math.floor(now / 1000)}`;
+  useEffect(() => {
+    if (pastOfflineKey !== '') onPastOffline();
+  }, [pastOfflineKey, onPastOffline]);
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-4" aria-label="Devices">
       {devices.map((device) => (

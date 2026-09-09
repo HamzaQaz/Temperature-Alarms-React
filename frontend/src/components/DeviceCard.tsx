@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card';
 import { levelLook, worstCondition } from '@/lib/conditions';
-import { formatAge, secondsUntilNextReport } from '@/lib/reportTiming';
+import { formatAge, nextReport, type NextReport } from '@/lib/reportTiming';
 import { cn } from '@/lib/utils';
 import type { Condition, DashboardDevice } from '@/types';
 
@@ -46,6 +46,19 @@ function Measure({ label, value, unit, size, dimmed }: MeasureProps) {
         )}
       </p>
     </div>
+  );
+}
+
+/** "Next in 12s" while the Device is on time; "Expected 15s ago" once a report is missed, until the server calls it Offline. */
+function NextReportNote({ status, seconds }: NextReport) {
+  return status === 'due' ? (
+    <span>
+      Next in <NumberFlow value={seconds} suffix="s" />
+    </span>
+  ) : (
+    <span className="text-amber-700 dark:text-amber-400">
+      Expected <NumberFlow value={seconds} suffix="s" /> ago
+    </span>
   );
 }
 
@@ -145,11 +158,7 @@ export function DeviceCard({ device, secondsSinceReading, reportIntervalSeconds 
             <time dateTime={latestReading.recordedAt} title={new Date(latestReading.recordedAt).toLocaleString()}>
               {formatAge(secondsSinceReading)}
             </time>
-            {online && (
-              <span>
-                Next in <NumberFlow value={secondsUntilNextReport(secondsSinceReading, reportIntervalSeconds)} suffix="s" />
-              </span>
-            )}
+            {online && <NextReportNote {...nextReport(secondsSinceReading, reportIntervalSeconds)} />}
           </span>
         )}
 
