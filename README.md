@@ -1,76 +1,96 @@
 # Temperature Alarms
 
-Live temperature and humidity monitoring for network closets across school campuses.
+**Know a closet is in trouble before the equipment does.**
 
-Each closet has a **Device**: a NodeMCU (ESP8266) board with a **DHT11** temperature and humidity sensor. The Device posts a Reading to the backend on a fixed Report interval, and the backend pushes it to every open dashboard over Server-Sent Events.
+Live temperature and humidity monitoring for the network closets across a school district. A NodeMCU board with a DHT11 sensor sits in each closet and posts a Reading every 30 seconds. The backend works out which Conditions a closet is in (Hot, Cold, Dry, Mold risk, Offline) and pushes every Reading to every open dashboard the moment it arrives.
 
-The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CONTEXT.md). The decisions behind the architecture are recorded as ADRs in [`docs/adr/`](docs/adr/):
+![The dashboard: five closets across two campuses, one Offline, two Hot, the rest Online and counting down to their next Reading](docs/images/dashboard.png)
 
-- [0001 — HTTP POST from Devices, SSE to browsers, single backend process](docs/adr/0001-http-post-from-devices-sse-to-browsers.md)
-- [0002 — A single `readings` table](docs/adr/0002-single-readings-table.md)
-- [0003 — Two shared tokens instead of user accounts](docs/adr/0003-shared-tokens-not-user-accounts.md)
-- [0004 — Ninety-day raw retention](docs/adr/0004-ninety-day-raw-retention.md)
-- [0005 — One Docker Compose file, built from the clone](docs/adr/0005-docker-compose-runs-the-whole-system.md)
+- **Live, not polled.** Cards update over Server-Sent Events. A Device that goes quiet reads as late, then Offline, with no reload.
+- **Decided once, on the server.** Thresholds, Conditions, and Online or Offline are computed in one place, so every browser shows the same truth.
+- **A day of history per Device.** Min, max, and average for each measure, any day in the last 90.
+- **Two shared tokens, no accounts.** One for the people who administer Campuses and Devices, one flashed into every board. No logins to run.
+- **One command to run it.** A Docker Compose stack: MySQL, the backend, and nginx on a single port, the same on a laptop and on the district server.
 
-## Repository layout
+## Quick start
 
-```
-.
-├── arduino/     # ESP8266 sketch for the NodeMCU + DHT11 Device, and its wiring diagram
-├── backend/     # Express + TypeScript API, MySQL
-├── frontend/    # React + TypeScript + Vite, Tailwind, shadcn/ui
-├── docs/adr/    # Architecture decision records
-├── compose.yaml # The whole system: db, api, and web on one port (docs/adr/0005)
-├── .env.example # The stack's settings; copy to .env
-├── CONTEXT.md   # Domain vocabulary
-└── DEPLOYMENT.md
-```
-
-## Hardware
-
-| Part | Notes |
-| --- | --- |
-| NodeMCU (ESP8266) | Identifies itself by hostname: `ESP_` plus the last six hex digits of its MAC |
-| DHT11 | Temperature and humidity, data pin on GPIO 5 (D1) when wired separately, GPIO 4 (D2) on boards that carry it soldered on |
-
-The full wiring diagram, library versions, and flashing steps live in the [firmware section](#firmware).
-
-## Local development
-
-### Run the stack
-
-The way to run the system, on a laptop or a server, is the Docker Compose stack at the repo root: MySQL, the backend, and nginx serving the dashboard and proxying `/api/` on one port (ADR 0005). With Docker Desktop installed:
+You need Docker (Docker Desktop on a laptop, Docker Engine with the Compose plugin on a server).
 
 ```bash
-cp .env.example .env     # set ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD (openssl rand -hex 32 each)
+git clone https://github.com/HamzaQaz/Temperature-Alarms-React.git
+cd Temperature-Alarms-React
+cp .env.example .env        # set ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD (openssl rand -hex 32 each)
 docker compose up -d --build
-docker compose ps        # db and api healthy, web running
 ```
 
-Open `http://localhost/`, paste the Admin token on Settings, and add a Campus and a Device. The database lives on a named volume, so it survives `docker compose down`; `docker compose down -v` wipes it. `DEPLOYMENT.md` covers upgrades, backups, migrating an old database in, and TLS.
-
-To see a card move without a board, run the virtual Device inside the stack. It takes the Device token and port from the container, so only the hostname you registered is needed:
+Open `http://localhost/`. On **Settings**, paste the Admin token, add a Campus and a Device. To see a card come alive without a board, run the virtual Device that ships in the stack:
 
 ```bash
 docker compose exec api node scripts/mock-device.mjs --hostname ESP_000001
 ```
 
-### Working on the code
+The database lives on a named volume, so it survives `docker compose down`; `docker compose down -v` wipes it. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers upgrades, backups, migrating an old database in, TLS, and the manual install for a server that cannot run Docker.
+
+## How it works
+
+```
+ closet                          server                              laptop
+┌──────────────┐   POST /api/readings   ┌──────────────────┐   SSE /api/dashboard/stream   ┌───────────┐
+│ NodeMCU      │ ─────────────────────▶ │ Express backend  │ ────────────────────────────▶ │ React     │
+│ + DHT11      │   every 30 s,          │ one process      │   one message per Reading     │ dashboard │
+│ (a Device)   │   Device token         │ Conditions here  │                               │           │
+└──────────────┘                        └────────┬─────────┘                               └───────────┘
+                                                 │ readings, devices, campuses
+                                                 ▼
+                                        ┌──────────────────┐
+                                        │ MySQL 8          │  90 days of raw Readings
+                                        └──────────────────┘
+```
+
+A Device identifies itself by hostname, `ESP_` plus the last six hex digits of its MAC, and that is what you register in Settings. There is no configuration on the board beyond WiFi, the server URL, and the Device token. The backend is a single process on purpose: the SSE fan-out and the per-Device rate limit live in memory, which keeps the whole thing simple enough to run anywhere.
+
+The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CONTEXT.md). The decisions behind the architecture are recorded as ADRs:
+
+| ADR | Decision |
+| --- | --- |
+| [0001](docs/adr/0001-http-post-from-devices-sse-to-browsers.md) | HTTP POST from Devices, SSE to browsers, a single backend process |
+| [0002](docs/adr/0002-single-readings-table.md) | One `readings` table instead of one table per Device |
+| [0003](docs/adr/0003-shared-tokens-not-user-accounts.md) | Two shared tokens instead of user accounts |
+| [0004](docs/adr/0004-ninety-day-raw-retention.md) | Ninety days of raw Readings, nothing rolled up |
+| [0005](docs/adr/0005-docker-compose-runs-the-whole-system.md) | One Docker Compose file, built from the clone |
+
+## Repository layout
+
+```
+.
+├── arduino/       # ESP8266 sketch for the NodeMCU + DHT11 Device, and its wiring diagram
+├── backend/       # Express + TypeScript API, MySQL, the migration runner, the virtual Device
+├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui
+├── docs/adr/      # Architecture decision records
+├── compose.yaml   # The whole system: db, api, and web on one port
+├── .env.example   # The stack's settings; copy to .env
+├── CONTEXT.md     # Domain vocabulary
+├── PRODUCT.md     # Who it is for and how it should feel
+├── DESIGN.md      # Tokens, type, components
+└── DEPLOYMENT.md  # Running it for real
+```
+
+## Working on the code
 
 Run the two packages by hand when you are changing them; each reloads on save. You need Node.js 20 or newer and a MySQL 8 the backend can use; the stack's `db` is not published, so it is not that one.
 
-### Backend
+**Backend**
 
 ```bash
 cd backend
 npm install
-cp .env.example .env   # fill in database credentials
+cp .env.example .env   # fill in database credentials and the two tokens
 npm run dev            # http://localhost:3001
 ```
 
-The backend expects a MySQL database named in `.env` and creates the schema itself on start through its migration runner. It refuses to start without `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `ADMIN_TOKEN`, and `DEVICE_TOKEN`, naming whatever is missing. See `backend/.env.example` for every setting the server reads, and `DEPLOYMENT.md` for upgrading a database from the old per-Device tables.
+The backend creates and upgrades the schema itself on start through its migration runner. It refuses to start without `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `ADMIN_TOKEN`, and `DEVICE_TOKEN`, naming whatever is missing. `backend/.env.example` lists every setting the server reads.
 
-### Frontend
+**Frontend**
 
 ```bash
 cd frontend
@@ -81,9 +101,7 @@ npm run dev            # http://localhost:5173
 
 `VITE_API_URL` is the only setting the frontend reads. Unset, every request goes to the page's own origin, which is how `frontend/Dockerfile` builds it for the stack; the dev server needs it set because Vite serves on its own port.
 
-### Root shortcuts
-
-The root `package.json` wraps both packages:
+**Root shortcuts**
 
 ```bash
 npm run install:all
@@ -92,6 +110,18 @@ npm run dev:frontend
 npm run build:all
 npm run start:backend
 ```
+
+**A virtual Device**
+
+To watch the dashboard react without a board, run the virtual Device against your dev backend. It posts a Reading every interval with the Device token and logs in the firmware's style, so `report: 404` means the hostname is not registered yet:
+
+```bash
+cd backend
+node scripts/mock-device.mjs --hostname ESP_000001 --token dev-device --interval 30
+node scripts/mock-device.mjs --hostname ESP_000002 --count 3       # three Readings, then silence: watch the card go Offline
+```
+
+Against the stack, the same script runs inside the `api` container with `docker compose exec api node scripts/mock-device.mjs ...`, where the token and port are already set.
 
 ### Tests and checks
 
@@ -107,7 +137,7 @@ npm run test:db:down   # docker compose down -v
 
 Without Docker, point the suite at any MySQL 8 you can spare with `TEST_DATABASE_URL=mysql://user:password@host:port/database`. The database name must contain `test`: the suite drops every table in it before each test.
 
-The frontend has no component tests. Its pure functions (timing, closet parsing, dates) have unit tests that run on Node's own test runner and type stripping, so there is nothing extra to install; lint and typecheck cover the rest, and `npm run build` runs the typecheck first.
+The frontend has no component tests. Its pure functions (timing, closet parsing, dates, the API base) have unit tests that run on Node's own test runner and type stripping, so there is nothing extra to install; lint and typecheck cover the rest, and `npm run build` runs the typecheck first.
 
 ```bash
 cd frontend
@@ -116,21 +146,11 @@ npm run lint           # eslint
 npm run typecheck      # tsc -b, including the tests
 ```
 
-To watch the dashboard react without a board, run the virtual Device against your dev backend. It posts a Reading every interval with the Device token and logs in the firmware's style, so `report: 404` means the hostname is not registered yet:
-
-```bash
-cd backend
-node scripts/mock-device.mjs --hostname ESP_000001 --token dev-device --interval 30
-node scripts/mock-device.mjs --hostname ESP_000002 --count 3       # three Readings, then silence: watch the card go Offline
-```
-
-Against the stack, the same script runs inside the `api` container with `docker compose exec api node scripts/mock-device.mjs ...`, where the token and port are already set.
-
 Both packages pass these on a clean clone; run them before a commit. The dashboard card shows "Expected Ns ago" once a Device misses a report, and Offline once the server has declared it (three missed reports); the page asks the server again at that moment, since the browser never computes a Condition itself.
 
 ## API
 
-Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with the status: 400 for malformed JSON, 401 for a missing or wrong token, 404 for an unknown Campus or Device, 409 for a conflict, 422 for a body that failed validation, 429 when a rate limit is hit. Shortcodes and hostnames are stored upper-case, so `chs` and `CHS` name the same Campus.
+Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with the status: 400 for malformed JSON, 401 for a missing or wrong token, 403 for a browser origin that is not allowed, 404 for an unknown Campus or Device, 409 for a conflict, 422 for a body that failed validation, 429 when a rate limit is hit. Shortcodes and hostnames are stored upper-case, so `chs` and `CHS` name the same Campus.
 
 | Route | Auth | Request and response |
 | --- | --- | --- |
@@ -148,21 +168,16 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` | none | One local day of Readings, oldest first, with `summary` min, max, and average for each measure. `date` defaults to today and `tz` to the server's zone |
 | `DELETE /api/devices/:id/history` | Admin | 204; every Reading of that Device is gone |
 
-Tokens are sent as `Authorization: Bearer <token>`. The Admin token is the one the Settings page keeps; the Device token is flashed into every Device. Neither works in the other's place. See ADR 0003 for why there are two and what that trades away. The Conditions the API reports are defined in [`CONTEXT.md`](CONTEXT.md); the thresholds behind them are the `HOT_`, `COLD_`, and `DRY_` settings in `backend/.env.example`.
+Tokens are sent as `Authorization: Bearer <token>`. The Admin token is the one the Settings page keeps; the Device token is flashed into every Device. Neither works in the other's place. See ADR 0003 for why there are two and what that trades away. The Conditions the API reports are defined in [`CONTEXT.md`](CONTEXT.md); the thresholds behind them are the `HOT_`, `COLD_`, and `DRY_` settings in `.env.example`.
 
-## Firmware
+Browsers are accepted from the API's own origin, which is how the stack serves them, and from one more origin named in `CORS_ORIGIN` for a dev server on another port.
 
-The sketch in [`arduino/TemperatureAlarms/`](arduino/TemperatureAlarms/) is the one firmware for every Device: a NodeMCU (ESP8266) reads a DHT11 on GPIO 5 and posts a Reading every Report interval. It is a folder the Arduino IDE compiles together, one job per file:
+## Hardware
 
-| File | Job |
+| Part | Notes |
 | --- | --- |
-| `TemperatureAlarms.ino` | `setup` and `loop` only: when a Reading is due, read once and report once |
-| `network.h/.cpp` | Join WiFi at boot, reconnect from the loop without a reboot, name the Device |
-| `sensor.h/.cpp` | Read the DHT11, skip a NaN sample and say so on serial |
-| `reporter.h/.cpp` | Build the JSON Reading and POST it with the Device token, log the HTTP status |
-| `config.example.h` | Template for the gitignored `config.h`: SSID, password, server URL, Device token, interval, sensor pin |
-
-There is no on-device web server, no retry loop, and no per-Device setting: each Device names itself `ESP_` plus the last six hex digits of its MAC, and that hostname is what you register in Settings. Your router's DHCP list shows the same digits as `ESP-xxxxxx`.
+| NodeMCU (ESP8266) | Identifies itself by hostname: `ESP_` plus the last six hex digits of its MAC |
+| DHT11 | Temperature and humidity, data pin on GPIO 5 (D1) when wired separately, GPIO 4 (D2) on boards that carry it soldered on |
 
 ### Wiring
 
@@ -177,6 +192,20 @@ There is no on-device web server, no retry loop, and no per-Device setting: each
 A bare four-pin sensor needs a 10 kΩ pull-up between DATA and VCC or every read is NaN; its third pin stays unconnected. Three-pin modules carry that resistor already, so wire them the same way, but check the silkscreen because the pin order varies by module.
 
 A NodeMCU sold with the DHT11 already soldered on needs no wiring at all, but its sensor sits on D2 (GPIO 4), so set `DHT_PIN 4` in `config.h`. Every read comes back NaN until the pin matches the board.
+
+## Firmware
+
+The sketch in [`arduino/TemperatureAlarms/`](arduino/TemperatureAlarms/) is the one firmware for every Device: a NodeMCU reads a DHT11 and posts a Reading every Report interval. It is a folder the Arduino IDE compiles together, one job per file:
+
+| File | Job |
+| --- | --- |
+| `TemperatureAlarms.ino` | `setup` and `loop` only: when a Reading is due, read once and report once |
+| `network.h/.cpp` | Join WiFi at boot, reconnect from the loop without a reboot, name the Device |
+| `sensor.h/.cpp` | Read the DHT11, skip a NaN sample and say so on serial |
+| `reporter.h/.cpp` | Build the JSON Reading and POST it with the Device token, log the HTTP status |
+| `config.example.h` | Template for the gitignored `config.h`: SSID, password, server URL, Device token, interval, sensor pin |
+
+There is no on-device web server, no retry loop, and no per-Device setting. Your router's DHCP list shows the same six digits as `ESP-xxxxxx`.
 
 ### Libraries and board settings
 
@@ -220,7 +249,7 @@ Run through this once per Device, on a desk, before it goes into a closet.
 
 ## Deployment
 
-The Compose stack above is the deployment too: the same `docker compose up -d --build` on the district server, with `.env` holding the real tokens. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
+The Compose stack from the quick start is the deployment too: the same `docker compose up -d --build` on the district server, with `.env` holding the real tokens. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
 
 ## License
 
