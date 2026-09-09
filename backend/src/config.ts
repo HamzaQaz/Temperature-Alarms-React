@@ -1,5 +1,6 @@
 import type { DatabaseConfig } from './db';
 import { DEFAULT_THRESHOLDS, type Thresholds } from './conditions';
+import { isTimeZone, serverTimeZone } from './localDay';
 
 /** Everything the backend reads from the environment, read once at startup. */
 export interface Config {
@@ -17,6 +18,8 @@ export interface Config {
   retentionDays: number;
   /** Where Hot, Cold, Dry, and Offline begin. Mold risk is a fixed rule (see conditions.ts). */
   thresholds: Thresholds;
+  /** Zone the old per-Device tables' string timestamps were written in (docs/adr/0002). */
+  legacyTimeZone: string;
 }
 
 export class ConfigError extends Error {
@@ -73,6 +76,14 @@ function thresholds(env: Env): Thresholds {
   return t;
 }
 
+/** An IANA zone from the environment, or the server's own zone when unset. */
+function timeZone(env: Env, name: string): string {
+  const raw = present(env, name);
+  if (raw === undefined) return serverTimeZone();
+  if (!isTimeZone(raw)) throw new ConfigError(`${name} must be an IANA time zone like America/Chicago, got "${raw}"`);
+  return raw;
+}
+
 /** Build the config from an environment, throwing a ConfigError that names every problem. */
 export function loadConfig(env: Env = process.env): Config {
   const missing = REQUIRED.filter((name) => present(env, name) === undefined);
@@ -94,5 +105,6 @@ export function loadConfig(env: Env = process.env): Config {
     reportIntervalSeconds: positiveInteger(env, 'REPORT_INTERVAL_SECONDS', 30),
     retentionDays: positiveInteger(env, 'RETENTION_DAYS', 90),
     thresholds: thresholds(env),
+    legacyTimeZone: timeZone(env, 'LEGACY_TIME_ZONE'),
   };
 }

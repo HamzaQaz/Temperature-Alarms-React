@@ -28,8 +28,8 @@ export async function tableNames(pool: Pool): Promise<string[]> {
   return rows.map((r) => r.name as string);
 }
 
-/** Drop every table in the test database and rebuild the schema through the migration runner. */
-export async function resetDatabase(pool: Pool): Promise<void> {
+/** Drop every table in the test database, leaving it empty. */
+export async function dropAllTables(pool: Pool): Promise<void> {
   const { database, host, port } = testDatabaseConfig();
   if (!/test/i.test(database)) {
     throw new Error(`Refusing to drop every table in "${database}": the test database name must contain "test"`);
@@ -52,5 +52,10 @@ export async function resetDatabase(pool: Pool): Promise<void> {
   } finally {
     connection.release();
   }
-  await runMigrations(pool);
+}
+
+/** Drop every table in the test database and rebuild the schema through the migration runner. */
+export async function resetDatabase(pool: Pool): Promise<void> {
+  await dropAllTables(pool);
+  await runMigrations(pool, { context: { legacyTimeZone: 'UTC', log: () => {} } });
 }

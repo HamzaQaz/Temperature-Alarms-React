@@ -20,6 +20,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     reportIntervalSeconds: 30,
     retentionDays: 90,
     thresholds: DEFAULT_THRESHOLDS,
+    legacyTimeZone: 'UTC',
     ...overrides,
   };
 }

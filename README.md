@@ -48,7 +48,7 @@ cp .env.example .env   # fill in database credentials
 npm run dev            # http://localhost:3001
 ```
 
-The backend expects a MySQL database named in `.env`. Schema setup is being moved into the backend's own migration runner; until that lands, see `backend/.env.example` for the connection settings the server reads.
+The backend expects a MySQL database named in `.env` and creates the schema itself on start through its migration runner. See `backend/.env.example` for every setting the server reads, and `DEPLOYMENT.md` for upgrading a database from the old per-Device tables.
 
 ### Frontend
 

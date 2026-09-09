@@ -30,7 +30,43 @@ GRANT ALL PRIVILEGES ON temperature_alarms.* TO 'tempuser'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
-Schema provisioning is moving into the backend's own migration runner. Until that lands, this guide cannot bring up a fresh database from scratch; existing deployments keep the schema they already have.
+The backend creates and upgrades the schema itself: every start runs its migration runner, which applies whatever has not run yet and records it in `schema_migrations`. A fresh database needs nothing beyond the `CREATE DATABASE` above.
+
+### Upgrading a database from the old per-Device tables
+
+A database from the PHP era or the first Node backend holds `devices`, `locations`, `alarms`, and one `ESP_xxxxxx` table per Device with the date and time as strings. The first start of the new backend against it (see ADR 0002):
+
+1. renames `devices` and `locations` to `legacy_devices` and `legacy_locations`, then builds the new `campuses`, `devices`, and `readings` tables;
+2. copies each legacy location into `campuses` and each legacy device into `devices`, matching the old free-text `Campus` column against a shortcode first and a name second;
+3. copies every row of every `ESP_xxxxxx` table into `readings`, parsing the string date and time in `LEGACY_TIME_ZONE`, which defaults to the server's own zone. The PHP writer pinned America/Chicago, so set `LEGACY_TIME_ZONE=America/Chicago` in `.env` if the server is on UTC.
+
+Nothing legacy is dropped. Every row that cannot be read (an unparseable date or time, a device whose campus is unknown, a table with no device row) is logged with its table and id and skipped, so watch `pm2 logs temperature-api` for lines starting `legacy:` on that first start. The runner applies each migration once. If an old writer keeps adding rows to an `ESP_` table after that (a board not yet reflashed, still posting to the old PHP endpoint), run the legacy migrations again by hand from `backend/`:
+
+```bash
+npm run migrate:legacy
+```
+
+It is safe to repeat: each `ESP_` table's progress is kept in `legacy_readings_progress`, so a later run copies nothing twice and picks up only rows added since.
+
+Before dropping anything, verify the numbers. For each Device, the legacy row count should equal the copied count plus the skipped count in `legacy_readings_progress`, and the copied count should match the readings that carry a legacy timestamp. Reflashed boards start adding new readings at once, so bound the readings count by the time the new backend first started:
+
+```sql
+SELECT table_name, last_id, copied, skipped FROM legacy_readings_progress;
+SELECT COUNT(*) FROM `ESP_2EB804`;
+SELECT COUNT(*) FROM readings r JOIN devices d ON d.id = r.device_id
+ WHERE d.hostname = 'ESP_2EB804' AND r.recorded_at < 'YYYY-MM-DD HH:MM:SS';   -- first start of the new backend, in UTC
+```
+
+Then compare one legacy row with its reading, rendered back in the legacy zone, to confirm the timestamps read the right way round:
+
+```sql
+SELECT DATE, TIME, TEMP FROM `ESP_2EB804` ORDER BY ID DESC LIMIT 1;
+SELECT CONVERT_TZ(r.recorded_at, '+00:00', 'America/Chicago') AS local_time, r.temp_f
+  FROM readings r JOIN devices d ON d.id = r.device_id
+ WHERE d.hostname = 'ESP_2EB804' ORDER BY r.recorded_at DESC LIMIT 1;
+```
+
+Once the counts agree, drop the legacy tables by hand, one `DROP TABLE` per `ESP_xxxxxx` table plus `legacy_devices`, `legacy_locations`, `alarms`, and `legacy_readings_progress`. Take a backup first (see below). `CONVERT_TZ` with a named zone needs the MySQL time zone tables loaded (`mysql_tzinfo_to_sql /usr/share/zoneinfo | sudo mysql mysql`); use a fixed offset like `'-06:00'` otherwise.
 
 ## 3. Clone and build
 

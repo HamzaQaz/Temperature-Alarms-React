@@ -3,6 +3,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireAdminToken } from '../auth';
 import type { AppDeps } from '../deps';
 import { isDuplicateKey, isMissingForeignRow } from '../db';
+import { parseDevice } from '../deviceInput';
 
 export interface DeviceRow extends RowDataPacket {
   id: number;
@@ -13,16 +14,6 @@ export interface DeviceRow extends RowDataPacket {
   campusShortcode: string;
 }
 
-interface DeviceInput {
-  hostname: string;
-  campusId: number;
-  closet: string;
-}
-
-/** A Device is named by its ESP8266 hostname: `ESP_` plus the last six hex digits of its MAC. */
-const HOSTNAME_PATTERN = /^ESP_[0-9A-F]{6}$/;
-const CLOSET_MAX = 50;
-
 /** A Device with its Campus, as every route lists it. Append a WHERE or ORDER BY. */
 export const SELECT_DEVICES = `
   SELECT d.id, d.hostname, d.closet,
@@ -32,21 +23,6 @@ export const SELECT_DEVICES = `
 
 export function toDevice({ id, hostname, closet, campusId, campusName, campusShortcode }: DeviceRow) {
   return { id, hostname, closet, campus: { id: campusId, name: campusName, shortcode: campusShortcode } };
-}
-
-/** Normalised device input, or the message explaining why the body is not one. */
-function parseDevice(body: unknown): DeviceInput | { error: string } {
-  const { hostname, campusId, closet } = (body ?? {}) as Record<string, unknown>;
-  const normalisedHostname = typeof hostname === 'string' ? hostname.trim().toUpperCase() : '';
-  if (!HOSTNAME_PATTERN.test(normalisedHostname)) {
-    return { error: 'The hostname must be ESP_ followed by six hex digits, like ESP_A1B2C3' };
-  }
-  if (typeof campusId !== 'number' || !Number.isInteger(campusId) || campusId <= 0) {
-    return { error: 'A device needs a campus' };
-  }
-  if (typeof closet !== 'string' || closet.trim() === '') return { error: 'A device needs a closet name' };
-  if (closet.trim().length > CLOSET_MAX) return { error: `The closet name must be at most ${CLOSET_MAX} characters` };
-  return { hostname: normalisedHostname, campusId, closet: closet.trim() };
 }
 
 /** Device routes: anyone may list; adding and deleting need the Admin token. */

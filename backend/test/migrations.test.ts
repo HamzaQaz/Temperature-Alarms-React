@@ -30,14 +30,19 @@ describe('migration runner', () => {
   test('creates the three tables and records the applied migration', async () => {
     assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'readings', 'schema_migrations']);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
-    assert.deepEqual(rows.map((r) => r.id), ['0001-initial-schema']);
+    assert.deepEqual(rows.map((r) => r.id), [
+      '0000-legacy-tables-aside',
+      '0001-initial-schema',
+      '0002-legacy-campuses-and-devices',
+      '0003-legacy-readings',
+    ]);
   });
 
   test('running again applies nothing', async () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 1);
+    assert.equal(rows[0].n, 4);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {
@@ -50,7 +55,7 @@ describe('migration runner', () => {
         },
       },
     ];
-    const applied = await runMigrations(pool, extra);
+    const applied = await runMigrations(pool, { list: extra });
     assert.deepEqual(applied, ['0002-extra']);
     assert.ok((await tableNames(pool)).includes('extra'));
   });

@@ -53,7 +53,8 @@ function partsFormatter(timeZone: string): Intl.DateTimeFormat {
   return formatter;
 }
 
-interface WallClock {
+/** What a clock on the wall reads: a calendar date and a 24-hour time, in no particular zone. */
+export interface WallClock {
   year: number;
   month: number;
   day: number;
@@ -80,15 +81,27 @@ function offsetMs(at: Date, timeZone: string): number {
 }
 
 /**
- * The instant at which the zone's clocks read midnight on the calendar day.
- * Start from midnight UTC and correct by the zone's offset; a second pass settles a day
- * that begins on the far side of a clock change.
+ * The instant at which the zone's clocks read the wall-clock time.
+ * Start from the same wall-clock time in UTC and correct by the zone's offset; a second
+ * pass settles a time on the far side of a clock change. A time that happens twice when
+ * the clocks go back resolves to one of the two; a time that never happens resolves to the
+ * instant the clocks skipped to.
  */
-function midnightIn(year: number, month: number, day: number, timeZone: string): Date {
-  const wall = Date.UTC(year, month - 1, day);
+export function instantIn({ year, month, day, hour, minute, second }: WallClock, timeZone: string): Date {
+  const wall = Date.UTC(year, month - 1, day, hour, minute, second);
   let guess = wall - offsetMs(new Date(wall), timeZone);
   guess = wall - offsetMs(new Date(guess), timeZone);
   return new Date(guess);
+}
+
+const midnightIn = (year: number, month: number, day: number, timeZone: string): Date =>
+  instantIn({ year, month, day, hour: 0, minute: 0, second: 0 }, timeZone);
+
+/** True when the numbers name a day that exists: 2024-02-29 yes, 2024-02-30 no. */
+export function isCalendarDay(year: number, month: number, day: number): boolean {
+  // Date.UTC rolls an impossible day into the next month; a real day round-trips unchanged.
+  const check = new Date(Date.UTC(year, month - 1, day));
+  return check.getUTCFullYear() === year && check.getUTCMonth() === month - 1 && check.getUTCDate() === day;
 }
 
 /** The calendar day, or undefined when `date` is not a real YYYY-MM-DD day. */
@@ -96,9 +109,7 @@ export function localDay(date: string, timeZone: string): LocalDay | undefined {
   const match = DATE_PATTERN.exec(date);
   if (match === null) return undefined;
   const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
-  // Date.UTC rolls an impossible day into the next month; a real day round-trips unchanged.
-  const check = new Date(Date.UTC(year, month - 1, day));
-  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== month - 1 || check.getUTCDate() !== day) return undefined;
+  if (!isCalendarDay(year, month, day)) return undefined;
   return {
     date,
     timeZone,

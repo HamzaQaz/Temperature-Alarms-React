@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import { createApp } from './app';
 import { loadConfig, ConfigError } from './config';
 import { createPool } from './db';
-import { runMigrations } from './migrations';
+import { migrationContext, runMigrations } from './migrations';
 import { startRetentionJob } from './retention';
 
 dotenv.config();
@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   }
 
   const pool = createPool(config.database);
-  const applied = await runMigrations(pool);
+  const applied = await runMigrations(pool, { context: migrationContext(config) });
   if (applied.length > 0) console.log(`Applied migrations: ${applied.join(', ')}`);
 
   const app = createApp({ config, pool });

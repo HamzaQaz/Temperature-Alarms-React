@@ -8,6 +8,6 @@ The PHP-era schema created a new MySQL table per Device at runtime, named after 
 
 ## Consequences
 
-- A one-time, re-runnable migration walks each existing `ESP_*` table into `readings`, parsing the string dates once. Old tables are left in place until the numbers are verified, then dropped by hand.
+- A one-time, re-runnable migration walks each existing `ESP_*` table into `readings`, parsing the string dates once. Old tables are left in place until the numbers are verified, then dropped by hand. This is the one place an identifier is built from data: a legacy table name is accepted only after matching the hostname pattern exactly, and every other statement stays parameterised.
 - "Offline" and "history for a day" become `recorded_at` comparisons in SQL, not string matching.
 - Adding a Device is a plain INSERT; deleting one cascades to its Readings.
