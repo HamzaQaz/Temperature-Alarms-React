@@ -1,0 +1,542 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-09T07:10:00Z",
+  "title": "Design System: Temperature Alarms",
+  "extensions": {
+    "colorMeta": {
+      "console-black": {
+        "role": "neutral",
+        "displayName": "Console Black",
+        "canonical": "oklch(0.145 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "panel-grey": {
+        "role": "neutral",
+        "displayName": "Panel Grey",
+        "canonical": "oklch(0.205 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "raised-grey": {
+        "role": "neutral",
+        "displayName": "Raised Grey",
+        "canonical": "oklch(0.269 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "readout-white": {
+        "role": "neutral",
+        "displayName": "Readout White",
+        "canonical": "oklch(0.985 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "primary-ink": {
+        "role": "primary",
+        "displayName": "Primary Ink",
+        "canonical": "oklch(0.922 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "dimmed-grey": {
+        "role": "neutral",
+        "displayName": "Dimmed Grey",
+        "canonical": "oklch(0.708 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "oklch(1 0 0 / 10%)",
+        "tonalRamp": [
+          "oklch(1 0 0 / 5%)",
+          "oklch(1 0 0 / 10%)",
+          "oklch(1 0 0 / 15%)",
+          "oklch(1 0 0 / 25%)",
+          "oklch(1 0 0 / 40%)",
+          "oklch(1 0 0 / 60%)",
+          "oklch(1 0 0 / 80%)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "input-hairline": {
+        "role": "neutral",
+        "displayName": "Input Hairline",
+        "canonical": "oklch(1 0 0 / 15%)",
+        "tonalRamp": [
+          "oklch(1 0 0 / 5%)",
+          "oklch(1 0 0 / 10%)",
+          "oklch(1 0 0 / 15%)",
+          "oklch(1 0 0 / 25%)",
+          "oklch(1 0 0 / 40%)",
+          "oklch(1 0 0 / 60%)",
+          "oklch(1 0 0 / 80%)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "focus-grey": {
+        "role": "neutral",
+        "displayName": "Focus Grey",
+        "canonical": "oklch(0.556 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "signal-blue": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "oklch(0.488 0.243 264.376)",
+        "tonalRamp": [
+          "oklch(0.2 0.12 264.376)",
+          "oklch(0.3 0.18 264.376)",
+          "oklch(0.4 0.22 264.376)",
+          "oklch(0.488 0.243 264.376)",
+          "oklch(0.6 0.2 264.376)",
+          "oklch(0.72 0.15 264.376)",
+          "oklch(0.85 0.08 264.376)",
+          "oklch(0.95 0.03 264.376)"
+        ]
+      },
+      "humidity-green": {
+        "role": "tertiary",
+        "displayName": "Humidity Green",
+        "canonical": "oklch(0.696 0.17 162.48)",
+        "tonalRamp": [
+          "oklch(0.25 0.07 162.48)",
+          "oklch(0.38 0.11 162.48)",
+          "oklch(0.5 0.14 162.48)",
+          "oklch(0.6 0.16 162.48)",
+          "oklch(0.696 0.17 162.48)",
+          "oklch(0.8 0.14 162.48)",
+          "oklch(0.9 0.08 162.48)",
+          "oklch(0.96 0.04 162.48)"
+        ]
+      },
+      "critical-red": {
+        "role": "tertiary",
+        "displayName": "Critical Red (text and borders)",
+        "canonical": "oklch(0.704 0.191 22.216)",
+        "tonalRamp": [
+          "oklch(0.25 0.09 22.216)",
+          "oklch(0.38 0.14 22.216)",
+          "oklch(0.5 0.18 22.216)",
+          "oklch(0.6 0.2 22.216)",
+          "oklch(0.704 0.191 22.216)",
+          "oklch(0.8 0.14 22.216)",
+          "oklch(0.9 0.07 22.216)",
+          "oklch(0.96 0.03 22.216)"
+        ]
+      },
+      "high-red": {
+        "role": "tertiary",
+        "displayName": "High Red",
+        "canonical": "oklch(0.637 0.237 25.331)",
+        "tonalRamp": [
+          "oklch(0.25 0.1 25.331)",
+          "oklch(0.38 0.16 25.331)",
+          "oklch(0.5 0.21 25.331)",
+          "oklch(0.637 0.237 25.331)",
+          "oklch(0.72 0.19 25.331)",
+          "oklch(0.82 0.12 25.331)",
+          "oklch(0.9 0.07 25.331)",
+          "oklch(0.96 0.03 25.331)"
+        ]
+      },
+      "warning-amber": {
+        "role": "tertiary",
+        "displayName": "Warning Amber",
+        "canonical": "oklch(0.769 0.188 70.08)",
+        "tonalRamp": [
+          "oklch(0.28 0.08 70.08)",
+          "oklch(0.41 0.12 70.08)",
+          "oklch(0.55 0.16 70.08)",
+          "oklch(0.67 0.18 70.08)",
+          "oklch(0.769 0.188 70.08)",
+          "oklch(0.85 0.15 70.08)",
+          "oklch(0.92 0.09 70.08)",
+          "oklch(0.97 0.04 70.08)"
+        ]
+      },
+      "moderate-yellow": {
+        "role": "tertiary",
+        "displayName": "Moderate Yellow",
+        "canonical": "oklch(0.852 0.199 91.936)",
+        "tonalRamp": [
+          "oklch(0.3 0.08 91.936)",
+          "oklch(0.45 0.12 91.936)",
+          "oklch(0.6 0.16 91.936)",
+          "oklch(0.72 0.18 91.936)",
+          "oklch(0.852 0.199 91.936)",
+          "oklch(0.9 0.15 91.936)",
+          "oklch(0.95 0.09 91.936)",
+          "oklch(0.98 0.04 91.936)"
+        ]
+      },
+      "mdf-sky": {
+        "role": "tertiary",
+        "displayName": "MDF Sky",
+        "canonical": "oklch(0.685 0.169 237.323)",
+        "tonalRamp": [
+          "oklch(0.25 0.07 237.323)",
+          "oklch(0.38 0.11 237.323)",
+          "oklch(0.5 0.14 237.323)",
+          "oklch(0.6 0.16 237.323)",
+          "oklch(0.685 0.169 237.323)",
+          "oklch(0.8 0.12 237.323)",
+          "oklch(0.9 0.07 237.323)",
+          "oklch(0.96 0.03 237.323)"
+        ]
+      },
+      "daylight-white": {
+        "role": "neutral",
+        "displayName": "Daylight White",
+        "canonical": "oklch(1 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.97 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "daylight-ink": {
+        "role": "neutral",
+        "displayName": "Daylight Ink",
+        "canonical": "oklch(0.145 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.97 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "daylight-muted": {
+        "role": "neutral",
+        "displayName": "Daylight Muted",
+        "canonical": "oklch(0.97 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.97 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "daylight-dimmed": {
+        "role": "neutral",
+        "displayName": "Daylight Dimmed",
+        "canonical": "oklch(0.556 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.97 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "daylight-hairline": {
+        "role": "neutral",
+        "displayName": "Daylight Hairline",
+        "canonical": "oklch(0.922 0 0)",
+        "tonalRamp": [
+          "oklch(0.145 0 0)",
+          "oklch(0.205 0 0)",
+          "oklch(0.269 0 0)",
+          "oklch(0.371 0 0)",
+          "oklch(0.556 0 0)",
+          "oklch(0.708 0 0)",
+          "oklch(0.922 0 0)",
+          "oklch(1 0 0)"
+        ]
+      },
+      "critical-fill": {
+        "role": "tertiary",
+        "displayName": "Critical Fill",
+        "canonical": "oklch(0.505 0.213 27.518)",
+        "tonalRamp": [
+          "oklch(0.25 0.1 27.518)",
+          "oklch(0.38 0.16 27.518)",
+          "oklch(0.505 0.213 27.518)",
+          "oklch(0.6 0.22 27.518)",
+          "oklch(0.704 0.191 27.518)",
+          "oklch(0.8 0.14 27.518)",
+          "oklch(0.9 0.07 27.518)",
+          "oklch(0.96 0.03 27.518)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The latest temperature on a Device card, read from across a room."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "The page title, once per page."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Closet names on cards and card titles."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Table cells, descriptions, dialog copy, notes."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "The word above a readout, badge text, the note under a tile. Sentence case."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Device hostnames only."
+      }
+    },
+    "shadows": [
+      {
+        "name": "resting",
+        "value": "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+        "purpose": "Cards and outline buttons at rest; present for consistency, not depth."
+      },
+      {
+        "name": "overlay",
+        "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+        "purpose": "Dialogs and dropdown menus, the only things allowed to float."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-standard",
+        "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Default easing for state transitions."
+      },
+      {
+        "name": "duration-state",
+        "value": "200ms",
+        "purpose": "A panel fading in, a fill changing on hover."
+      },
+      {
+        "name": "duration-page",
+        "value": "300ms",
+        "purpose": "Opacity and 20px slide between pages, motion-safe only."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      },
+      {
+        "name": "md",
+        "value": "768px"
+      },
+      {
+        "name": "xl",
+        "value": "1280px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one primary action on a view: Save token, Add a Device.",
+      "html": "<button class=\"ds-btn-primary\">Save token</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 8px 16px; border: 0; border-radius: 8px; background: var(--primary, oklch(0.922 0 0)); color: var(--primary-foreground, oklch(0.205 0 0)); font: 500 14px/1 system-ui, Avenir, Helvetica, Arial, sans-serif; cursor: pointer; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms; } .ds-btn-primary:hover { background: color-mix(in oklch, var(--primary, oklch(0.922 0 0)) 90%, transparent); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); } .ds-btn-primary:disabled { opacity: 0.5; pointer-events: none; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Every secondary action: Refresh, Try again, Previous day, Cancel.",
+      "html": "<button class=\"ds-btn-outline\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M8 16H3v5\"/></svg>Refresh</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: 36px; padding: 8px 16px; border: 1px solid var(--input, oklch(1 0 0 / 15%)); border-radius: 8px; background: color-mix(in oklch, var(--input, oklch(1 0 0 / 15%)) 30%, transparent); color: var(--foreground, oklch(0.985 0 0)); font: 500 14px/1 system-ui, Avenir, Helvetica, Arial, sans-serif; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); cursor: pointer; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms; } .ds-btn-outline:hover { background: color-mix(in oklch, var(--input, oklch(1 0 0 / 15%)) 50%, transparent); } .ds-btn-outline:focus-visible { outline: none; border-color: var(--ring, oklch(0.556 0 0)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); } .ds-btn-outline:disabled { opacity: 0.5; pointer-events: none; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "The Admin token field and every form field on Settings.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Paste the token from the server's .env\" aria-label=\"Admin token\" />",
+      "css": ".ds-input { width: 100%; min-width: 0; height: 36px; padding: 4px 12px; border: 1px solid var(--input, oklch(1 0 0 / 15%)); border-radius: 8px; background: color-mix(in oklch, var(--input, oklch(1 0 0 / 15%)) 30%, transparent); color: var(--foreground, oklch(0.985 0 0)); font: 400 14px/1.5 system-ui, Avenir, Helvetica, Arial, sans-serif; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); transition: color 150ms, box-shadow 150ms; } .ds-input::placeholder { color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-input:focus-visible { outline: none; border-color: var(--ring, oklch(0.556 0 0)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); } .ds-input[aria-invalid='true'] { border-color: var(--destructive, oklch(0.704 0.191 22.216)); box-shadow: 0 0 0 3px color-mix(in oklch, var(--destructive, oklch(0.704 0.191 22.216)) 40%, transparent); } .ds-input:disabled { opacity: 0.5; cursor: not-allowed; }"
+    },
+    {
+      "name": "Condition Badge",
+      "kind": "chip",
+      "refersTo": "badge-condition",
+      "description": "One badge per active Condition: the name in semibold, the level after a middle dot. Tinted at warning; solid Critical Fill under white at critical.",
+      "html": "<span class=\"ds-badge-condition\">Hot <span class=\"ds-badge-level\">· warning</span></span> <span class=\"ds-badge-condition ds-badge-condition--critical\">Hot <span class=\"ds-badge-level\">· critical</span></span>",
+      "css": ".ds-badge-condition { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border: 1px solid transparent; border-radius: 8px; background: oklch(0.769 0.188 70.08 / 20%); color: oklch(0.87 0.16 70.08); font: 600 14px/1.25 system-ui, Avenir, Helvetica, Arial, sans-serif; white-space: nowrap; } .ds-badge-level { font-weight: 400; opacity: 0.8; } .ds-badge-condition--critical { background: var(--destructive-solid, oklch(0.505 0.213 27.518)); color: #fff; }"
+    },
+    {
+      "name": "Online Badge",
+      "kind": "chip",
+      "refersTo": "badge-online",
+      "description": "Whether the Device is still reporting, in the place the eye already checks.",
+      "html": "<span class=\"ds-badge-online\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M12 20h.01\"/><path d=\"M2 8.82a15 15 0 0 1 20 0\"/><path d=\"M5 12.859a10 10 0 0 1 14 0\"/><path d=\"M8.5 16.429a5 5 0 0 1 7 0\"/></svg>Online</span>",
+      "css": ".ds-badge-online { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid transparent; border-radius: 8px; background: oklch(0.696 0.17 162.48 / 15%); color: oklch(0.8 0.14 162.48); font: 500 12px/1.33 system-ui, Avenir, Helvetica, Arial, sans-serif; white-space: nowrap; }"
+    },
+    {
+      "name": "Device Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "The signature component: where the Device is, what it last reported, whether it is still reporting. The border is the worst active Condition.",
+      "html": "<article class=\"ds-device-card ds-device-card--warning\"><header class=\"ds-device-card__head\"><div><p class=\"ds-device-card__campus\">Central High School</p><h3 class=\"ds-device-card__closet\">IDF 2 <span class=\"ds-tag\">IDF</span></h3></div><span class=\"ds-badge-online\">Online</span></header><div class=\"ds-device-card__readouts\"><div><p class=\"ds-label\">Temperature</p><p class=\"ds-readout ds-readout--lg\">84<span class=\"ds-unit\">°F</span></p></div><div><p class=\"ds-label\">Humidity</p><p class=\"ds-readout ds-readout--md\">41<span class=\"ds-unit ds-unit--md\">%</span></p></div></div><ul class=\"ds-device-card__conditions\"><li><span class=\"ds-badge-condition\">Hot <span class=\"ds-badge-level\">· warning</span></span></li></ul><footer class=\"ds-device-card__foot\"><span class=\"ds-device-card__age\">12s ago · Next in 18s</span><button class=\"ds-btn-outline ds-btn-outline--sm\">History</button></footer></article>",
+      "css": ".ds-device-card { display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 20rem; padding: 20px 0; border: 1px solid var(--border, oklch(1 0 0 / 10%)); border-radius: 14px; background: var(--card, oklch(0.205 0 0)); color: var(--card-foreground, oklch(0.985 0 0)); font-family: system-ui, Avenir, Helvetica, Arial, sans-serif; box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05); transition: border-color 150ms; } .ds-device-card--warning { border-color: oklch(0.769 0.188 70.08 / 70%); } .ds-device-card__head, .ds-device-card__readouts, .ds-device-card__conditions, .ds-device-card__foot { padding: 0 20px; } .ds-device-card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; } .ds-device-card__campus { margin: 0; font-size: 14px; color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-device-card__closet { display: flex; align-items: center; gap: 8px; margin: 2px 0 0; font-size: 18px; font-weight: 600; line-height: 1.25; } .ds-tag { padding: 2px 8px; border: 1px solid var(--border, oklch(1 0 0 / 10%)); border-radius: 8px; font-size: 12px; font-weight: 500; } .ds-device-card__readouts { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; } .ds-label { margin: 0; font-size: 12px; color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-readout { margin: 0; font-weight: 600; line-height: 1; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; } .ds-readout--lg { font-size: 48px; } .ds-readout--md { font-size: 30px; } .ds-unit { font-size: 24px; font-weight: 500; color: var(--muted-foreground, oklch(0.708 0 0)); } .ds-unit--md { font-size: 18px; } .ds-device-card__conditions { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; list-style: none; } .ds-device-card__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--border, oklch(1 0 0 / 10%)); font-size: 14px; color: var(--muted-foreground, oklch(0.708 0 0)); font-variant-numeric: tabular-nums; } .ds-badge-online { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 8px; background: oklch(0.696 0.17 162.48 / 15%); color: oklch(0.8 0.14 162.48); font-size: 12px; font-weight: 500; } .ds-badge-condition { display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px; border-radius: 8px; background: oklch(0.769 0.188 70.08 / 20%); color: oklch(0.87 0.16 70.08); font-size: 14px; font-weight: 600; } .ds-badge-level { font-weight: 400; opacity: 0.8; } .ds-btn-outline { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border: 1px solid var(--input, oklch(1 0 0 / 15%)); border-radius: 8px; background: color-mix(in oklch, var(--input, oklch(1 0 0 / 15%)) 30%, transparent); color: var(--foreground, oklch(0.985 0 0)); font: 500 14px/1 system-ui, sans-serif; cursor: pointer; } .ds-btn-outline:hover { background: color-mix(in oklch, var(--input, oklch(1 0 0 / 15%)) 50%, transparent); } .ds-btn-outline:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); }"
+    },
+    {
+      "name": "Sidebar Item",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "One route in the inset sidebar: icon and label; the active route fills Raised Grey.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item ds-nav-item--active\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect width=\"7\" height=\"9\" x=\"3\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"14\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"9\" x=\"14\" y=\"12\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"3\" y=\"16\" rx=\"1\"/></svg>Dashboard</a><a class=\"ds-nav-item\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M20 7h-9\"/><path d=\"M14 17H5\"/><circle cx=\"17\" cy=\"17\" r=\"3\"/><circle cx=\"7\" cy=\"7\" r=\"3\"/></svg>Settings</a></nav>",
+      "css": ".ds-nav { display: flex; flex-direction: column; gap: 4px; width: 14rem; padding: 8px; border-radius: 14px; background: var(--sidebar, oklch(0.205 0 0)); } .ds-nav-item { display: flex; align-items: center; gap: 8px; height: 32px; padding: 8px; border-radius: 8px; color: var(--sidebar-foreground, oklch(0.985 0 0)); font: 400 14px/1 system-ui, Avenir, Helvetica, Arial, sans-serif; text-decoration: none; transition: background-color 150ms cubic-bezier(0.4, 0, 0.2, 1); } .ds-nav-item:hover { background: color-mix(in oklch, var(--sidebar-accent, oklch(0.269 0 0)) 50%, transparent); } .ds-nav-item--active { background: var(--sidebar-accent, oklch(0.269 0 0)); font-weight: 500; } .ds-nav-item:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--ring, oklch(0.556 0 0)) 50%, transparent); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Night Shift Console",
+    "overview": "A console read on the night shift: dark by default, the readouts first, and every light on the board there because it means something. The surfaces are pure greys at three depths, the type is the operating system's own sans, and the biggest thing on any screen is a number. Nothing decorates. When every closet is comfortable the page is almost monochrome; a Condition is the loudest thing on it, and the worst active Condition sets the tone of its card. This is the visual form of PRODUCT.md's quiet until it matters and calm, factual, trustworthy.\n\nThe system explicitly rejects the SaaS analytics dashboard (gradient accents, hero metrics, decorative charts), the consumer smart-home app (big rounded tiles, playful icons, weather-app styling), the industrial SCADA console (dense monochrome grids, tiny text, blinking indicators), and the old PHP and Bootstrap version of this site. It is a shadcn/ui set used plainly, in Tailwind v4, with the tokens in frontend/src/index.css as the single source of colour and radius.\n\nDensity is moderate: three pages (Dashboard, History, Settings) behind an inset sidebar, page sections 24px apart, cards padded 20 to 24px, tables at 14px with tabular figures. A light theme exists with the same structure; dark is what ships by default and what the palette is written for.",
+    "keyCharacteristics": [
+      "Dark, chroma-zero surfaces at three depths; colour appears only as a signal.",
+      "Numbers are the display type: 48 to 60px, semibold, tabular, tight tracking.",
+      "One sans family (the system stack) at every size; a mono only for Device hostnames.",
+      "Hairline borders and tonal steps carry depth; the page itself casts no shadows.",
+      "Standard shadcn shapes, 8px radius on controls and 14px on cards, no decoration.",
+      "Motion states a change (a fade-in, a spinning refresh icon) and never performs."
+    ],
+    "rules": [
+      {
+        "name": "The One Meaning Rule",
+        "body": "A signal colour is bound to one Condition level or one state and is never used for emphasis, decoration, or brand. Amber means warning wherever it appears; if it appears anywhere else, it is wrong. A confirmation tick is grey, not green: green means Online.",
+        "section": "colors"
+      },
+      {
+        "name": "The Worst Wins Rule",
+        "body": "A card takes the border of its worst active Condition and only that one. Badges list every Condition; the border says which matters most.",
+        "section": "colors"
+      },
+      {
+        "name": "The Grey Button Rule",
+        "body": "Primary actions are near-white on dark, not blue. The only blue on a screen is the sidebar mark and a chart line, so a technician's eye is never pulled to a button when it should be on a number.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Reds Rule",
+        "body": "No mid-luminance red reads both as text on dark grey and as a fill under white. Critical Red is for text and borders, Critical Fill for solid surfaces; swapping them fails AA in the dark theme.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "Any number that can change while it is on screen is set tabular-nums so it does not jitter when it changes. Ages, countdowns, readouts, table columns, tile values.",
+        "section": "typography"
+      },
+      {
+        "name": "The Sentence Case Rule",
+        "body": "Headings, labels, buttons and badges are sentence case. No uppercase tracked eyebrows anywhere.",
+        "section": "typography"
+      },
+      {
+        "name": "The Three Greys Rule",
+        "body": "Page, panel, raised. If a surface needs a fourth depth, the layout is wrong, not the palette.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Nothing Floats Rule",
+        "body": "Shadows appear only on overlays. A hover never lifts a card; it changes a fill (Raised Grey) or a text colour.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do set every changing number in tabular-nums and size the latest temperature at 48 to 60px semibold; the number is the design.",
+      "Do keep colour to its one meaning: Warning Amber for warning, High Red for high, Critical Fill under white for critical, Moderate Yellow for moderate, Humidity Green for Online and Live, Signal Blue for the mark and the temperature line.",
+      "Do give a card the border of its worst active Condition and list every Condition as a badge with its level spelled out; a colour is never the only signal.",
+      "Do use the Placeholder pattern (dashed Hairline, 64px padding, one outline action) for every empty and error state, and a Skeleton for loading; never a spinner in the middle of content.",
+      "Do use outline buttons for secondary actions, ghost buttons for inline ones, one primary per view, and put every destructive action behind an AlertDialog whose confirm is the only destructive-filled button.",
+      "Do keep text at 14px or larger in tables and body, Dimmed Grey no lighter than oklch(0.708 0 0) on Panel Grey, and a visible 3px focus ring on every control.",
+      "Do write labels, buttons and badges in sentence case, in the vocabulary of CONTEXT.md (Device, Reading, Campus, Closet, Condition).",
+      "Do give every page one h1 and a document title of its own (\"Settings · Temperature Alarms\"), and keep the sidebar links inside the nav landmark."
+    ],
+    "donts": [
+      "Don't build a SaaS analytics dashboard: no gradient accents, no hero-metric tiles with sparklines, no decorative charts, no marketing polish on an internal tool.",
+      "Don't build a consumer smart-home app: no big rounded tiles, no playful icons, no weather-app styling.",
+      "Don't build an industrial SCADA console: no dense monochrome grids, no text under 12px, no blinking indicators. A pulsing red border was removed from index.css for this reason and must not come back.",
+      "Don't reproduce the old PHP and Bootstrap version: no default Bootstrap look, no generic admin template, no Font Awesome.",
+      "Don't put a coloured border-left or border-right stripe on anything; a Condition is a full border, a tint, or a badge.",
+      "Don't use Signal Blue on a button, a badge, or a link; it belongs to the mark and the chart.",
+      "Don't lift a card on hover or add a shadow to anything that is not an overlay.",
+      "Don't compute a Condition, a threshold, or a colour rule in the browser; render what the API sends.",
+      "Don't add uppercase tracked eyebrows, numbered section markers, gradient text, or glass effects anywhere.",
+      "Don't animate layout properties, orchestrate page-load sequences, or ship any animation without a reduced-motion alternative."
+    ]
+  }
+}

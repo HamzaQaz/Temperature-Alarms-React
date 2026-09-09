@@ -1,0 +1,44 @@
+# Product
+
+## Register
+
+product
+
+## Platform
+
+web
+
+## Users
+
+Network technicians at a school district, at a laptop. They open the site deliberately when checking on the closets they look after, and go to a Device's history when something looks wrong. The same people add Devices and Campuses now and then with the shared Admin token; that is another hat, not a second audience. A dashboard left on a wall screen is a secondary case, not the one the design is built around.
+
+## Product Purpose
+
+Live temperature and humidity monitoring for network closets across the district's campuses. Each closet has a NodeMCU board with a DHT11 sensor that posts a Reading every Report interval; the backend computes the Conditions a closet is in (Hot, Cold, Dry, Mold risk, Offline) and pushes every Reading to open browsers. Success is a technician learning that a closet is heading for trouble early enough to act, and trusting the numbers and the timeline enough to act on them without checking by hand.
+
+## Positioning
+
+You know a closet is in trouble before the equipment does.
+
+## Brand Personality
+
+Calm, factual, trustworthy. The interface is quiet by default and only raises its voice when a closet is actually in a Condition. Numbers are shown plainly, in the district's own vocabulary (Device, Reading, Campus, Closet, Condition), and never dressed up. Nothing on screen is decided in the browser that the server could decide once for everyone.
+
+## Anti-references
+
+- A SaaS analytics dashboard: gradient accents, hero metrics, decorative charts, marketing polish on an internal tool.
+- A consumer smart-home app: big rounded tiles, playful icons, weather-app styling.
+- An industrial SCADA console: dense monochrome grids, tiny text, blinking indicators.
+- The old PHP and Bootstrap version of this site: the default Bootstrap look, a generic admin template.
+
+## Design Principles
+
+- Quiet until it matters. A comfortable closet takes up as little attention as possible; a Condition is the loudest thing on the page, and the worst one sets the tone.
+- The server decides, the browser shows. Every Condition, every threshold, and every summary number comes from the API so all pages, and any future alerting, agree.
+- Say what happened, with the numbers. The value, when it was recorded, and how long ago; history by the day with lows, highs, and averages beside the chart.
+- The same vocabulary everywhere. Labels and copy use the words in CONTEXT.md, so a technician reads the site the way the team talks.
+- Earned familiarity. Standard controls and layouts from the existing shadcn set, used consistently across the three pages, so the tool disappears into the task.
+
+## Accessibility & Inclusion
+
+WCAG 2.2 AA is the bar: contrast, focus visibility, keyboard operation, and a reduced-motion alternative for every animation.
