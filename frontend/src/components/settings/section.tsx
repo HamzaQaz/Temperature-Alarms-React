@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react';
+import { motion } from 'framer-motion';
 import { AlertCircle, Check, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -15,6 +16,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import type { ChangeResult } from '@/hooks/use-change';
+import { crossfade } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 
 /** Title, one-line purpose, and the section's primary action, laid out the same in every tab. */
@@ -46,7 +48,11 @@ export function SectionHeader({ id, title, description, action }: SectionHeaderP
  */
 export function StatusLine({ message }: { message: string | null }) {
   return (
-    <p role="status" className={cn('flex items-center gap-2 text-sm', message === null && 'sr-only')}>
+    <p
+      key={message}
+      role="status"
+      className={cn('flex items-center gap-2 text-sm', message === null ? 'sr-only' : 'motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200')}
+    >
       {message !== null && (
         <>
           <Check className="size-4 shrink-0 text-muted-foreground" aria-hidden />
@@ -55,6 +61,12 @@ export function StatusLine({ message }: { message: string | null }) {
       )}
     </p>
   );
+}
+
+/** A data row that fades in when it is added and out when it is deleted. Render inside an AnimatePresence. */
+const MotionRow = motion.create(TableRow);
+export function AnimatedRow(props: React.ComponentProps<typeof MotionRow>) {
+  return <MotionRow {...crossfade} {...props} />;
 }
 
 /** Placeholder rows shaped like the data, shown while a list loads. */

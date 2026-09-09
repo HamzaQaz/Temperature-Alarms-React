@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
@@ -13,6 +14,7 @@ import { hasWarningOrWorse, isWarningOrWorse } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useNow } from '@/hooks/use-now';
+import { arrive, settle } from '@/lib/motion';
 import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
 import type { Dashboard as DashboardPayload, DashboardDevice, ReadingEvent } from '@/types';
@@ -137,7 +139,7 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
   const { devices, reportIntervalSeconds, offlineAfterSeconds } = state.data;
 
   return (
-    <div className="space-y-6">
+    <motion.div className="space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           Devices report every {reportIntervalSeconds} seconds. Offline means nothing has arrived for {offlineAfterSeconds} seconds.
@@ -158,7 +160,7 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
       ) : (
         <DeviceGrid devices={devices} reportIntervalSeconds={reportIntervalSeconds} offlineAfterSeconds={offlineAfterSeconds} onPastOffline={reload} />
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -186,11 +188,13 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
   }, [pastOfflineKey, onPastOffline]);
   return (
     <ul className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-4" aria-label="Devices">
-      {devices.map((device) => (
-        <li key={device.id} className="flex">
-          <DeviceCard device={device} secondsSinceReading={age(device)} reportIntervalSeconds={reportIntervalSeconds} />
-        </li>
-      ))}
+      <AnimatePresence>
+        {devices.map((device, index) => (
+          <motion.li key={device.id} className="flex" {...arrive(index)}>
+            <DeviceCard device={device} secondsSinceReading={age(device)} reportIntervalSeconds={reportIntervalSeconds} />
+          </motion.li>
+        ))}
+      </AnimatePresence>
     </ul>
   );
 }

@@ -274,7 +274,13 @@ Plain and precise: stock shadcn/ui shapes, 8px radius on controls and 14px on co
 - Recharts inside the shadcn ChartContainer. Temperature in Signal Blue and humidity in Humidity Green, dashed, on two axes; grid lines are Hairline at 50%; ticks are 12px Dimmed Grey; the day runs midnight to midnight. No dots above 48 points, no fill areas, no animation on live reloads.
 
 ### Motion
-- State only: `motion-safe:animate-in fade-in-0 duration-200` on a panel that appears (the token prompt), `animate-spin` on a Refresh icon while a reload is in flight, `animate-pulse` on the Reconnecting dot, a 300ms opacity and 20px slide between pages. Everything is wrapped in `motion-safe` or has a `prefers-reduced-motion` alternative. Value changes animate through NumberFlow so a readout counts rather than snaps.
+Motion states a change and never performs. The vocabulary lives in `frontend/src/lib/motion.ts` and the easing tokens in `index.css`: a change settles out on an exponential ease (`--ease-out-quint`, 200ms), an exit is quicker (150ms), and nothing bounces.
+- **A Reading landing (signature):** the card's fill rises to Raised Grey and settles back over 800ms (`animate-reading-landed`, expo ease, held for the first quarter) while NumberFlow counts the readout. Grey, not a signal colour: it says which closet just spoke, not how it is.
+- **State in place crossfades:** the Online and Offline badges, the "Next in" and "Expected ago" notes, Condition badges arriving and leaving (with a layout shift on their siblings), and the Live dot's colour. A card's border colour transitions over 300ms when its worst Condition changes.
+- **Arrival:** a page's content fades in from its skeleton over 200ms; Device cards arrive with a 6px rise, 30ms apart, capped at the eighth so a long grid never waits. Settings rows fade in when added and out when deleted; a status line fades in when it lands. No page-load choreography beyond that.
+- **Routes:** 220ms fade with an 8px rise in, 120ms fade out, `mode="wait"`.
+- **Feedback:** `active:scale-[0.98]` over 150ms on every button; `animate-spin` on the Refresh icon while a reload is in flight; `animate-pulse` on the Reconnecting dot.
+- **Reduced motion:** CSS animations are gated by `motion-safe:` and a global `prefers-reduced-motion` rule collapses every duration; framer-motion runs under `MotionConfig reducedMotion="user"`, which drops transforms and layout moves and keeps crossfades, so a state change is still visible as a fade.
 
 ## 6. Do's and Don'ts
 

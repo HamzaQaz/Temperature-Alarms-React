@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { AnimatePresence } from 'framer-motion';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
@@ -13,18 +14,7 @@ import { CLOSET_MAX } from '@/lib/closet';
 import { HOSTNAME_EXAMPLE, hostnameProblem } from '@/lib/hostname';
 import type { Device } from '@/types';
 import { EditDeviceForm } from './EditDeviceForm';
-import {
-  DeleteButton,
-  EmptyRow,
-  ErrorRow,
-  FieldHint,
-  InlineError,
-  InlineForm,
-  SectionHeader,
-  SkeletonRows,
-  StatusLine,
-  WrappingCell,
-} from './section';
+import { AnimatedRow, DeleteButton, EmptyRow, ErrorRow, FieldHint, InlineError, InlineForm, SectionHeader, SkeletonRows, StatusLine, WrappingCell } from './section';
 
 interface DevicesSectionProps {
   /** False while no Admin token is stored; changes are disabled and the token panel explains why. */
@@ -254,10 +244,11 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
             {state.status === 'ready' && state.data.length === 0 && (
               <EmptyRow colSpan={COLUMNS} title="No devices yet" hint="Add a Device by its hostname to see it on the dashboard." />
             )}
-            {state.status === 'ready' &&
-              state.data.map((device) =>
-                editing?.id === device.id ? (
-                  <TableRow key={device.id} className="hover:bg-transparent">
+            <AnimatePresence initial={false}>
+              {state.status === 'ready' &&
+                state.data.map((device) =>
+                  editing?.id === device.id ? (
+                  <AnimatedRow key={device.id} className="hover:bg-transparent">
                     <TableCell colSpan={COLUMNS} className="whitespace-normal p-2">
                       <EditDeviceForm
                         device={editing}
@@ -268,9 +259,9 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
                         onUnauthorised={onUnauthorised}
                       />
                     </TableCell>
-                  </TableRow>
+                  </AnimatedRow>
                 ) : (
-                  <TableRow key={device.id}>
+                  <AnimatedRow key={device.id}>
                     <TableCell className="font-mono font-medium">{device.hostname}</TableCell>
                     <WrappingCell>
                       {device.campus.name} <span className="font-mono text-xs text-muted-foreground">{device.campus.shortcode}</span>
@@ -302,9 +293,10 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
                         onDismiss={remove.clearError}
                       />
                     </TableCell>
-                  </TableRow>
+                  </AnimatedRow>
                 ),
               )}
+            </AnimatePresence>
           </TableBody>
         </Table>
       </div>

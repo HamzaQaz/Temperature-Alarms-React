@@ -18,8 +18,8 @@ const LOOK: Record<StreamStatus, { label: string; dot: string; text: string }> =
 export function LiveStatus({ status }: { status: StreamStatus }) {
   const { label, dot, text } = LOOK[status];
   return (
-    <span role="status" className={cn('flex items-center gap-1.5 text-sm tabular-nums', text)}>
-      <span className={cn('size-2 rounded-full', dot)} aria-hidden />
+    <span role="status" className={cn('flex items-center gap-1.5 text-sm tabular-nums transition-colors duration-300 ease-out-quint', text)}>
+      <span className={cn('size-2 rounded-full transition-colors duration-300 ease-out-quint', dot)} aria-hidden />
       {label}
       {status === 'reconnecting' && <span className="sr-only">: live updates paused</span>}
     </span>

@@ -28,7 +28,9 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAdminToken } from '@/hooks/use-admin-token';
 import { useChange } from '@/hooks/use-change';
+import { motion } from 'framer-motion';
 import { useReadingStream } from '@/hooks/use-reading-stream';
+import { settle } from '@/lib/motion';
 import { useResource } from '@/hooks/use-resource';
 import { clearAdminToken, getAdminToken, setAdminToken } from '@/lib/adminToken';
 import { addDays, formatDayLong, formatDayShort, formatHour, formatTime, formatTimeSeconds, isDateString, today } from '@/lib/localDate';
@@ -186,7 +188,7 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
   const isToday = date === today();
 
   return (
-    <div className="flex-1 space-y-6">
+    <motion.div className="flex-1 space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
       <PageHeading
         title={device.closet}
         subtitle={
@@ -256,7 +258,7 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
           <ReadingsTable readings={readings} date={date} />
         </>
       )}
-    </div>
+    </motion.div>
   );
 }
 

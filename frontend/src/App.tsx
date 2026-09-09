@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
-import { AnimatePresence, motion } from 'framer-motion';
+import { AnimatePresence, motion, MotionConfig } from 'framer-motion';
+import { EASE_OUT_QUINT } from '@/lib/motion';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -29,24 +30,15 @@ import {
 import { Separator } from "@/components/ui/separator"
 
 
+// A page settles in with a short rise and leaves with a quicker fade, so a route change reads
+// as one motion rather than two. Reduced motion (MotionConfig below) drops the rise and keeps the fade.
 const pageVariants = {
-  initial: {
-    opacity: 0,
-    x: -20
-  },
-  in: {
-    opacity: 1,
-    x: 0
-  },
-  out: {
-    opacity: 0,
-    x: 20
-  }
+  initial: { opacity: 0, y: 8 },
+  in: { opacity: 1, y: 0 },
+  out: { opacity: 0, transition: { duration: 0.12, ease: EASE_OUT_QUINT } },
 };
 
-const pageTransition = {
-  duration: 0.3
-};
+const pageTransition = { duration: 0.22, ease: EASE_OUT_QUINT };
 
 function AnimatedRoutes() {
   const location = useLocation();
@@ -96,7 +88,8 @@ function AnimatedRoutes() {
 
 function App() {
   return (
-    <Router>
+    <MotionConfig reducedMotion="user">
+      <Router>
       <SidebarProvider>
         <AppSidebar />
         <SidebarInset>
@@ -112,6 +105,7 @@ function App() {
         </SidebarInset>
       </SidebarProvider>
     </Router>
+    </MotionConfig>
   );
 }
 

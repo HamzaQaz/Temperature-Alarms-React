@@ -4,21 +4,11 @@ import { addCampus, deleteCampus, getCampuses } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { AnimatePresence } from 'framer-motion';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
-import {
-  DeleteButton,
-  EmptyRow,
-  ErrorRow,
-  FieldHint,
-  InlineError,
-  InlineForm,
-  SectionHeader,
-  SkeletonRows,
-  StatusLine,
-  WrappingCell,
-} from './section';
+import { AnimatedRow, DeleteButton, EmptyRow, ErrorRow, FieldHint, InlineError, InlineForm, SectionHeader, SkeletonRows, StatusLine, WrappingCell } from './section';
 
 interface CampusesSectionProps {
   /** False while no Admin token is stored; changes are disabled and the token panel explains why. */
@@ -165,9 +155,10 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
                 hint="Add the first campus, then Devices can be assigned to it."
               />
             )}
-            {state.status === 'ready' &&
-              state.data.map((campus) => (
-                <TableRow key={campus.id}>
+            <AnimatePresence initial={false}>
+              {state.status === 'ready' &&
+                state.data.map((campus) => (
+                  <AnimatedRow key={campus.id}>
                   <WrappingCell className="font-medium">{campus.name}</WrappingCell>
                   <TableCell className="font-mono text-muted-foreground">{campus.shortcode}</TableCell>
                   <TableCell className="text-right">
@@ -181,8 +172,9 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
                       onDismiss={remove.clearError}
                     />
                   </TableCell>
-                </TableRow>
-              ))}
+                  </AnimatedRow>
+                ))}
+            </AnimatePresence>
           </TableBody>
         </Table>
       </div>
