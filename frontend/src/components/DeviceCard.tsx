@@ -96,9 +96,9 @@ export function DeviceCard({ device, secondsSinceReading, reportIntervalSeconds 
           <div className="min-w-0">
             <p className="truncate text-sm text-muted-foreground">{device.campus.name}</p>
             <div className="mt-0.5 flex items-center gap-2">
-              <h3 id={titleId} className="truncate text-lg font-semibold leading-tight">
+              <h2 id={titleId} className="truncate text-lg font-semibold leading-tight">
                 {device.closet}
-              </h3>
+              </h2>
               {device.closetType && (
                 <Badge
                   variant="outline"

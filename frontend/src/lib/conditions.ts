@@ -14,7 +14,7 @@ interface LevelLook {
 
 const LOOKS: Record<ConditionLevel, LevelLook> = {
   critical: {
-    badge: 'border-transparent bg-destructive text-white dark:bg-destructive/80',
+    badge: 'border-transparent bg-destructive-solid text-destructive-solid-foreground',
     border: 'border-destructive',
   },
   high: {

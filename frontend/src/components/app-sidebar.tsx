@@ -53,7 +53,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-medium">Celina ISD</span>
-                  <span className="truncate text-xs">Temprature Monitor</span>
+                  <span className="truncate text-xs">Temperature Monitor</span>
                 </div>
               </a>
             </SidebarMenuButton>
@@ -61,6 +61,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
+        <nav aria-label="Pages">
         <SidebarMenu>
       {navItems.map((item) => (
         <SidebarMenuItem key={item.title}>
@@ -73,6 +74,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </SidebarMenuItem>
       ))}
     </SidebarMenu>
+        </nav>
       </SidebarContent>
       <SidebarFooter>
         <SidebarMenu>

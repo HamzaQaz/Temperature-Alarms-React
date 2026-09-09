@@ -27,6 +27,9 @@
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  /* Solid red surfaces (a confirm button, a critical badge). White text clears 4.5:1 on both. */
+  --destructive-solid: oklch(0.577 0.245 27.325);
+  --destructive-solid-foreground: oklch(1 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -71,6 +74,8 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-solid: var(--destructive-solid);
+  --color-destructive-solid-foreground: var(--destructive-solid-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -105,6 +110,9 @@
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  /* Deeper than the text red: that one is tuned to read on dark grey, this one to sit under white. */
+  --destructive-solid: oklch(0.505 0.213 27.518);
+  --destructive-solid-foreground: oklch(1 0 0);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
@@ -130,20 +138,4 @@
   body {
     @apply bg-background text-foreground;
   }
-}
-
-/* Custom animations for mold risk alerts */
-@keyframes pulse-border {
-  0%, 100% {
-    border-color: hsl(var(--destructive));
-    box-shadow: 0 0 0 0 hsl(var(--destructive) / 0.7);
-  }
-  50% {
-    border-color: hsl(var(--destructive) / 0.8);
-    box-shadow: 0 0 0 4px hsl(var(--destructive) / 0);
-  }
-}
-
-.animate-pulse-border {
-  animation: pulse-border 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }

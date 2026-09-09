@@ -1,8 +1,25 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
-import History from './pages/History';
+import { Skeleton } from '@/components/ui/skeleton';
+
+// History carries the charting library, which is a third of the bundle and unused elsewhere, so it loads on first visit.
+const History = lazy(() => import('./pages/History'));
+
+/** The shape of a page while its code arrives: a heading and a block, so nothing jumps when it lands. */
+function PageLoading() {
+  return (
+    <div className="flex-1 space-y-6" aria-busy aria-label="Loading the page">
+      <div className="space-y-2">
+        <Skeleton className="h-8 w-40" />
+        <Skeleton className="h-4 w-64" />
+      </div>
+      <Skeleton className="h-96 rounded-xl" />
+    </div>
+  );
+}
 import { AppSidebar } from "@/components/app-sidebar"
 import {
   SidebarInset,
@@ -67,7 +84,9 @@ function AnimatedRoutes() {
             variants={pageVariants}
             transition={pageTransition}
           >
-            <History />
+            <Suspense fallback={<PageLoading />}>
+              <History />
+            </Suspense>
           </motion.div>
         } />
       </Routes>

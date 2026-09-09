@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AlertCircle, RefreshCw } from 'lucide-react';
@@ -20,6 +21,7 @@ const ALL = 'all';
 
 /** The dashboard: every Device's latest Reading, filtered by Campus from the URL. */
 export default function Dashboard() {
+  usePageTitle('Dashboard');
   const [searchParams, setSearchParams] = useSearchParams();
   const campusParam = searchParams.get('campus') ?? '';
   const campuses = useResource(getCampuses);
@@ -34,7 +36,7 @@ export default function Dashboard() {
     <div className="flex-1 space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="space-y-1">
-          <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
+          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground">The latest Reading from every closet.</p>
         </div>
       </header>

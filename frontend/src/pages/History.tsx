@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
@@ -62,6 +63,7 @@ export default function History() {
 }
 
 function NoDevice() {
+  usePageTitle('History');
   return (
     <div className="flex-1 space-y-6">
       <PageHeading title="History" subtitle="One day of a Device's Readings." />
@@ -94,7 +96,7 @@ function PageHeading({ title, subtitle, tag, actions }: PageHeadingProps) {
         </Button>
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-3xl font-bold tracking-tight">{title}</h2>
+            <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
             {tag}
           </div>
           <p className="text-muted-foreground">{subtitle}</p>
@@ -118,6 +120,7 @@ interface DayViewProps {
 function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: DayViewProps) {
   const load = useCallback(() => getHistory(deviceId, date), [deviceId, date]);
   const { state, reload } = useResource(load);
+  usePageTitle(state.status === 'ready' ? `${state.data.device.closet}, ${state.data.device.campus.name}` : 'History');
 
   // The day is reloaded, not patched, when a Reading for this Device lands on it: the
   // summary and the chart both change, and the server is the one that cuts the day.
@@ -150,7 +153,7 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
   }, []);
   const change = useChange(onUnauthorised);
   const reset = async () => {
-    if (await change.run(() => resetHistory(deviceId))) await reload();
+    if ((await change.run(() => resetHistory(deviceId))).ok) await reload();
   };
 
   if (state.status === 'loading') return <DaySkeleton />;
@@ -283,7 +286,7 @@ function ResetButton({ closet, disabled, pending, onConfirm }: ResetButtonProps)
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Keep it</AlertDialogCancel>
-          <AlertDialogAction onClick={onConfirm} className="bg-destructive text-white hover:bg-destructive/90">
+          <AlertDialogAction onClick={onConfirm} className="bg-destructive-solid text-destructive-solid-foreground hover:bg-destructive-solid/90">
             Delete all Readings
           </AlertDialogAction>
         </AlertDialogFooter>
@@ -314,7 +317,7 @@ function DayPicker({ date, onShowDay }: DayPickerProps) {
           onChange={(event) => {
             if (isDateString(event.target.value)) onShowDay(event.target.value);
           }}
-          className="h-9 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          className="h-9 pointer-coarse:min-h-11 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
         />
       </label>
       <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, 1))} disabled={isToday} aria-label="Next day">
