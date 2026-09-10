@@ -6,6 +6,8 @@ frontend/dist/
 backend/dist/
 backend/logs/
 *.log
+arduino/**/build/
+__pycache__/
 
 # Environment files
 .env

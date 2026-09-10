@@ -63,7 +63,7 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 
 ```
 .
-├── arduino/       # ESP8266 sketch for the NodeMCU + DHT11 Device, and its wiring diagram
+├── arduino/       # ESP8266 sketch for the NodeMCU + DHT11 Device, its wiring diagram, and the bench watcher
 ├── backend/       # Express + TypeScript API, MySQL, the migration runner, the virtual Device
 ├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui
 ├── docs/adr/      # Architecture decision records
@@ -246,6 +246,34 @@ Run through this once per Device, on a desk, before it goes into a closet.
 2. **First POST returns 201.** Within one interval the log shows a `sensor:` line with the temperature and humidity, then `report: 201 created`, and the Device's card updates on the dashboard. A `report: 401` means the token in `config.h` does not match the backend's `DEVICE_TOKEN`.
 3. **Unplugged sensor yields skipped samples.** Pull the DATA wire: each interval logs `sensor: read failed (NaN), sample skipped` and nothing is posted, so the history never records a zero. Plug it back in and posting resumes at the next interval.
 4. **Router reboot yields resumed posting.** Power-cycle the access point: the log shows `wifi: connection lost, reconnecting`, then `wifi: reconnected` with the new address, and the next Reading goes out without the Device restarting. The `report:` lines that fail in between are logged and not retried.
+
+### Flashing a batch
+
+For a box of boards, [`arduino/bench.py`](arduino/bench.py) does the checklist's first two steps for every board and writes down what it found. It runs on the Windows laptop next to a USB hub, needs Python 3.9 or newer, and only two packages:
+
+```powershell
+pip install esptool pyserial
+```
+
+1. **Export the binary once.** Fill in `config.h` as above, then in the IDE choose Sketch, Export Compiled Binary: it lands under `build/` in the sketch folder as `TemperatureAlarms.ino.bin`. One board type per batch, since `DHT_PIN` is in the binary; a batch of integrated boards is a second export.
+2. **Set the Admin token**, from the stack's `.env`, in the environment and nowhere else: `$env:ADMIN_TOKEN = "..."` in PowerShell, `set ADMIN_TOKEN=...` in cmd.
+3. **Run the watcher** against the live server and the inventory sheet, a CSV with a `MAC` column (a `HOSTNAME` column is used when present):
+
+   ```powershell
+   python arduino\bench.py --server http://<host> --inventory "device_log - device_log.csv"
+   ```
+
+   It refuses to start when the binary is missing or older than a source file in the sketch folder, when `ADMIN_TOKEN` is unset or not the server's, or when the server's `/api/health` does not answer. Once running, plug boards in; ports present at start are ignored. Each new port is handled on its own thread, so a hub works several boards at once. Per board: esptool reads the MAC, the hostname is derived (`ESP_` plus the last six hex digits), the sheet row is looked up by MAC (a board off the sheet proceeds, flagged `not on list`), the Device is registered under the Bench Campus with closet `Unassigned` (an existing hostname reads `already`), the binary is flashed at 921600 baud (460800 if the handshake fails), and the board is reset and read over serial for 70 seconds, two report attempts. One line per board says what happened:
+
+   ```
+   COM7  row 12  ESP_7AED5B  registered  flashed  PASS
+   COM9  not on list  ESP_1234AB  already  flashed  FAIL bad sensor
+   ```
+
+   PASS needs `device:` with the derived hostname, `wifi: connected`, a numeric `sensor:` line, and `report: 201 created`. `FAIL bad sensor` and `FAIL did not boot` keep the batch going and leave the Device registered. A `report: 401` (the Device token in the binary), no `wifi: connected` on the first board of the run (SSID or password), or `report: failed` (the server is unreachable from the bench) stops the batch and names which of the binary, the WiFi, or the server to fix. Ctrl-C stops after the boards in progress finish.
+4. **Read the log.** `<sheet>.bench.csv` next to the sheet gains one row per board seen (time, port, sheet row, hostname, MAC, `registered` or `already`, `flashed`, verdict, reason); replugging a board runs it again and adds a row. The sheet itself is never modified. On stop, the watcher prints the sheet rows no board answered for and the boards the sheet lacks. A Device on the Bench stays there, Offline, until Settings moves it to its Campus and Closet.
+
+The watcher's logic is unit-tested without hardware: `python -m unittest arduino/test_bench.py` from the repo root. A real board on the bench is the acceptance test.
 
 ## Deployment
 
