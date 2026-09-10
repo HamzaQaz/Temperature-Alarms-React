@@ -41,6 +41,10 @@ The single shared secret every Device sends with each Reading.
 A named state a Device's latest Reading is in, computed on the server from global thresholds set once in the backend configuration: Hot, Cold, Dry, Mold risk, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
 _Avoid_: Alert, alarm, risk, status
 
+**Bench**:
+The holding Campus (shortcode `BENCH`) a Device is registered under between flashing and installation. A Device on the Bench has passed its first Reading and is expected to be Offline until it is moved to its real Campus and Closet.
+_Avoid_: Staging, spare, inventory (that is the spreadsheet of boards, not a place)
+
 **Operator**:
 The person who runs the backend and its database: installs, upgrades, backs up. A role in the documentation, not in the product; there is no login for it.
 _Avoid_: Admin (that is a token), sysadmin, host
