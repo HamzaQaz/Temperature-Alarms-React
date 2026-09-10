@@ -290,8 +290,17 @@ class ServerClient(unittest.TestCase):
 
 class OneBoard(unittest.TestCase):
     def setUp(self):
-        self.inventory = bench.Inventory.from_text(SHEET + "12,ESP_7AED5B,EC:FA:BC:7A:ED:5B,,\r\n")
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder)
+        self.sheet = os.path.join(folder, "sheet.csv")
+        with open(self.sheet, "w", newline="") as handle:
+            handle.write(SHEET + "12,ESP_7AED5B,EC:FA:BC:7A:ED:5B,,\r\n")
+        self.inventory = bench.Inventory.from_file(self.sheet)
         self.server = bench.Server("http://alarms.local", "tok", FakeTransport())
+
+    def sheet_lines(self):
+        with open(self.sheet, newline="") as handle:
+            return handle.read().split("\r\n")
 
     def run_board(self, tools, port="COM7", first_board=False):
         return bench.check_board(port, tools, self.server, self.inventory, "/bin/fw.bin", campus_id=7, is_first_board=lambda: first_board)
@@ -300,12 +309,20 @@ class OneBoard(unittest.TestCase):
         result = self.run_board(FakeTools())
         self.assertEqual(result.line(), "COM7  row 6  ESP_7AED5B  registered  flashed  PASS")
         self.assertEqual(result.row_for_log()[1:], ["COM7", "6", "ESP_7AED5B", "EC:FA:BC:7A:ED:5B", "registered", "flashed", "PASS", ""])
+        self.assertTrue(self.sheet_lines()[5].startswith("12,ESP_7AED5B,EC:FA:BC:7A:ED:5B,,TRUE,TRUE,PASS "))
 
     def test_a_board_off_the_sheet_is_flagged_and_still_handled(self):
         tools = FakeTools(mac="5C:CF:7F:12:34:AB", lines=boot_log(hostname="ESP_1234AB", sensor="sensor: read failed (NaN), sample skipped"))
         server = bench.Server("http://alarms.local", "tok", FakeTransport(device_status=409))
         result = bench.check_board("COM9", tools, server, self.inventory, "/bin/fw.bin", campus_id=7, is_first_board=lambda: False)
-        self.assertEqual(result.line(), "COM9  not on list  ESP_1234AB  already  flashed  FAIL bad sensor")
+        self.assertEqual(result.line(), "COM9  added row 7  ESP_1234AB  already  flashed  FAIL bad sensor")
+        self.assertEqual(result.row_for_log()[2], "7")
+        self.assertTrue(self.sheet_lines()[6].startswith("13,ESP_1234AB,5C:CF:7F:12:34:AB,,FALSE,TRUE,FAIL bad sensor "))
+
+    def test_a_sheet_that_cannot_be_written_is_said_on_the_line(self):
+        self.inventory.path = os.path.join(os.path.dirname(self.sheet), "missing", "sheet.csv")
+        result = self.run_board(FakeTools())
+        self.assertTrue(result.line().startswith("COM7  row 6  ESP_7AED5B  registered  flashed  PASS (sheet not updated: "))
 
     def test_flash_falls_back_to_460800_when_921600_fails(self):
         tools = FakeTools(failing_bauds={921600})
@@ -446,3 +463,56 @@ class WatcherRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SheetWriteBack(unittest.TestCase):
+    NOTE = "MAKE SURE TO PUT HOSTNAME WITH _ IN MONITER! Email me if you need help,,,,\r\n"
+
+    def setUp(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder)
+        self.path = os.path.join(folder, "device_log - device_log.csv")
+        with open(self.path, "w", newline="") as handle:
+            handle.write(SHEET + self.NOTE)
+        self.inventory = bench.Inventory.from_file(self.path)
+
+    def lines(self):
+        with open(self.path, "rb") as handle:
+            return handle.read().decode().split("\r\n")
+
+    def test_a_pass_ticks_flashed_and_tested_and_notes_the_verdict(self):
+        row = self.inventory.record("8C:AA:B5:0F:F1:B8", "ESP_0FF1B8", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-10")
+        self.assertEqual(row, 3)
+        lines = self.lines()
+        self.assertEqual(lines[0], "ID,HOSTNAME,MAC,Column 1,TESTED,FLASHED,BENCH")
+        self.assertEqual(lines[2], "2,ESP_0FF1B8,8C:AA:B5:0F:F1:B8,,TRUE,TRUE,PASS 2026-09-10")
+        self.assertEqual(lines[1], "1,ESP_21A8EB,EC:FA:BC:21:A8:EB,,TRUE")  # untouched rows are not padded
+        self.assertEqual(lines[-2], self.NOTE.rstrip("\r\n"))  # the note at the bottom stays
+        self.assertEqual(lines[-1], "")  # and the file still ends with CRLF
+
+    def test_a_fail_unticks_tested_and_says_why(self):
+        self.inventory.record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("FAIL", "bad sensor"), when="2026-09-10")
+        self.assertEqual(self.lines()[1], "1,ESP_21A8EB,EC:FA:BC:21:A8:EB,,FALSE,TRUE,FAIL bad sensor 2026-09-10")
+
+    def test_a_board_the_sheet_lacks_is_appended_above_the_note_with_the_next_id(self):
+        row = self.inventory.record("5C:CF:7F:12:34:AB", "ESP_1234AB", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-10")
+        self.assertEqual(row, 6)
+        lines = self.lines()
+        self.assertEqual(lines[5], "5,ESP_1234AB,5C:CF:7F:12:34:AB,,TRUE,TRUE,PASS 2026-09-10")
+        self.assertEqual(lines[6], self.NOTE.rstrip("\r\n"))
+        self.assertEqual(self.inventory.find("5C:CF:7F:12:34:AB").row, 6)  # a replug finds the new row
+
+    def test_the_second_write_updates_the_same_row_and_a_sheet_edited_meanwhile_is_kept(self):
+        self.inventory.record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("FAIL", "bad sensor"), when="2026-09-10")
+        with open(self.path, "r+", newline="") as handle:
+            text = handle.read().replace("4,ESP_A68D29", "4,ESP_A68D29 (by hand)")
+            handle.seek(0)
+            handle.write(text)
+        self.inventory.record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-11")
+        lines = self.lines()
+        self.assertEqual(lines[1], "1,ESP_21A8EB,EC:FA:BC:21:A8:EB,,TRUE,TRUE,PASS 2026-09-11")
+        self.assertIn("(by hand)", lines[4])
+
+    def test_a_sheet_from_text_cannot_be_written(self):
+        with self.assertRaises(bench.BenchError):
+            bench.Inventory.from_text(SHEET).record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-10")

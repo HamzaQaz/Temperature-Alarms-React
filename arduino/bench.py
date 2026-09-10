@@ -3,8 +3,9 @@
 One watcher, started once on the Windows laptop next to the USB hub. Each NodeMCU that
 appears on a new COM port is identified against the inventory sheet by its MAC, registered
 under the Bench Campus, flashed with the one exported binary, and bench-checked over serial
-against the live server. One row per board goes to `<sheet>.bench.csv` next to the sheet, and
-Ctrl-C prints what the box and the sheet disagree on.
+against the live server. Its outcome is written back to its sheet row (FLASHED, TESTED, BENCH), a
+board the sheet lacks gets a row, one row per board goes to `<sheet>.bench.csv` next to the
+sheet, and Ctrl-C prints what the box and the sheet disagreed on at the start.
 
 Needs Python 3.9 or newer with two packages:
 
@@ -83,12 +84,21 @@ class Seen:
     mac: str
 
 
-class Inventory:
-    """The technician's sheet, read once and never written. A row without a MAC (a note, a blank) is not a board."""
+SHEET_COLUMNS = ("TESTED", "FLASHED", "BENCH")  # added to the sheet's header when missing
 
-    def __init__(self, rows: list[SheetRow]):
+
+class Inventory:
+    """The technician's sheet: the working record of the box. A row without a MAC (a note, a blank) is not a board.
+
+    Read once at start; `record` writes each board's outcome back (the sheet the watcher was
+    given, so the technician's own edits between boards survive: every write rereads first).
+    """
+
+    def __init__(self, rows: list[SheetRow], path: str | None = None):
         self.rows = [row for row in rows if row.mac]
         self._by_mac = {row.mac: row for row in self.rows}
+        self.path = path
+        self._write_lock = threading.Lock()
 
     @classmethod
     def from_text(cls, text: str) -> "Inventory":
@@ -112,10 +122,72 @@ class Inventory:
     @classmethod
     def from_file(cls, path: str) -> "Inventory":
         with open(path, newline="", encoding="utf-8-sig") as handle:
-            return cls.from_text(handle.read())
+            inventory = cls.from_text(handle.read())
+        inventory.path = path
+        return inventory
 
     def find(self, mac: str) -> SheetRow | None:
         return self._by_mac.get(normalise_mac(mac))
+
+    def record(self, mac: str, hostname: str, flashed: bool, verdict: Verdict, when: str | None = None) -> int:
+        """Write one board's outcome to its sheet row, appending a row for a board the sheet lacks.
+
+        FLASHED is TRUE or FALSE, TESTED is TRUE on PASS and FALSE on FAIL (untouched otherwise),
+        BENCH is the verdict and the date. Untouched rows are written back as they were read. The
+        row number written to is returned, as the spreadsheet shows it.
+        """
+        if self.path is None:
+            raise BenchError("this sheet was not read from a file, so it cannot be written")
+        mac = normalise_mac(mac)
+        when = when or time.strftime("%Y-%m-%d")
+        with self._write_lock:
+            with open(self.path, newline="", encoding="utf-8-sig") as handle:
+                table = list(csv.reader(handle))
+            header = table[0]
+            columns = {name.strip().lower(): index for index, name in enumerate(header)}
+            for name in SHEET_COLUMNS:
+                if name.lower() not in columns:
+                    columns[name.lower()] = len(header)
+                    header.append(name)
+            mac_column = columns["mac"]
+            index = next((i for i, cells in enumerate(table) if i > 0 and len(cells) > mac_column and normalise_mac(cells[mac_column]) == mac), None)
+            if index is None:
+                index = self._append_row(table, columns, mac, hostname)
+            cells = table[index]
+            cells.extend([""] * (len(header) - len(cells)))
+            cells[columns["flashed"]] = "TRUE" if flashed else "FALSE"
+            if verdict.kind == "PASS":
+                cells[columns["tested"]] = "TRUE"
+            elif verdict.kind == "FAIL":
+                cells[columns["tested"]] = "FALSE"
+            cells[columns["bench"]] = f"{verdict} {when}"
+            self._write(table)
+        return index + 1
+
+    def _append_row(self, table: list[list[str]], columns: dict[str, int], mac: str, hostname: str) -> int:
+        """Insert a row for a board the sheet lacks after the last board row (above any note), with the next ID."""
+        mac_column = columns["mac"]
+        last_board = max(i for i, cells in enumerate(table) if i == 0 or (len(cells) > mac_column and normalise_mac(cells[mac_column])))
+        cells = [""] * len(table[0])
+        if "id" in columns:
+            ids = [int(row[columns["id"]]) for row in table[1:] if len(row) > columns["id"] and row[columns["id"]].strip().isdigit()]
+            cells[columns["id"]] = str(max(ids, default=0) + 1)
+        if "hostname" in columns:
+            cells[columns["hostname"]] = hostname
+        cells[mac_column] = mac
+        table.insert(last_board + 1, cells)
+        row = SheetRow(row=last_board + 2, hostname=hostname, mac=mac)
+        self.rows.append(row)
+        self._by_mac[mac] = row
+        return last_board + 1
+
+    def _write(self, table: list[list[str]]) -> None:
+        """Replace the sheet in one step, CRLF like a Sheets export, so a crash never leaves half a file."""
+        assert self.path is not None
+        temp = self.path + ".tmp"
+        with open(temp, "w", newline="", encoding="utf-8") as handle:
+            csv.writer(handle, lineterminator="\r\n").writerows(table)
+        os.replace(temp, self.path)
 
 
 def reconcile(inventory: Inventory, seen: list[Seen]) -> tuple[list[SheetRow], list[Seen]]:
@@ -336,6 +408,7 @@ class BoardResult:
     registered: str = ""  # registered / already
     flashed: str = ""  # flashed / not flashed
     wifi_joined: bool = False  # serial showed `wifi: connected`, whatever the verdict
+    added: bool = False  # the sheet lacked this board and gained a row for it
 
     @property
     def seen(self) -> Seen | None:
@@ -348,7 +421,7 @@ class BoardResult:
     def line_so_far(self, then: str) -> str:
         if not self.mac:
             return "  ".join([self.port, "-", "-", "-", "-", then])
-        where = f"row {self.sheet_row}" if self.sheet_row else "not on list"
+        where = "not on list" if self.sheet_row is None else f"{'added ' if self.added else ''}row {self.sheet_row}"
         return "  ".join([self.port, where, self.hostname, self.registered or "-", self.flashed or "-", then])
 
     def row_for_log(self) -> list[str]:
@@ -396,7 +469,22 @@ def check_board(
         result.verdict = judge(lines, result.hostname, is_first_board())
     except BenchError as error:
         result.verdict = Verdict("ERROR", str(error))
+    if result.mac:
+        record_on_sheet(result, inventory)
     return result
+
+
+def record_on_sheet(result: BoardResult, inventory: Inventory) -> None:
+    """Write the outcome to the sheet; a sheet that cannot be written (open in Excel) is said on the line."""
+    on_sheet = inventory.find(result.mac) is not None
+    try:
+        row = inventory.record(result.mac, result.hostname, result.flashed == "flashed", result.verdict)
+    except (BenchError, OSError) as error:
+        result.verdict = Verdict(result.verdict.kind, f"{result.verdict.reason} (sheet not updated: {error})".strip())
+        return
+    if not on_sheet:
+        result.sheet_row = row
+        result.added = True
 
 
 class BenchLog:

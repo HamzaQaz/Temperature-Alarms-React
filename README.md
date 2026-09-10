@@ -249,7 +249,7 @@ Run through this once per Device, on a desk, before it goes into a closet.
 
 ### Flashing a batch
 
-For a box of boards, [`arduino/bench.py`](arduino/bench.py) does the checklist's first two steps for every board and writes down what it found. It runs on the Windows laptop next to a USB hub, needs Python 3.9 or newer, and only two packages:
+For a box of boards, [`arduino/bench.py`](arduino/bench.py) does the checklist's first two steps for every board and writes what it found back to the inventory sheet. It runs on the Windows laptop next to a USB hub, needs Python 3.9 or newer, and only two packages:
 
 ```powershell
 pip install esptool pyserial
@@ -257,7 +257,7 @@ pip install esptool pyserial
 
 1. **Export the binary once.** Fill in `config.h` as above, then in the IDE choose Sketch, Export Compiled Binary: it lands under `build/` in the sketch folder as `TemperatureAlarms.ino.bin`. One board type per batch, since `DHT_PIN` is in the binary; a batch of integrated boards is a second export.
 2. **Set the Admin token**, from the stack's `.env`, in the environment and nowhere else: `$env:ADMIN_TOKEN = "..."` in PowerShell, `set ADMIN_TOKEN=...` in cmd.
-3. **Run the watcher** against the live server and the inventory sheet, a CSV with a `MAC` column (a `HOSTNAME` column is used when present):
+3. **Run the watcher** against the live server and the inventory sheet, a CSV with a `MAC` column (`ID` and `HOSTNAME` columns are used when present). Close the sheet in Excel first, since an open sheet cannot be written:
 
    ```powershell
    python arduino\bench.py --server http://<host> --inventory "device_log - device_log.csv"
@@ -267,11 +267,11 @@ pip install esptool pyserial
 
    ```
    COM7  row 12  ESP_7AED5B  registered  flashed  PASS
-   COM9  not on list  ESP_1234AB  already  flashed  FAIL bad sensor
+   COM9  added row 94  ESP_1234AB  already  flashed  FAIL bad sensor
    ```
 
    PASS needs `device:` with the derived hostname, `wifi: connected`, a numeric `sensor:` line, and `report: 201 created`. `FAIL bad sensor` and `FAIL did not boot` keep the batch going and leave the Device registered. A `report: 401` (the Device token in the binary), no `wifi: connected` on the first board of the run (SSID or password), or `report: failed` (the server is unreachable from the bench) stops the batch and names which of the binary, the WiFi, or the server to fix. Ctrl-C stops after the boards in progress finish.
-4. **Read the log.** `<sheet>.bench.csv` next to the sheet gains one row per board seen (time, port, sheet row, hostname, MAC, `registered` or `already`, `flashed`, verdict, reason); replugging a board runs it again and adds a row. The sheet itself is never modified. On stop, the watcher prints the sheet rows no board answered for and the boards the sheet lacks. A Device on the Bench stays there, Offline, until Settings moves it to its Campus and Closet.
+4. **Read the sheet and the log.** After each board, its sheet row is updated in place: `FLASHED` becomes TRUE, `TESTED` becomes TRUE on PASS or FALSE on a FAIL, and a `BENCH` column holds the verdict and the date; the three columns are added to the header when the sheet lacks them, and a board the sheet lacks gets a new row with the next `ID`. Rows the watcher did not touch are written back as they were, so edits made between boards survive. `<sheet>.bench.csv` next to the sheet also gains one row per board seen (time, port, sheet row, hostname, MAC, `registered` or `already`, `flashed`, verdict, reason); replugging a board runs it again and adds a row. On stop, the watcher prints the sheet rows no board answered for and the boards the sheet lacked at start. A Device on the Bench stays there, Offline, until Settings moves it to its Campus and Closet.
 
 The watcher's logic is unit-tested without hardware: `python -m unittest arduino/test_bench.py` from the repo root. A real board on the bench is the acceptance test.
 
