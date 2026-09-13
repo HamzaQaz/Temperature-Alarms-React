@@ -65,7 +65,7 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 .
 ├── arduino/       # ESP8266 sketch for the NodeMCU + DHT11 Device, its wiring diagram, and the bench watcher
 ├── backend/       # Express + TypeScript API, MySQL, the migration runner, the virtual Device
-├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui
+├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui; e2e/ holds the browser walk
 ├── docs/adr/      # Architecture decision records
 ├── compose.yaml   # The whole system: db, api, and web on one port
 ├── .env.example   # The stack's settings; copy to .env
@@ -146,7 +146,9 @@ npm run lint           # eslint
 npm run typecheck      # tsc -b, including the tests
 ```
 
-Both packages pass these on a clean clone; run them before a commit. The dashboard card shows "Expected Ns ago" once a Device misses a report, and Offline once the server has declared it (three missed reports); the page asks the server again at that moment, since the browser never computes a Condition itself.
+The bench watcher's logic has unit tests on Python's own runner, with the esptool and serial layer faked, so no board and no extra package is needed: `python -m unittest arduino/test_bench.py` from the repo root.
+
+All three pass on a clean clone; run them before a commit. The dashboard card shows "Expected Ns ago" once a Device misses a report, and Offline once the server has declared it (three missed reports); the page asks the server again at that moment, since the browser never computes a Condition itself.
 
 #### The browser walk
 
@@ -275,7 +277,7 @@ pip install esptool pyserial
    python arduino\bench.py --server http://<host> --inventory "device_log - device_log.csv"
    ```
 
-   It refuses to start when the binary is missing or older than a source file in the sketch folder, when `ADMIN_TOKEN` is unset or not the server's, or when the server's `/api/health` does not answer. Once running, plug boards in; ports present at start are ignored. Each new port is handled on its own thread, so a hub works several boards at once. Per board: esptool reads the MAC, the hostname is derived (`ESP_` plus the last six hex digits), the sheet row is looked up by MAC (a board off the sheet proceeds, flagged `not on list`), the Device is registered under the Bench Campus with closet `Unassigned` (an existing hostname reads `already`), the binary is flashed at 921600 baud (460800 if the handshake fails), and the board is reset and read over serial for 70 seconds, two report attempts. One line per board says what happened:
+   It refuses to start when the binary is missing or older than a source file in the sketch folder, when `ADMIN_TOKEN` is unset or not the server's, or when the server's `/api/health` does not answer. Once running, plug boards in; ports present at start are ignored. Each new port is handled on its own thread, so a hub works several boards at once. Per board: esptool reads the MAC, the hostname is derived (`ESP_` plus the last six hex digits), the sheet row is looked up by MAC (a board off the sheet proceeds and gets a row of its own), the Device is registered under the Bench Campus with closet `Unassigned` (an existing hostname reads `already`), the binary is flashed at 921600 baud (460800 if the handshake fails), and the board is reset and read over serial for 70 seconds, two report attempts. One line per board says what happened:
 
    ```
    COM7  row 12  ESP_7AED5B  registered  flashed  PASS
@@ -285,7 +287,7 @@ pip install esptool pyserial
    PASS needs `device:` with the derived hostname, `wifi: connected`, a numeric `sensor:` line, and `report: 201 created`. `FAIL bad sensor` and `FAIL did not boot` keep the batch going and leave the Device registered. A `report: 401` (the Device token in the binary), no `wifi: connected` on the first board of the run (SSID or password), or `report: failed` (the server is unreachable from the bench) stops the batch and names which of the binary, the WiFi, or the server to fix. Ctrl-C stops after the boards in progress finish.
 4. **Read the sheet and the log.** After each board, its sheet row is updated in place: `FLASHED` becomes TRUE, `TESTED` becomes TRUE on PASS or FALSE on a FAIL, and a `BENCH` column holds the verdict and the date; the three columns are added to the header when the sheet lacks them, and a board the sheet lacks gets a new row with the next `ID`. Rows the watcher did not touch are written back as they were, so edits made between boards survive. `<sheet>.bench.csv` next to the sheet also gains one row per board seen (time, port, sheet row, hostname, MAC, `registered` or `already`, `flashed`, verdict, reason); replugging a board runs it again and adds a row. On stop, the watcher prints the sheet rows no board answered for and the boards the sheet lacked at start. A Device on the Bench stays there, Offline, until Settings moves it to its Campus and Closet.
 
-The watcher's logic is unit-tested without hardware: `python -m unittest arduino/test_bench.py` from the repo root. A real board on the bench is the acceptance test.
+The watcher has run one batch of 92 boards (91 passed, one bad sensor). Its logic is unit-tested without hardware (see Tests and checks); a real board on the bench is the acceptance test for any change to it.
 
 ## Deployment
 
