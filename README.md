@@ -148,6 +148,18 @@ npm run typecheck      # tsc -b, including the tests
 
 Both packages pass these on a clean clone; run them before a commit. The dashboard card shows "Expected Ns ago" once a Device misses a report, and Offline once the server has declared it (three missed reports); the page asks the server again at that moment, since the browser never computes a Condition itself.
 
+#### The browser walk
+
+`frontend/e2e/walk.mjs` drives the whole system in a headless browser: the Admin token flow, Campus and Device changes with their refusals, a Reading going live on a card over SSE, the Campus filter, the rate limit, History, reset, phone width, and the deletes. Run it against an empty stack, never a live one (it adds and deletes Campuses and Devices, and resets a History), with Playwright installed once:
+
+```bash
+cd frontend && npm install --no-save playwright && npx playwright install chromium
+ADMIN_TOKEN=... DEVICE_TOKEN=... WEB=http://localhost node e2e/walk.mjs          # the stack; API defaults to WEB
+ADMIN_TOKEN=... DEVICE_TOKEN=... WEB=http://localhost:5173 API=http://localhost:3001 node e2e/walk.mjs   # dev servers
+```
+
+It prints one line per check and exits non-zero if any failed. A second argument names a folder for screenshots.
+
 ## API
 
 Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with the status: 400 for malformed JSON, 401 for a missing or wrong token, 403 for a browser origin that is not allowed, 404 for an unknown Campus or Device, 409 for a conflict, 422 for a body that failed validation, 429 when a rate limit is hit. Shortcodes and hostnames are stored upper-case, so `chs` and `CHS` name the same Campus.

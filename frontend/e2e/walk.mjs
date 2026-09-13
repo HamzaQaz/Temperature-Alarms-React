@@ -1,0 +1,218 @@
+// End-to-end walk of the site and backend on a fresh (empty) database. One line per check.
+// WEB and API default to the Compose stack on one port; ADMIN_TOKEN and DEVICE_TOKEN come from the environment.
+import { chromium } from 'playwright';
+
+const WEB = process.env.WEB ?? 'http://localhost:8080';
+const API = process.env.API ?? WEB;
+const ADMIN = process.env.ADMIN_TOKEN;
+const DEVICE = process.env.DEVICE_TOKEN;
+const SHOTS = process.argv[2];
+if (!ADMIN || !DEVICE) { console.error('set ADMIN_TOKEN and DEVICE_TOKEN'); process.exit(2); }
+
+const results = [];
+async function check(name, fn) {
+  try { await fn(); results.push([true, name]); console.log('ok   ' + name); }
+  catch (error) { results.push([false, name]); console.log('FAIL ' + name + ' :: ' + String(error).split('\n')[0]); }
+}
+const expect = (cond, msg) => { if (!cond) throw new Error(msg); };
+const post = (path, token, body) => fetch(API + path, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}) }, body: JSON.stringify(body) });
+const reading = (token, temp, humidity = 41, device = 'ESP_C0FFEE') => post('/api/readings', token, { device, temp, humidity });
+
+const browser = await chromium.launch();
+const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+const page = await context.newPage();
+const consoleErrors = [];
+page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+page.on('pageerror', (e) => consoleErrors.push('pageerror: ' + e.message));
+const failedRequests = [];
+page.on('response', (r) => { if (r.status() >= 500) failedRequests.push(r.status() + ' ' + r.url()); });
+
+await check('fresh database: dashboard shows the empty state', async () => {
+  await page.goto(WEB + '/');
+  await page.getByRole('heading', { name: 'Dashboard' }).waitFor();
+  await page.waitForTimeout(800);
+  expect(!/ESP_/.test(await page.locator('main').innerText()), 'expected no Device on the dashboard');
+});
+await check('settings: the Admin token is asked for once', async () => {
+  await page.goto(WEB + '/settings');
+  await page.getByText('Admin token needed').waitFor();
+});
+await check('settings: a wrong token is refused and the panel says Not authorised', async () => {
+  await page.locator('#admin-token').fill('wrong-token');
+  await page.getByRole('button', { name: 'Save token' }).click();
+  await page.getByRole('button', { name: 'Add campus' }).click();
+  await page.getByLabel('Name').fill('Central High School');
+  await page.getByLabel('Shortcode').fill('chs');
+  await page.getByRole('button', { name: 'Save campus' }).click();
+  await page.getByText('Not authorised').waitFor({ timeout: 5000 });
+});
+await check('settings: the right token is saved', async () => {
+  await page.locator('#admin-token').fill(ADMIN);
+  await page.getByRole('button', { name: 'Save token' }).click();
+  await page.getByText('Admin token saved').waitFor();
+});
+await check('settings: a Campus is added and its shortcode is upper-cased', async () => {
+  const form = page.getByRole('form', { name: 'Add a campus' });
+  if (!(await form.isVisible().catch(() => false))) await page.getByRole('button', { name: 'Add campus' }).click();
+  if ((await page.getByLabel('Name').inputValue()) === '') {
+    await page.getByLabel('Name').fill('Central High School');
+    await page.getByLabel('Shortcode').fill('chs');
+  }
+  await page.getByRole('button', { name: 'Save campus' }).click();
+  await page.getByRole('cell', { name: 'CHS', exact: true }).waitFor({ timeout: 5000 });
+});
+await check('settings: a duplicate shortcode is refused with a message', async () => {
+  await page.getByRole('button', { name: 'Add campus' }).click();
+  await page.getByLabel('Name').fill('Another');
+  await page.getByLabel('Shortcode').fill('CHS');
+  await page.getByRole('button', { name: 'Save campus' }).click();
+  await page.getByText(/already exists/).waitFor({ timeout: 5000 });
+  await page.getByRole('button', { name: 'Cancel' }).click();
+});
+await check('settings: a second Campus for the filter', async () => {
+  await page.getByRole('button', { name: 'Add campus' }).click();
+  await page.getByLabel('Name').fill('West Elementary');
+  await page.getByLabel('Shortcode').fill('wes');
+  await page.getByRole('button', { name: 'Save campus' }).click();
+  await page.getByRole('cell', { name: 'WES', exact: true }).waitFor({ timeout: 5000 });
+});
+await check('settings: a bad hostname is refused before it is sent', async () => {
+  await page.getByRole('tab', { name: 'Devices' }).click();
+  await page.getByRole('button', { name: 'Add device' }).click();
+  await page.getByLabel('Hostname').fill('NOTAHOST');
+  await page.locator('#device-campus').click();
+  await page.getByRole('option', { name: 'Central High School' }).click();
+  await page.getByLabel('Closet').fill('IDF 2');
+  await page.getByRole('button', { name: 'Save device' }).click();
+  await page.getByText(/ESP_ followed by six hex digits/).waitFor({ timeout: 5000 });
+});
+await check('settings: a Device is added under the Campus', async () => {
+  await page.getByLabel('Hostname').fill('esp_c0ffee');
+  await page.getByRole('button', { name: 'Save device' }).click();
+  await page.getByRole('cell', { name: 'ESP_C0FFEE', exact: true }).waitFor({ timeout: 5000 });
+  await page.getByRole('button', { name: 'Done' }).click();
+});
+await check('settings: the Device closet can be edited', async () => {
+  await page.getByRole('button', { name: 'Edit ESP_C0FFEE' }).click();
+  const form = page.getByRole('form', { name: 'Edit ESP_C0FFEE' });
+  await form.getByLabel('Closet').fill('MDF');
+  await form.getByRole('button', { name: /Save/ }).click();
+  await page.getByRole('cell', { name: 'MDF', exact: true }).waitFor({ timeout: 5000 });
+});
+await check('settings: a Campus with Devices cannot be deleted', async () => {
+  await page.getByRole('tab', { name: 'Campuses' }).click();
+  await page.getByRole('button', { name: 'Delete Central High School' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: /Delete/ }).click();
+  await page.getByText(/still has devices/i).first().waitFor({ timeout: 5000 });
+});
+if (SHOTS) await page.screenshot({ path: SHOTS + '/settings.png', fullPage: true });
+await check('dashboard: the new Device shows with no readings yet', async () => {
+  await page.goto(WEB + '/');
+  await page.getByRole('article', { name: /MDF/ }).waitFor({ timeout: 5000 });
+  await page.getByText(/No readings yet/).first().waitFor();
+});
+await check('api: a Reading with a wrong Device token is 401', async () => expect((await reading('nope', 72)).status === 401, 'status'));
+await check('api: a Reading with no token is 401', async () => expect((await reading(null, 72)).status === 401, 'status'));
+await check('api: a Reading with the Admin token is 401', async () => expect((await reading(ADMIN, 72)).status === 401, 'status'));
+await check('api: a Campus with the Device token is 401', async () => expect((await post('/api/campuses', DEVICE, { name: 'X', shortcode: 'X' })).status === 401, 'status'));
+await check('api: a Reading for an unknown hostname is 404', async () => expect((await reading(DEVICE, 72, 41, 'ESP_000000')).status === 404, 'status'));
+await check('api: a Reading missing a number is 422', async () => expect((await post('/api/readings', DEVICE, { device: 'ESP_C0FFEE', temp: 72 })).status === 422, 'status'));
+await check('live: a Reading with the Device token is 201 and the card goes Online without a reload', async () => {
+  const r = await reading(DEVICE, 72);
+  expect(r.status === 201, 'status ' + r.status);
+  const card = page.getByRole('article', { name: /MDF/ });
+  await card.getByText('Online', { exact: true }).waitFor({ timeout: 8000 });
+  await page.waitForTimeout(1500);
+  // NumberFlow keeps each digit's value in a CSS variable inside its shadow DOM.
+  const shown = await card.evaluate((el) => Array.from(el.querySelectorAll('*')).filter((n) => n.shadowRoot).map((n) => Array.from(n.shadowRoot.querySelectorAll('[part~="digit"]')).map((d) => d.style.getPropertyValue('--current').trim()).join('')));
+  expect(shown[0] === '72' && shown[1] === '41', 'card digits: ' + JSON.stringify(shown));
+});
+await check('live: a 91 F Reading turns the card Hot, critical, live', async () => {
+  expect((await reading(DEVICE, 91)).status === 201, 'status');
+  const card = page.getByRole('article', { name: /MDF/ });
+  await card.getByText(/Hot/).waitFor({ timeout: 8000 });
+  expect(/critical/i.test(await card.innerText()), 'expected critical');
+});
+if (SHOTS) { await page.waitForTimeout(2000); await page.screenshot({ path: SHOTS + '/dashboard.png', fullPage: true }); }
+await check('dashboard: the Campus filter narrows to one Campus and the other is empty', async () => {
+  await page.getByRole('tab', { name: 'West Elementary' }).click();
+  await page.waitForTimeout(600);
+  expect(!(await page.getByRole('article', { name: /MDF/ }).isVisible().catch(() => false)), 'card still visible under WES');
+  await page.getByRole('tab', { name: 'Central High School' }).click();
+  await page.getByRole('article', { name: /MDF/ }).waitFor({ timeout: 5000 });
+  await page.getByRole('tab', { name: 'All campuses' }).click();
+});
+await check('api: the per-Device rate limit answers 429 after 20 Readings a minute', async () => {
+  let last = 0;
+  for (let i = 0; i < 20; i++) last = (await reading(DEVICE, 75)).status;
+  expect(last === 429, 'expected 429, got ' + last);
+});
+await check('history: the day shows the Readings and the summary', async () => {
+  await page.getByRole('link', { name: 'History for MDF' }).click();
+  await page.getByRole('button', { name: 'Previous day' }).waitFor();
+  await page.waitForTimeout(1200);
+  const text = await page.locator('main').innerText();
+  expect(/91/.test(text) && /72/.test(text), 'summary missing 72 or 91');
+  expect((await page.getByRole('row').count()) >= 3, 'expected rows in the table');
+});
+if (SHOTS) await page.screenshot({ path: SHOTS + '/history.png', fullPage: true });
+await check('history: the previous day is empty and Next day comes back to today', async () => {
+  await page.getByRole('button', { name: 'Previous day' }).click();
+  await page.getByText(/No Readings on/).waitFor({ timeout: 5000 });
+  await page.getByRole('button', { name: 'Next day' }).click();
+  await page.waitForTimeout(800);
+  expect(/91/.test(await page.locator('main').innerText()), 'today did not come back');
+});
+await check('history: after a reload the page still shows the day', async () => {
+  await page.reload();
+  await page.getByRole('button', { name: 'Previous day' }).waitFor();
+  await page.waitForTimeout(1000);
+  expect(/91/.test(await page.locator('main').innerText()), 'lost after reload');
+});
+await check('history: Reset history asks for confirmation and then empties the day', async () => {
+  await page.getByRole('button', { name: 'Reset history' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: /Delete all Readings/ }).click();
+  await page.getByText(/No Readings on/).waitFor({ timeout: 5000 });
+});
+await check('dashboard: after the reset the card has no readings again', async () => {
+  await page.goto(WEB + '/');
+  await page.getByRole('article', { name: /MDF/ }).waitFor({ timeout: 5000 });
+  await page.getByText(/No readings yet/).first().waitFor({ timeout: 5000 });
+});
+await check('phone width: the dashboard has no horizontal scroll', async () => {
+  const phone = await context.newPage();
+  await phone.setViewportSize({ width: 400, height: 800 });
+  await phone.goto(WEB + '/');
+  await phone.getByRole('heading', { name: 'Dashboard' }).waitFor();
+  await phone.waitForTimeout(1000);
+  const wide = await phone.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  if (SHOTS) await phone.screenshot({ path: SHOTS + '/dashboard-phone.png', fullPage: true });
+  expect(!wide, 'page scrolls horizontally at 400px');
+  await phone.close();
+});
+await check('settings: the Device and then the Campuses can be deleted', async () => {
+  await page.goto(WEB + '/settings');
+  await page.getByRole('tab', { name: 'Devices' }).click();
+  await page.getByRole('button', { name: 'Delete ESP_C0FFEE' }).click();
+  await page.getByRole('alertdialog').getByRole('button', { name: /Delete/ }).click();
+  await page.getByRole('cell', { name: 'ESP_C0FFEE', exact: true }).waitFor({ state: 'detached', timeout: 5000 });
+  await page.getByRole('tab', { name: 'Campuses' }).click();
+  for (const name of ['Central High School', 'West Elementary']) {
+    await page.getByRole('button', { name: 'Delete ' + name }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: /Delete/ }).click();
+    await page.getByRole('cell', { name, exact: true }).waitFor({ state: 'detached', timeout: 5000 });
+  }
+});
+await check('settings: Forget removes the token and the panel asks again', async () => {
+  await page.getByRole('button', { name: 'Forget' }).click();
+  await page.getByText('Admin token needed').waitFor({ timeout: 5000 });
+});
+await check('no server errors (5xx) and no console errors during the walk', async () => {
+  expect(failedRequests.length === 0, 'server errors: ' + failedRequests.join(', '));
+  const real = consoleErrors.filter((e) => !/401|403|404|409|422|429|Failed to load resource/.test(e));
+  expect(real.length === 0, 'console: ' + real.join(' | '));
+});
+await browser.close();
+const passed = results.filter((r) => r[0]).length;
+console.log(`\n${passed} of ${results.length} checks passed`);
+process.exit(passed === results.length ? 0 : 1);
