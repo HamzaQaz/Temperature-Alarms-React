@@ -2,7 +2,8 @@
 // config.h is gitignored, so the secrets never reach the repo.
 #pragma once
 
-// The WiFi network the Device joins.
+// The WiFi network the Device joins. Leave the password empty ("") for an open
+// network, such as one that admits Devices by MAC allowlist.
 #define WIFI_SSID "your-network"
 #define WIFI_PASSWORD "your-password"
 

@@ -35,7 +35,11 @@ static void logConnected(const __FlashStringHelper* how) {
 
 static void startConnecting() {
   lastReconnectAt = millis();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  if (WIFI_PASSWORD[0] == '\0') {
+    WiFi.begin(WIFI_SSID);  // open network (a MAC allowlist, say): no passphrase at all
+  } else {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
 }
 
 void networkBegin() {
