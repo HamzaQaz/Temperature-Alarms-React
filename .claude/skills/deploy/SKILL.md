@@ -1,6 +1,6 @@
 ---
 name: deploy
-description: Deploy the Temperature Alarms stack to this machine or district servers by driving deploy/deploy.sh or deploy/deploy.ps1 non-interactively. Use when the operator asks to deploy, install, or upgrade it, back up or restore the database, check its status or logs, or stop or remove it.
+description: Deploy the Temperature Alarms stack to this machine or district servers by driving deploy/deploy.sh or deploy/deploy.ps1 non-interactively. Use when the operator asks to set up a new server, deploy, install, or upgrade it, back up or restore the database (once or nightly), check its status or logs, or stop or remove it.
 ---
 
 # Deploy
@@ -19,15 +19,19 @@ The Admin token, Device token, and database password live only in each server's 
 
    Ask the operator only for what you cannot find: the server's `USER@HOST`, and on a first install the web port (default 80). For a server, prove ssh works unattended with `ssh -o BatchMode=yes USER@HOST true`; when it fails, ask the operator to set up key-based ssh, since you cannot answer a password prompt. Done when the command line is settled and ssh answers.
 
-2. **Preflight.** Run `preflight --yes` with the same target flags (and `--web-port` on a first install). Done when every line reads `[ ok ]` or `[warn]`. A `[FAIL]` line is the answer: report it with its fix and stop.
+   A server that is new, or whose preflight says `docker is not installed`, needs `bootstrap` first (Linux only: Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora). It installs packages with sudo, so unattended it needs passwordless sudo: prove it with `ssh -o BatchMode=yes USER@HOST sudo -n true`, and when that fails, ask the operator to run the bootstrap line themselves in a terminal (sudo will ask them for the password there) or to grant passwordless sudo.
+
+2. **Preflight.** Run `preflight --yes` with the same target flags (and `--web-port` on a first install). Done when every line reads `[ ok ]` or `[warn]`. A `[FAIL]` line is the answer: report it with its fix and stop; for `docker is not installed` on a Linux server, the fix is `bootstrap`.
 
 3. **Act.** Map the request to one action; the first build takes minutes, so give it a 15-minute timeout. Run the script unpiped, so the exit status you read is the script's (a `| tail` reports `tail`'s); its output is already short apart from the build log.
 
    | The operator says | Run |
    | --- | --- |
+   | set up this new server | `bootstrap --yes`, then `deploy --yes --web-port PORT`; on servers, one call does both: `deploy --bootstrap --yes --web-port PORT --host USER@HOST`. On this machine, the deploy needs a new login after bootstrap adds the docker group: run it under the new group with `sg docker -c 'deploy/deploy.sh deploy --yes --web-port PORT'`, and tell the operator to log out and back in before using docker themselves |
    | deploy, install | `deploy --yes --web-port PORT`, plus `--set KEY=VALUE` for any threshold they named |
    | upgrade, update | `deploy --yes --pull` (a remote deploy pulls by default) |
    | back up the database | `backup --yes` |
+   | back up nightly | `schedule-backup --yes`, plus `--at HH:MM` and `--keep-days N` if they named them (02:00 and 7 by default); `unschedule-backup --yes` stops it. On Windows it prints a `schtasks` line instead: give it to the operator |
    | restore | `restore --file backups/NAME.sql.gz --yes --confirm PROJECT` |
    | status, logs | `status --yes`; `logs --yes --service api --tail 200` |
    | migrate the old database | `migrate-legacy --yes` |

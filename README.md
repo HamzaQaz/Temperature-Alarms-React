@@ -297,8 +297,19 @@ The watcher has run one batch of 92 boards (91 passed, one bad sensor). Its logi
 
 The Compose stack from the quick start is the deployment too, and deploying it is one step, two ways:
 
-- **The deploy script.** On the server, `deploy/deploy.sh deploy --yes` (Linux, macOS) or `deploy\deploy.ps1 deploy --yes` (Windows Server) writes `.env` with generated secrets, builds and starts the stack, and checks it is healthy. Run either with no action for a menu that also upgrades, backs up, restores, shows the tokens and the `config.h` lines, and removes the stack. From one machine, `--host admin@server` (repeatable) or `--servers deploy/servers.txt` does the same on each server over ssh, each keeping its own `.env` and backups.
-- **Ask your Claude agent.** In Claude Code in this repo, say "deploy this to admin@server", "upgrade", or "back up the database"; the `deploy` skill drives the script, keeps the secrets out of the chat, and ends on the health check.
+- **The deploy script.** On the server, `deploy/deploy.sh deploy --yes` (Linux, macOS) or `deploy\deploy.ps1 deploy --yes` (Windows Server) writes `.env` with generated secrets, builds and starts the stack, and checks it is healthy. Run either with no action for a menu that also upgrades, backs up, schedules a nightly backup, restores, shows the tokens and the `config.h` lines, and removes the stack. From one machine, `--host admin@server` (repeatable) or `--servers deploy/servers.txt` does the same on each server over ssh, each keeping its own `.env` and backups.
+- **Ask your Claude agent.** In Claude Code in this repo, say "set up the new server admin@server", "deploy this to admin@server", "upgrade", or "back up nightly"; the `deploy` skill drives the script, keeps the secrets out of the chat, and ends on the health check.
+
+A fresh Linux server (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora) needs only git and sudo:
+
+```bash
+git clone <repo-url> temperature-alarms && cd temperature-alarms
+deploy/deploy.sh bootstrap        # Docker Engine and Compose from Docker's repository, cron, the docker group
+# log out and back in, then:
+cd temperature-alarms && deploy/deploy.sh deploy --yes
+```
+
+From another machine, `deploy/deploy.sh deploy --bootstrap --host admin@server --yes` does both over ssh, with no git needed on the server first.
 
 [`DEPLOYMENT.md`](DEPLOYMENT.md) covers both, then the same steps by hand with `docker compose` as the fallback: first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
 

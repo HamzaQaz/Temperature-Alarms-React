@@ -32,7 +32,7 @@ $O = @{
     Action = ''; File = ''; Yes = $false; Project = ''; WebPort = ''; Sets = @(); Pull = $null
     Reveal = $false; Reconfigure = $false; Wipe = $false; Confirm = ''; Follow = $false; Tail = '200'
     Service = ''; Hosts = @(); Servers = ''; Dir = 'temperature-alarms'; Repo = ''; Branch = ''
-    SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @()
+    SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'
 }
 $OrigArgs = @($args | ForEach-Object { "$_" })
 
@@ -58,6 +58,10 @@ With no action at a console, shows a menu. Actions:
   status             Containers and the health check
   logs               Recent logs (--follow, --service api|web|db, --tail N)
   backup             mysqldump to backups\<project>_<time>.sql.gz
+  bootstrap          Linux servers only (--host): Docker Engine, Compose, git, and cron from
+                     the distribution's Docker repository; see deploy.sh --help
+  schedule-backup    Linux and macOS servers (--host): nightly backup from cron (--at HH:MM,
+  unschedule-backup  --keep-days N). On Windows it prints the Task Scheduler line instead.
   restore [FILE]     Replace the database with a backup (typed confirmation; backs up first)
   migrate-legacy     Back up, then run `npm run migrate:legacy` in api
   info               The URL, the tokens (masked unless --reveal), and the config.h lines
@@ -85,6 +89,8 @@ Remote Linux servers (runs deploy.sh there over ssh; each keeps its own .env and
       --repo URL          Repo to clone there (default: this checkout's origin)
       --branch NAME       Branch to clone
       --ssh-opts "OPTS"   Extra ssh options, e.g. "-p 2222 -i C:\keys\id_ed25519" (or DEPLOY_SSH_OPTS)
+      --bootstrap         With deploy: run bootstrap on each server first (it needs no checkout)
+      --at HH:MM, --keep-days N   For schedule-backup on a server
 '@
 }
 
@@ -120,6 +126,9 @@ function Read-Args([string[]]$List) {
                 'repo' { $takesValue = $true; $O.Repo = $next }
                 'branch' { $takesValue = $true; $O.Branch = $next }
                 'sshopts' { $takesValue = $true; $O.SshOpts = $next }
+                'bootstrap' { $O.Bootstrap = $true }
+                'at' { $takesValue = $true; $O.At = $next; $O.Pass += @('--at', $next) }
+                'keepdays' { $takesValue = $true; $O.Pass += @('--keep-days', $next) }
                 default { Fail "unknown option $raw (see --help)" }
             }
             if ($takesValue) {
@@ -577,6 +586,18 @@ function Invoke-Uninstall {
     Write-Host "  .env and backups\ are left in $RepoDir."
 }
 
+function Show-ScheduleHint([string]$Name) {
+    Warn 'Windows has no cron; schedule the backup with Task Scheduler. In a Command Prompt:'
+    if ($Name -eq 'schedule-backup') {
+        if ($O.At -notmatch '^([01]?[0-9]|2[0-3]):[0-5][0-9]$') { Fail '--at must be HH:MM (24-hour), e.g. 02:00' }
+        $at = '{0:D2}:{1}' -f [int]$O.At.Split(':')[0], $O.At.Split(':')[1]
+        $project = if ($O.Project) { " -p $($O.Project)" } else { '' }
+        Write-Host "    schtasks /Create /F /TN `"Temperature Alarms backup`" /SC DAILY /ST $at /TR `"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \`"$PSCommandPath\`" backup --yes$project`""
+    }
+    else { Write-Host '    schtasks /Delete /F /TN "Temperature Alarms backup"' }
+    Fail 'nothing was scheduled here; run the line above'
+}
+
 function Invoke-Action([string]$Name) {
     switch ($Name) {
         'preflight' { if (-not (Invoke-Preflight)) { Fail 'preflight failed' } }
@@ -590,6 +611,8 @@ function Invoke-Action([string]$Name) {
         'info' { Invoke-Info }
         'stop' { Invoke-Stop }
         'uninstall' { Invoke-Uninstall }
+        'bootstrap' { Fail 'bootstrap prepares a Linux server; run it there (deploy/deploy.sh bootstrap), or from here with --host USER@SERVER. On Windows, install Docker Desktop.' }
+        { $_ -in 'schedule-backup', 'unschedule-backup' } { Show-ScheduleHint $Name }
         default { Fail "unknown action '$Name' (see --help)" }
     }
 }
@@ -651,6 +674,25 @@ function Invoke-RemoteHost([string]$Target) {
     $script:RemoteExit = $LASTEXITCODE
 }
 
+# bootstrap on a server that may have no git and no checkout yet: deploy.sh goes over on its
+# own, base64 on stdin (no long command line; the server keeps only base64 characters, since
+# Windows PowerShell 5.1 adds a BOM and CRLF), and runs from a temp file. No double quotes
+# in the remote commands, which Windows PowerShell 5.1 would mangle on the way to ssh.
+function Invoke-RemoteBootstrap([string]$Target) {
+    $opts = @()
+    if ($O.SshOpts) { $opts = @($O.SshOpts -split '\s+' | Where-Object { $_ }) }
+    $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $ScriptDir 'deploy.sh')))
+    $tmp = "$($b64 | & ssh @opts $Target 'umask 077; f=$(mktemp) || exit 1; if tr -cd ''A-Za-z0-9+/='' | base64 -d > $f; then echo $f; else rm -f $f; exit 1; fi')".Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $tmp) { Bad "could not copy deploy.sh to $Target"; $script:RemoteExit = 1; return }
+    $cmd = "bash $tmp bootstrap"
+    if ($O.Yes) { $cmd += ' --yes' }
+    $cmd += "; rc=`$?; rm -f $tmp; exit `$rc"
+    $sshArgs = @()
+    if (-not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) { $sshArgs += '-t' }
+    & ssh @sshArgs @opts $Target $cmd
+    $script:RemoteExit = $LASTEXITCODE
+}
+
 function Invoke-Remote {
     if ($O.Servers) {
         if (-not (Test-Path -LiteralPath $O.Servers)) { Fail "$($O.Servers) does not exist" }
@@ -666,9 +708,20 @@ function Invoke-Remote {
     if (-not $O.Repo) { $O.Repo = "$(& git -C $RepoDir remote get-url origin 2>$null)" }
     $results = @(); $failed = $false
     $label = if ($O.Action) { $O.Action } else { 'menu' }
+    if ($O.Bootstrap -and $O.Action -notin @('deploy', 'upgrade')) { Fail '--bootstrap goes with deploy' }
     foreach ($h in $O.Hosts) {
         Step "${h}: $label"
-        Invoke-RemoteHost $h
+        if ($O.Action -eq 'bootstrap') {
+            Invoke-RemoteBootstrap $h
+        }
+        else {
+            # Each ssh is a fresh login, so the deploy that follows already has the docker group.
+            if ($O.Bootstrap) {
+                Invoke-RemoteBootstrap $h
+                if ($script:RemoteExit -ne 0) { $results += "FAIL  $h (bootstrap)"; $failed = $true; continue }
+            }
+            Invoke-RemoteHost $h
+        }
         if ($script:RemoteExit -eq 0) { $results += "ok    $h" } else { $results += "FAIL  $h"; $failed = $true }
     }
     Step "Summary ($label)"
@@ -681,6 +734,7 @@ function Invoke-Remote {
 try {
     Read-Args $OrigArgs
     if ($O.Hosts.Count -gt 0 -or $O.Servers) { Invoke-Remote }
+    if ($O.Bootstrap) { Fail '--bootstrap is for deploys to servers (--host, --servers)' }
     Set-Location -LiteralPath $RepoDir
     if ($O.Project) { $env:COMPOSE_PROJECT_NAME = $O.Project }
     if (-not $O.Action) {

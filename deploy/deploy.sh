@@ -39,6 +39,9 @@ CONFIRM=""
 FOLLOW=0
 TAIL=200
 SERVICE=""
+KEEP_DAYS=""
+AT="02:00"
+BOOTSTRAP=0
 HOSTS=()
 SERVERS_FILE=""
 REMOTE_DIR="temperature-alarms"
@@ -67,13 +70,20 @@ usage() {
 Usage: deploy/deploy.sh [action] [options]
 
 With no action and a terminal, shows a menu. Actions:
+  bootstrap          Prepare a fresh Linux server: Docker Engine and Compose from Docker's own
+                     apt/dnf repository, git, and cron; start Docker and add you to the docker
+                     group (log in again after). Ubuntu, Debian, RHEL, Rocky, Alma, CentOS
+                     Stream, Fedora. Uses sudo when not root. Skips what is already there.
   preflight          Check Docker, Compose v2, the daemon, the web port, and disk space
   install            Create .env from .env.example with generated secrets (keeps an existing one)
   deploy             Install if needed, optionally git pull, build and start, wait for healthy,
                      check /api/health through web. Also the upgrade. Safe to repeat.
   status             Containers and the health check
   logs               Recent logs (--follow, --service api|web|db, --tail N)
-  backup             mysqldump to backups/<project>_<time>.sql.gz
+  backup             mysqldump to backups/<project>_<time>.sql.gz (--keep-days N prunes older ones)
+  schedule-backup    Run backup nightly from cron (--at HH:MM, default 02:00; --keep-days N,
+                     default 7). Replaces its own crontab line; other lines are left alone.
+  unschedule-backup  Remove that crontab line
   restore [FILE]     Replace the database with a backup (typed confirmation; backs up first)
   migrate-legacy     Back up, then run `npm run migrate:legacy` in api
   info               The URL, the tokens (masked unless --reveal), and the config.h lines
@@ -93,6 +103,8 @@ Options:
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
       --wipe            uninstall also deletes the database volume
       --file FILE       Backup file for restore
+      --keep-days N     backup and schedule-backup: delete this project's backups older than N days
+      --at HH:MM        schedule-backup: the time of day (default 02:00)
       --follow, --service NAME, --tail N   For logs
 Remote (runs this script on each server over ssh; each keeps its own .env and backups):
       --host USER@SERVER  Repeatable
@@ -101,6 +113,7 @@ Remote (runs this script on each server over ssh; each keeps its own .env and ba
       --repo URL          Repo to clone there (default: this checkout's origin)
       --branch NAME       Branch to clone
       --ssh-opts "OPTS"   Extra ssh options, e.g. "-p 2222 -i ~/.ssh/id_ed25519" (or DEPLOY_SSH_OPTS)
+      --bootstrap         With deploy: run bootstrap on each server first (it needs no checkout)
 EOF
 }
 
@@ -124,6 +137,9 @@ parse_args() {
       --follow|-f) FOLLOW=1; PASS_ARGS+=("$1") ;;
       --service) need_value "$@"; SERVICE=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --tail) need_value "$@"; TAIL=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --keep-days) need_value "$@"; KEEP_DAYS=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --at) need_value "$@"; AT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --bootstrap) BOOTSTRAP=1 ;;
       --host) need_value "$@"; HOSTS+=("$2"); shift ;;
       --servers) need_value "$@"; SERVERS_FILE=$2; shift ;;
       --dir) need_value "$@"; REMOTE_DIR=$2; shift ;;
@@ -318,6 +334,7 @@ do_preflight() {
   step "Preflight"
   local failed=0 v major port host avail dir root
   if command -v docker >/dev/null 2>&1; then ok "docker: $(docker --version)"
+  elif [ "$(uname -s)" = Linux ]; then bad "docker is not installed; prepare this server with: deploy/deploy.sh bootstrap"; return 1
   else bad "docker is not installed: https://docs.docker.com/engine/install/"; return 1; fi
 
   v=$(docker compose version --short 2>/dev/null) || v=""
@@ -328,7 +345,7 @@ do_preflight() {
   if docker info >/dev/null 2>&1; then ok "Docker daemon is up"
   else
     bad "cannot reach the Docker daemon: $(docker info 2>&1 | grep -i -m1 -E 'error|denied|cannot' || echo 'not running')"
-    say "         Start Docker, or add this user to the docker group (sudo usermod -aG docker \$USER, then log in again)."
+    say "         Start Docker, or add this user to the docker group (deploy/deploy.sh bootstrap does both), then log in again."
     return 1
   fi
   v=$(docker info --format '{{.OSType}}' 2>/dev/null)
@@ -497,7 +514,22 @@ do_backup() {
   fi
   ok "$file ($(du -k "$file" | awk '{print $1}') KB)"
   LAST_BACKUP=$file
+  [ -n "$KEEP_DAYS" ] && prune_backups
+  return 0
 }
+
+# Deletes this project's backups older than --keep-days; never the one just made.
+prune_backups() {
+  local f n=0
+  valid_days "$KEEP_DAYS" || die "--keep-days must be a whole number of days, 1 or more"
+  while IFS= read -r f; do
+    [ "$f" = "$LAST_BACKUP" ] && continue
+    rm -f "$f" && n=$((n + 1))
+  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name "$(project_name)_*.sql.gz" -mmin +$((KEEP_DAYS * 1440)) 2>/dev/null)
+  ok "kept $KEEP_DAYS days of backups; removed $n older"
+}
+
+valid_days() { printf '%s' "$1" | grep -Eq '^[0-9]+$' && [ "$1" -ge 1 ]; }
 
 pick_backup() {
   local files=() f i=1 choice
@@ -584,8 +616,234 @@ do_uninstall() {
   say "  .env and $BACKUP_DIR/ are left in $REPO_DIR."
 }
 
+# --- bootstrap -------------------------------------------------------------------------
+# Docker Engine and the Compose plugin come from Docker's own repository, the way
+# https://docs.docker.com/engine/install/ describes "install using the repository".
+DOCKER_PKGS="docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+SUDO=""
+APT_UPDATED=0
+
+as_root() { ${SUDO:+"$SUDO"} "$@"; }
+
+need_root() {
+  if [ "$(id -u)" -eq 0 ]; then SUDO=""; return 0; fi
+  command -v sudo >/dev/null 2>&1 || die "bootstrap needs root: run it as root, or install sudo and give $(id -un) sudo rights"
+  SUDO=sudo
+  sudo -n true 2>/dev/null && return 0
+  [ -t 0 ] || die "sudo needs $(id -un)'s password and there is no terminal to type it in; run bootstrap from a terminal (over ssh, a session with a tty), or give $(id -un) passwordless sudo"
+  say "  sudo asks for $(id -un)'s password once."
+  sudo -v || die "sudo refused; $(id -un) needs sudo rights to install packages"
+}
+
+os_field() {
+  # shellcheck disable=SC1091 # read at run time on the server
+  (. /etc/os-release && eval "printf '%s' \"\${$1:-}\"")
+}
+
+have_compose() { command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; }
+
+apt_get() { as_root env DEBIAN_FRONTEND=noninteractive apt-get -y -q "$@"; }
+apt_update() {
+  [ "$APT_UPDATED" -eq 1 ] && return 0
+  apt_get update >/dev/null || die "apt-get update failed; see: sudo apt-get update"
+  APT_UPDATED=1
+}
+
+# pkg_install apt|dnf PACKAGE... installs the given packages, quietly.
+pkg_install() {
+  local family=$1; shift
+  if [ "$family" = apt ]; then
+    apt_update
+    apt_get install "$@" >/dev/null || die "apt-get install $* failed"
+  else
+    as_root dnf -y -q install "$@" >/dev/null || die "dnf install $* failed"
+  fi
+}
+
+docker_repo_apt() {
+  local repo=$1 codename=$2
+  [ -n "$codename" ] || die "cannot tell this release's codename from /etc/os-release"
+  step "Docker's apt repository ($repo $codename)"
+  command -v curl >/dev/null 2>&1 || pkg_install apt curl
+  pkg_install apt ca-certificates
+  as_root install -m 0755 -d /etc/apt/keyrings
+  as_root curl -fsSL "https://download.docker.com/linux/$repo/gpg" -o /etc/apt/keyrings/docker.asc || die "cannot download Docker's GPG key"
+  as_root chmod a+r /etc/apt/keyrings/docker.asc
+  printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
+    "$(dpkg --print-architecture)" "$repo" "$codename" | as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
+  ok "/etc/apt/sources.list.d/docker.list, signed by /etc/apt/keyrings/docker.asc"
+  APT_UPDATED=0
+  apt_update
+}
+
+docker_repo_dnf() {
+  local repo=$1
+  step "Docker's dnf repository ($repo)"
+  command -v curl >/dev/null 2>&1 || pkg_install dnf curl
+  as_root curl -fsSL "https://download.docker.com/linux/$repo/docker-ce.repo" -o /etc/yum.repos.d/docker-ce.repo || die "cannot download docker-ce.repo"
+  as_root rpm --import "https://download.docker.com/linux/$repo/gpg" || die "cannot import Docker's GPG key"
+  ok "/etc/yum.repos.d/docker-ce.repo, key from https://download.docker.com/linux/$repo/gpg"
+}
+
+start_service() {
+  if [ ! -d /run/systemd/system ]; then
+    as_root service "$1" start >/dev/null 2>&1 && ok "$1 started (no systemd: start it again after a reboot)" && return 0
+    die "cannot start $1; this server runs no systemd"
+  fi
+  if systemctl is-enabled --quiet "$1" 2>/dev/null && systemctl is-active --quiet "$1" 2>/dev/null; then
+    ok "$1 is enabled and running"
+  else
+    as_root systemctl enable --now "$1" >/dev/null 2>&1 || die "cannot start $1: sudo systemctl enable --now $1"
+    ok "$1 enabled and started"
+  fi
+}
+
+do_bootstrap() {
+  step "Bootstrap this server"
+  [ "$(uname -s)" = Linux ] || die "bootstrap prepares Linux servers; on $(uname -s), install Docker Desktop: https://docs.docker.com/desktop/"
+  [ -r /etc/os-release ] || die "no /etc/os-release, so this Linux cannot be identified; install Docker by hand: https://docs.docker.com/engine/install/"
+  local id version codename family repo cron_pkg cron_svc user missing="" added=0
+  id=$(os_field ID); version=$(os_field VERSION_ID)
+  case "$id" in
+    ubuntu|debian) family=apt; repo=$id; cron_pkg=cron; cron_svc=cron ;;
+    rhel) family=dnf; repo=rhel; cron_pkg=cronie; cron_svc=crond ;;
+    rocky|almalinux|centos) family=dnf; repo=centos; cron_pkg=cronie; cron_svc=crond ;;
+    fedora) family=dnf; repo=fedora; cron_pkg=cronie; cron_svc=crond ;;
+    *) die "bootstrap supports Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, and Fedora; this is '${id:-unknown}' ${version}. Install Docker Engine and its compose plugin by hand: https://docs.docker.com/engine/install/" ;;
+  esac
+  ok "$(os_field PRETTY_NAME)"
+  need_root
+
+  if have_compose; then
+    ok "Docker is installed: $(docker --version), compose $(docker compose version --short)"
+  elif command -v docker >/dev/null 2>&1; then
+    die "docker is installed without Compose v2 (likely the distribution's own docker or podman-docker). Remove it as https://docs.docker.com/engine/install/$repo/#uninstall-old-versions describes, then run bootstrap again."
+  else
+    if [ "$family" = apt ]; then
+      codename=$(os_field UBUNTU_CODENAME); [ -n "$codename" ] || codename=$(os_field VERSION_CODENAME)
+      docker_repo_apt "$repo" "$codename"
+    else
+      docker_repo_dnf "$repo"
+    fi
+    step "Install Docker Engine and the Compose plugin"
+    # shellcheck disable=SC2086 # a list of package names
+    pkg_install "$family" $DOCKER_PKGS
+    have_compose || die "Docker installed but 'docker compose version' fails"
+    ok "$(docker --version), compose $(docker compose version --short)"
+  fi
+
+  step "git and cron"
+  command -v git >/dev/null 2>&1 || missing="$missing git"
+  command -v crontab >/dev/null 2>&1 || missing="$missing $cron_pkg"
+  if [ -n "$missing" ]; then
+    # shellcheck disable=SC2086 # a list of package names
+    pkg_install "$family" $missing
+    ok "installed${missing}"
+  else
+    ok "git and crontab are installed"
+  fi
+
+  step "Services"
+  start_service docker
+  start_service "$cron_svc"
+
+  step "The docker group"
+  user=${SUDO_USER:-$(id -un)}
+  if [ "$user" = root ]; then
+    ok "running as root, which needs no docker group"
+  elif id -nG "$user" | tr ' ' '\n' | grep -qx docker; then
+    ok "$user is in the docker group"
+  else
+    as_root usermod -aG docker "$user" || die "cannot add $user to the docker group"
+    ok "added $user to the docker group"; added=1
+  fi
+
+  say ""
+  if [ "$user" != root ] && { [ "$added" -eq 1 ] || ! id -nG | tr ' ' '\n' | grep -qx docker; }; then
+    say "${C_GREEN}Bootstrapped.${C_OFF} ${C_YELLOW}Log out and back in (a new ssh session) so $user's docker group takes effect,${C_OFF}"
+    say "then: deploy/deploy.sh deploy --yes"
+  else
+    say "${C_GREEN}Bootstrapped.${C_OFF} Next: deploy/deploy.sh deploy --yes"
+  fi
+}
+
+# --- nightly backup --------------------------------------------------------------------
+# One crontab line per checkout, found by this marker at its end; other lines are left alone.
+cron_marker() { printf '# temperature-alarms backup: %s' "$REPO_DIR"; }
+
+without_marker() {
+  awk -v m="$(cron_marker)" '{ n = length($0) - length(m) + 1; if (n >= 1 && substr($0, n) == m) next; print }'
+}
+
+valid_time() { printf '%s' "$1" | grep -Eq '^([01]?[0-9]|2[0-3]):[0-5][0-9]$'; }
+
+backup_command() {
+  local cmd="bash deploy/deploy.sh backup --yes --keep-days ${KEEP_DAYS:-7}"
+  [ -n "$PROJECT" ] && cmd="$cmd -p $(squote "$PROJECT")"
+  printf '%s' "$cmd"
+}
+
+# Task Scheduler runs Git's bash on deploy.sh with plain arguments: no shell line, so no
+# quoting to survive schtasks. The script finds its checkout on its own.
+windows_schedule_hint() {
+  local bash_exe task_args="backup --yes --keep-days ${KEEP_DAYS:-7}"
+  bash_exe="$(cygpath -w / 2>/dev/null)bin\bash.exe"
+  [ -f "$(cygpath -u "$bash_exe" 2>/dev/null)" ] || bash_exe=$(cygpath -w "$(command -v bash)")
+  [ -n "$PROJECT" ] && task_args="$task_args -p $PROJECT"
+  warn "Git Bash has no cron; Windows schedules it with Task Scheduler. In a Command Prompt:"
+  if [ "$1" = schedule ]; then
+    printf '    schtasks /Create /F /TN "Temperature Alarms backup" /SC DAILY /ST %s /TR "\\"%s\\" \\"%s\\" %s"\n' \
+      "$(printf '%02d:%s' "$((10#${AT%%:*}))" "${AT#*:}")" "$bash_exe" "$(cygpath -m "$SCRIPT_PATH")" "$task_args"
+  else
+    say '    schtasks /Delete /F /TN "Temperature Alarms backup"'
+  fi
+  return 1
+}
+
+write_crontab() {
+  local tmp
+  tmp=$(mktemp "${TMPDIR:-/tmp}/deploy-cron.XXXXXX") || die "cannot create a temp file"
+  cat > "$tmp"
+  crontab "$tmp" || { rm -f "$tmp"; die "crontab refused the new table"; }
+  rm -f "$tmp"
+}
+
+do_schedule_backup() {
+  step "Nightly backup"
+  valid_time "$AT" || die "--at must be HH:MM (24-hour), e.g. 02:00"
+  [ -z "$KEEP_DAYS" ] || valid_days "$KEEP_DAYS" || die "--keep-days must be a whole number of days, 1 or more"
+  is_windows_shell && { windows_schedule_hint schedule; return 1; }
+  command -v crontab >/dev/null 2>&1 || die "crontab is not installed; on Linux, deploy/deploy.sh bootstrap installs cron"
+  [ -f "$ENV_FILE" ] || die "not installed here yet (no .env); run: deploy.sh deploy"
+  local hh mm line current
+  hh=$((10#${AT%%:*})); mm=$((10#${AT#*:}))
+  mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR" 2>/dev/null
+  line="$mm $hh * * * cd $(squote "$REPO_DIR") && PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:\$PATH $(backup_command) >> $BACKUP_DIR/backup.log 2>&1 $(cron_marker)"
+  current=$(crontab -l 2>/dev/null) || current=""
+  { [ -n "$current" ] && printf '%s\n' "$current" | without_marker; printf '%s\n' "$line"; } | write_crontab
+  [ "$(crontab -l 2>/dev/null | grep -cF "$(cron_marker)")" = 1 ] || die "the crontab line did not stick; see: crontab -l"
+  ok "crontab ($(id -un)): $line"
+  ok "daily at $(printf '%02d:%02d' "$hh" "$mm"), keeping ${KEEP_DAYS:-7} days; output goes to $BACKUP_DIR/backup.log"
+}
+
+do_unschedule_backup() {
+  step "Nightly backup"
+  is_windows_shell && { windows_schedule_hint unschedule; return 1; }
+  command -v crontab >/dev/null 2>&1 || { ok "no crontab here, so nothing is scheduled"; return 0; }
+  local current
+  current=$(crontab -l 2>/dev/null) || current=""
+  if ! printf '%s\n' "$current" | grep -qF "$(cron_marker)"; then
+    ok "no nightly backup is scheduled for $REPO_DIR"; return 0
+  fi
+  printf '%s\n' "$current" | without_marker | write_crontab
+  ok "removed the nightly backup for $REPO_DIR from $(id -un)'s crontab"
+}
+
 run_action() {
   case "$1" in
+    bootstrap) do_bootstrap ;;
+    schedule-backup) do_schedule_backup ;;
+    unschedule-backup) do_unschedule_backup ;;
     preflight) do_preflight ;;
     install) do_install ;;
     deploy|upgrade) do_deploy ;;
@@ -605,17 +863,20 @@ menu() {
   local choice action
   while :; do
     printf '\n%sTemperature Alarms deploy%s  %s  (project %s, port %s)\n' "$C_BOLD" "$C_OFF" "$REPO_DIR" "$(project_name)" "$(web_port_setting)"
-    say "   1) Preflight checks          7) Restore the database"
-    say "   2) First install (.env)      8) Run the legacy migration"
-    say "   3) Deploy / upgrade          9) Show URL and tokens"
-    say "   4) Status                   10) Stop"
-    say "   5) Logs                     11) Uninstall"
-    say "   6) Back up the database      q) Quit"
+    say "   1) Preflight checks          8) Run the legacy migration"
+    say "   2) First install (.env)      9) Show URL and tokens"
+    say "   3) Deploy / upgrade         10) Stop"
+    say "   4) Status                   11) Uninstall"
+    say "   5) Logs                     12) Bootstrap this server (Docker, git, cron)"
+    say "   6) Back up the database     13) Schedule a nightly backup"
+    say "   7) Restore the database     14) Unschedule the nightly backup"
+    say "                                q) Quit"
     read -r -p "  Choose: " choice || exit 0
     case "$choice" in
       1) action=preflight ;; 2) action=install ;; 3) action=deploy ;; 4) action=status ;;
       5) action=logs ;; 6) action=backup ;; 7) action=restore ;; 8) action=migrate-legacy ;;
-      9) action=info ;; 10) action=stop ;; 11) action=uninstall ;;
+      9) action=info ;; 10) action=stop ;; 11) action=uninstall ;; 12) action=bootstrap ;;
+      13) action=schedule-backup ;; 14) action=unschedule-backup ;;
       q|Q|quit|exit) exit 0 ;;
       *) warn "no such choice"; continue ;;
     esac
@@ -652,6 +913,22 @@ exec $cmd"
   ssh ${tty[@]+"${tty[@]}"} $SSH_OPTS "$host" "bash -c $(squote "$script")"
 }
 
+# bootstrap on a server that may have no git and no checkout yet: copy this script over on
+# its own (base64 on stdin, so no command line gets long) and run it from a temp file. A tty
+# when there is one here, so sudo can ask for a password.
+remote_bootstrap() {
+  local host=$1 tmp cmd tty=()
+  # shellcheck disable=SC2086,SC2016 # SSH_OPTS is a list of options; $f expands on the server
+  tmp=$(base64 < "$SCRIPT_PATH" | ssh $SSH_OPTS "$host" 'umask 077; f=$(mktemp) || exit 1; if tr -cd A-Za-z0-9+/= | base64 -d > $f; then echo $f; else rm -f $f; exit 1; fi' | tr -d '\r')
+  [ -n "$tmp" ] || { bad "could not copy deploy.sh to $host"; return 1; }
+  cmd="bash $tmp bootstrap"
+  [ "$YES" -eq 1 ] && cmd="$cmd --yes"
+  cmd="$cmd; rc=\$?; rm -f $tmp; exit \$rc"
+  if [ -t 0 ] && [ -t 1 ]; then tty=(-t); fi
+  # shellcheck disable=SC2086,SC2029 # SSH_OPTS is a list of options; the command is built for the server
+  ssh ${tty[@]+"${tty[@]}"} $SSH_OPTS "$host" "$cmd"
+}
+
 remote_main() {
   local host line results=() failed=0
   if [ -n "$SERVERS_FILE" ]; then
@@ -666,8 +943,20 @@ remote_main() {
   [ -n "$ACTION" ] || interactive || die "give an action, or run interactively for the menu"
   command -v ssh >/dev/null 2>&1 || die "ssh is not installed here"
   [ -n "$REPO_URL" ] || REPO_URL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)
+  if [ "$BOOTSTRAP" -eq 1 ]; then
+    case "$ACTION" in deploy|upgrade) ;; *) die "--bootstrap goes with deploy" ;; esac
+  fi
   for host in "${HOSTS[@]}"; do
     step "$host: ${ACTION:-menu}"
+    if [ "$ACTION" = bootstrap ]; then
+      if remote_bootstrap "$host"; then results+=("ok    $host")
+      else results+=("FAIL  $host"); failed=1; fi
+      continue
+    fi
+    # Each ssh is a fresh login, so the deploy that follows already has the docker group.
+    if [ "$BOOTSTRAP" -eq 1 ] && ! remote_bootstrap "$host"; then
+      results+=("FAIL  $host (bootstrap)"); failed=1; continue
+    fi
     if remote_one "$host"; then results+=("ok    $host")
     else results+=("FAIL  $host"); failed=1; fi
   done
@@ -681,6 +970,7 @@ main() {
   if [ ${#HOSTS[@]} -gt 0 ] || [ -n "$SERVERS_FILE" ]; then
     remote_main; exit
   fi
+  [ "$BOOTSTRAP" -eq 0 ] || die "--bootstrap is for deploys to servers (--host, --servers); here, run bootstrap, log in again, then deploy"
   cd "$REPO_DIR" || die "cannot enter $REPO_DIR"
   [ -n "$PROJECT" ] && export COMPOSE_PROJECT_NAME="$PROJECT"
   if [ -z "$ACTION" ]; then

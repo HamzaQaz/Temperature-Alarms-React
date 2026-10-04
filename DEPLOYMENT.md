@@ -11,14 +11,19 @@ Throughout this guide, replace `YOUR_DOMAIN` with the hostname the site is serve
 
 ## The deploy script
 
-You need Docker with the Compose v2 plugin (Docker Desktop, or Docker Engine on Ubuntu Server; on Windows Server, Docker running Linux containers) and git. On the server:
+A new Linux server needs nothing but git and a login with sudo. On the server:
 
 ```bash
 git clone <repo-url> temperature-alarms
 cd temperature-alarms
-deploy/deploy.sh                       # a menu
-deploy/deploy.sh deploy --yes          # or one step, no questions: port 80, default thresholds
+deploy/deploy.sh bootstrap             # Docker Engine, Compose, and cron; adds you to the docker group
+exit                                   # log out and back in, so the docker group applies
+cd temperature-alarms
+deploy/deploy.sh deploy --yes          # port 80, default thresholds, no questions
+deploy/deploy.sh schedule-backup       # optional: a backup every night at 02:00, a week kept
 ```
+
+`deploy/deploy.sh` with no action shows a menu instead. `bootstrap` supports Ubuntu, Debian, RHEL, Rocky Linux, AlmaLinux, CentOS Stream, and Fedora. On a server without git yet (a minimal RHEL-family install), `sudo dnf install git` first, or run `bootstrap` from another machine with `--host` (below), which needs no checkout. Elsewhere, install Docker with the Compose v2 plugin yourself: Docker Desktop on macOS and Windows, Docker running Linux containers on Windows Server. On Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1                 # Windows PowerShell 5.1
@@ -29,11 +34,13 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 
 | Action | What it does |
 | --- | --- |
+| `bootstrap` | Linux only. Installs Docker Engine, the Compose and buildx plugins, and containerd from Docker's own apt or dnf repository, the way [Docker's install guide](https://docs.docker.com/engine/install/) does it (signed by Docker's GPG key; not the `get.docker.com` script), plus git, curl, and cron (`cronie` on RHEL-family servers, whose minimal images have no cron). Enables and starts `docker` and cron, and adds you (the `sudo` caller) to the `docker` group. Uses `sudo` when not run as root. What is already installed is skipped, so it is safe to repeat. A server with a distribution `docker` but no Compose v2 is refused with the uninstall link rather than replaced |
 | `preflight` | Checks Docker, Compose v2, that the daemon is up and runs Linux containers, that the web port is free (or already this stack's), and disk space |
 | `install` | Creates `.env` from `.env.example` with `ADMIN_TOKEN`, `DEVICE_TOKEN`, and `DB_PASSWORD` from a cryptographic random source, asks for the port and, if you want, the thresholds and retention (`--web-port`, `--set KEY=VALUE` without asking), and limits `.env` to its owner. An existing `.env` is kept: only empty secrets are filled, and nothing else changes without a yes (or `--reconfigure`) |
 | `deploy` | Runs `install` if there is no `.env`, offers `git pull --ff-only` on a clean checkout (`--pull` to do it unasked, `--no-pull` to skip), runs preflight, `docker compose up -d --build --wait`, then checks `/api/health` through `web`. This is also the upgrade |
 | `status`, `logs` | `docker compose ps` and the health check; recent logs (`--service api`, `--tail 500`, `--follow`) |
-| `backup` | `mysqldump` through the `db` container to `backups/<project>_<date>-<time>.sql.gz`, checked for completeness |
+| `backup` | `mysqldump` through the `db` container to `backups/<project>_<date>-<time>.sql.gz`, checked for completeness. `--keep-days N` then deletes this project's backups older than N days |
+| `schedule-backup`, `unschedule-backup` | Adds a line to your crontab that runs `backup --keep-days 7` every night at 02:00 (`--at HH:MM`, `--keep-days N`), logging to `backups/backup.log`; or removes it. Repeating `schedule-backup` replaces its own line, found by a `# temperature-alarms backup: <checkout>` comment, and other crontab lines are never touched. Linux and macOS; in Git Bash or `deploy.ps1` on Windows it prints the `schtasks` command for Task Scheduler instead |
 | `restore` | Replaces the database with a backup (`--file`, or pick from a list). Asks you to type the project name, and backs up the current database first |
 | `migrate-legacy` | Backs up, then runs `npm run migrate:legacy` in `api` (see [Migrating an old database in](#migrating-an-old-database-in)) |
 | `info` | The dashboard URL, the three secrets masked (`--reveal` to print them), and the two `config.h` lines for the firmware |
@@ -41,12 +48,7 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 
 Running `deploy` twice is safe: an unchanged checkout leaves the containers running, and a changed one rebuilds and recreates only what changed. The destructive actions take `--confirm <project>` in place of typing the name, so they can be scripted too. The database volume is named after the Compose project, `<project>_db-data`, and the project is Compose's own default, the checkout's folder name. On first install the script writes that name into `.env` as `COMPOSE_PROJECT_NAME`, so renaming or moving the folder later still finds the same volume; it never rewrites the line. Pass `-p` only for a second stack on the same machine, and never to an existing install. An install made by hand before the script has no such line and keeps using the folder name; see [Docker Compose by hand](#docker-compose-by-hand) to pin it.
 
-For a nightly backup, cron the script and keep a week:
-
-```bash
-# crontab -e
-0 2 * * * cd /home/admin/temperature-alarms && deploy/deploy.sh backup --yes && find backups -name '*.sql.gz' -mtime +7 -delete
-```
+For a nightly backup, `deploy/deploy.sh schedule-backup` writes the crontab line for you. Backups stay on the server, so copy `backups/` somewhere else too.
 
 ### Many servers from one machine
 
@@ -55,21 +57,27 @@ From any machine with ssh access, give one or more servers and an action; the sc
 ```bash
 deploy/deploy.sh deploy --host admin@closet-mon-hs --host admin@closet-mon-ms --yes
 cp deploy/servers.example.txt deploy/servers.txt     # one USER@HOST per line; gitignored
+deploy/deploy.sh bootstrap --servers deploy/servers.txt          # prepare new servers
+deploy/deploy.sh deploy --bootstrap --servers deploy/servers.txt --yes   # or prepare and deploy in one go
+deploy/deploy.sh schedule-backup --servers deploy/servers.txt --yes
 deploy/deploy.sh status --servers deploy/servers.txt --yes
 deploy/deploy.sh backup --servers deploy/servers.txt --yes
 ```
 
 On each server it connects with plain `ssh`, clones the repo into `~/temperature-alarms` if it is not there yet (`--dir` for another path, such as an existing checkout; `--repo` and `--branch` for another source, by default this checkout's `origin`), and runs `deploy/deploy.sh` there with the same action and flags. So each server keeps its own `.env`, secrets, and `backups/`, and nothing secret crosses the network. A `deploy` to a remote server pulls the latest code first unless you pass `--no-pull`. With one server and no `--yes`, the menu and the prompts work over the ssh session.
 
-The servers need git, Docker with Compose v2, and a login that can run `docker` (in the `docker` group). Key-based ssh saves typing a password per server; extra ssh options go in `--ssh-opts "-p 2222 -i ~/.ssh/district"` or `DEPLOY_SSH_OPTS`. `deploy.ps1` takes the same `--host` and `--servers` flags and uses the OpenSSH client built into Windows. The remote side is always `deploy.sh`, so the targets are Linux or macOS servers; for a Windows server, run `deploy.ps1` on it.
+`bootstrap` with `--host` or `--servers` copies `deploy.sh` to each server on its own and runs it there, so a server with no git and no checkout can be prepared from here. `deploy --bootstrap` runs `bootstrap` and then the deploy on each server; each is its own ssh login, so the deploy already has the new `docker` group. `sudo` on the server asks for your password when you run from a terminal; unattended (`--yes` from a script or an agent), the login needs passwordless sudo, and without it `bootstrap` stops and says so.
+
+Apart from `bootstrap`, the servers need git, Docker with Compose v2, and a login that can run `docker` (in the `docker` group), which is what `bootstrap` sets up. Key-based ssh saves typing a password per server; extra ssh options go in `--ssh-opts "-p 2222 -i ~/.ssh/district"` or `DEPLOY_SSH_OPTS`. `deploy.ps1` takes the same `--host`, `--servers`, and `--bootstrap` flags and uses the OpenSSH client built into Windows. The remote side is always `deploy.sh`, so the targets are Linux or macOS servers; for a Windows server, run `deploy.ps1` on it.
 
 ## Ask your Claude agent
 
 With [Claude Code](https://claude.com/claude-code) open in this repo, ask for what you want in plain words:
 
+- "Set up the new server admin@closet-mon-hs" (bootstrap, then deploy)
 - "Deploy this to admin@closet-mon-hs on port 8080"
 - "Upgrade the servers in deploy/servers.txt"
-- "Back up the database" or "restore yesterday's backup"
+- "Back up the database", "back up nightly", or "restore yesterday's backup"
 - "Is the stack healthy?"
 
 The `deploy` skill in `.claude/skills/deploy/` has the agent run the deploy script non-interactively. It asks only for what it cannot find out (the server and, on a first install, the port), runs preflight before deploying, never prints a token or password into the chat (it shows `info` masked and tells you how to reveal them yourself), asks you before a restore or a wipe, and finishes on the health check. It needs ssh to the server to work without a password prompt.

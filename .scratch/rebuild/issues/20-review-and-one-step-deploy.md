@@ -28,3 +28,24 @@ What changed, in short:
 Verified: the deploy scripts ran every action locally on Docker Desktop, and remotely over ssh to a throwaway sshd. A headless `claude -p` session deployed with the skill alone and then backed up, with health OK and no secret in either transcript.
 
 Untested: certbot against a real domain, a real Windows Server, macOS, an interactive menu over a real `ssh -t`, `deploy.ps1 --servers`, and the legacy count SQL against a real dump.
+
+**2026-10-04 — follow-up: a fresh Linux server from nothing, by an Orca worker** (spec: `.scratch/rebuild/reviews/tasks/linux-bootstrap.md`). `deploy.sh` gained `bootstrap` (Docker Engine, Compose, and buildx from Docker's own apt or dnf repository with its GPG key, plus git and cron; starts docker and cron; adds the sudo caller to the `docker` group; skips what is installed), `schedule-backup` / `unschedule-backup` (one crontab line per checkout, marked `# temperature-alarms backup: <checkout>`, replaced in place; other lines untouched), and `backup --keep-days N`. Cron, not a systemd timer: `bootstrap` installs `cronie` on RHEL-family servers. `--host` / `--servers` copy `deploy.sh` over on its own for `bootstrap`, so the server needs no git, and `deploy --bootstrap` runs both in one call. `deploy.ps1` does the same remotely, and on Windows `schedule-backup` prints a `schtasks` line.
+
+Tested on fresh WSL 2 distros with systemd and their own Docker Engine (Docker Desktop integration off for them), as a non-root user with passwordless sudo:
+
+| | Ubuntu 24.04 | AlmaLinux 9.8 | Debian 13 |
+| --- | --- | --- | --- |
+| bootstrap | local: pass | local: pass (installed git and cronie) | remote from Git Bash, `deploy --bootstrap`: pass (no git or curl beforehand) |
+| re-run | pass, nothing reinstalled | pass | pass, from `deploy.ps1` on PowerShell 5.1 |
+| deploy and health | pass | pass | pass, cloned by the remote deploy |
+| backup | pass | pass | pass (remote, `deploy.ps1`) |
+| schedule twice | one line, `--at`/`--keep-days` replaced it; an unrelated line kept | the same | the same (remote, `deploy.ps1`) |
+| a real cron run | the backup ran and pruned | the same | not run |
+| unschedule, twice | pass; the unrelated line kept | pass | pass (remote) |
+| `uninstall --wipe` | pass, no volumes left | pass | pass (remote) |
+
+Remote `bootstrap` also passed against Ubuntu from Git Bash, PowerShell 5.1, and PowerShell 7. Over ssh with no tty, sudo needing a password stops with a clear error. Alpine is refused by name, and a non-root user without sudo is told to get root. shellcheck 0.11.0 `-S style` is clean, and `bash -n` passes on bash 3.2.57. The local regression smoke with `-p deploytest` (install, deploy, status, backup, restore, uninstall `--wipe`) passed on Docker Desktop for `deploy.sh` in Git Bash and for `deploy.ps1` on PowerShell 5.1. The Git Bash `schtasks` line was created, run once (a real backup, exit 0), and deleted.
+
+Found: `deploy/deploy.sh` is committed as 100644, so `deploy/deploy.sh …` on a Linux clone fails with "Permission denied" until the mode is committed as 100755 (`git update-index --chmod=+x deploy/deploy.sh`). The tests ran with it set. Also, `pwsh -File deploy.ps1 … --ssh-opts "-i C:\key"` is split at the colon by PowerShell's `-File` argument binding (this was already the case before the follow-up). `DEPLOY_SSH_OPTS` works around it.
+
+Untested: RHEL itself, Rocky, CentOS Stream, Fedora, and Ubuntu 22.04. Also untested: the sudo password prompt over `ssh -t`; a server with a distribution `docker` but no Compose (it is refused, not replaced); macOS `schedule-backup`; and the `deploy.ps1` `schtasks` line (printed only, never run).
