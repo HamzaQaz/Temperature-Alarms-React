@@ -21,7 +21,7 @@ export function Tile({ label, value, note, noteTone = 'muted' }: TileProps) {
       <CardContent className="px-5">
         <dt className="text-sm text-muted-foreground">{label}</dt>
         <dd className="mt-1 text-3xl font-semibold tabular-nums leading-none tracking-tight">{value}</dd>
-        <dd className={noteTone === 'warn' ? 'mt-2 text-xs font-medium text-amber-700 dark:text-amber-400' : 'mt-2 text-xs text-muted-foreground'}>
+        <dd className={noteTone === 'warn' ? 'mt-2 text-xs font-medium tabular-nums text-amber-700 dark:text-amber-400' : 'mt-2 text-xs tabular-nums text-muted-foreground'}>
           {note}
         </dd>
       </CardContent>

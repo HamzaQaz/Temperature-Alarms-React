@@ -203,13 +203,14 @@ export function DeleteButton({ label, title, description, disabled, error, onCon
   return (
     <AlertDialog open={open} onOpenChange={setOpenState}>
       <AlertDialogTrigger asChild>
+        {/* DESIGN.md: a destructive flow starts from an outline button in Critical Red. */}
         <Button
-          variant="ghost"
+          variant="outline"
           size="icon-sm"
           disabled={disabled}
           aria-label={label}
           title={disabled ? 'Enter the Admin token to delete' : label}
-          className="text-muted-foreground hover:text-destructive"
+          className="text-destructive hover:text-destructive"
         >
           <Trash2 aria-hidden />
         </Button>

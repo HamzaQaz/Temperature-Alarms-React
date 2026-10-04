@@ -135,7 +135,7 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
         title="Devices"
         description="One Device per Closet, identified by its ESP_ hostname. Deleting a Device deletes its Readings."
         action={
-          <Button ref={addButton} size="sm" onClick={openForm} disabled={!canEdit || formOpen || editing !== null}>
+          <Button ref={addButton} size="sm" variant="outline" onClick={openForm} disabled={!canEdit || formOpen || editing !== null}>
             <Plus aria-hidden />
             Add device
           </Button>
@@ -264,7 +264,7 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
                   <AnimatedRow key={device.id}>
                     <TableCell className="font-mono font-medium">{device.hostname}</TableCell>
                     <WrappingCell>
-                      {device.campus.name} <span className="font-mono text-xs text-muted-foreground">{device.campus.shortcode}</span>
+                      {device.campus.name} <span className="text-sm text-muted-foreground">{device.campus.shortcode}</span>
                     </WrappingCell>
                     <WrappingCell>{device.closet}</WrappingCell>
                     <TableCell className="whitespace-nowrap text-right">

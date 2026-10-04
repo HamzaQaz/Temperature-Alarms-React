@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'r
 import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
-import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Info, Trash2 } from 'lucide-react';
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
 import { getHistory, resetHistory } from '@/api';
 import { AdminTokenPanel } from '@/components/AdminTokenPanel';
@@ -226,6 +226,7 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
             clearAdminToken();
             setPrompt('closed');
           }}
+          onClose={() => setPrompt('closed')}
         />
       )}
 
@@ -237,6 +238,16 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
       )}
 
       <DayPicker date={date} onShowDay={onShowDay} />
+
+      {history.truncated && (
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Info className="size-4 shrink-0" aria-hidden />
+          <span>
+            This day holds more Readings than History loads at once. The first <span className="tabular-nums">{readings.length.toLocaleString()}</span> are
+            shown, and the numbers, chart, and table cover only those.
+          </span>
+        </p>
+      )}
 
       <DaySummaryTiles summary={summary} readings={readings} />
 
@@ -305,6 +316,8 @@ interface DayPickerProps {
 /** Previous, the day itself (a native date field, so any day is one pick away), next, and a way back to today. */
 function DayPicker({ date, onShowDay }: DayPickerProps) {
   const isToday = date === today();
+  // A future day from a hand-edited URL has nothing after it either.
+  const isLatest = date >= today();
   return (
     <nav aria-label="Day" className="flex flex-wrap items-center gap-2">
       <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, -1))} aria-label="Previous day">
@@ -322,7 +335,7 @@ function DayPicker({ date, onShowDay }: DayPickerProps) {
           className="h-9 pointer-coarse:min-h-11 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
         />
       </label>
-      <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, 1))} disabled={isToday} aria-label="Next day">
+      <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, 1))} disabled={isLatest} aria-label="Next day">
         <ChevronRight aria-hidden />
       </Button>
       <p className="ml-1 text-sm font-medium">{isToday ? `Today, ${formatDayLong(date)}` : formatDayLong(date)}</p>
@@ -425,7 +438,7 @@ function DayChart({ history }: { history: HistoryPayload }) {
                   formatter={(value, name) => (
                     <div className="flex flex-1 items-center justify-between gap-4">
                       <span className="text-muted-foreground">{chartConfig[name as keyof typeof chartConfig]?.label ?? name}</span>
-                      <span className="font-mono font-medium tabular-nums">
+                      <span className="font-medium tabular-nums">
                         {value}
                         {name === 'tempF' ? '°F' : '%'}
                       </span>

@@ -91,6 +91,8 @@ export interface History {
   from: string;
   to: string;
   readings: Reading[];
+  /** True when the day held more Readings than one response carries: `readings` is the day's first ones and the summary covers only those. */
+  truncated?: boolean;
   summary: {
     tempF: DaySummary | null;
     humidity: DaySummary | null;

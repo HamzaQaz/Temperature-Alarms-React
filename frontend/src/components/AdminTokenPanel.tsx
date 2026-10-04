@@ -13,6 +13,8 @@ interface AdminTokenPanelProps {
   onForget: () => void;
   /** Leave the "Not authorised" state without entering a token. The panel stays open if none is stored. */
   onDismissRejection?: () => void;
+  /** Put the panel away, token or not. For a page that opens it only when a change needs the token (History). */
+  onClose?: () => void;
   /** What on this page sends the token, e.g. "Adding or deleting anything here". */
   action?: string;
 }
@@ -28,7 +30,8 @@ export function AdminTokenPanel({
   onSave,
   onForget,
   onDismissRejection,
-  action = 'Adding or deleting anything here',
+  onClose,
+  action ='Adding or deleting anything here',
 }: AdminTokenPanelProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
@@ -82,9 +85,11 @@ export function AdminTokenPanel({
     setDraft('');
     setEditing(false);
     onDismissRejection?.();
+    onClose?.();
   };
-  // Cancel leaves an edit, or the "Not authorised" state; with no token stored the panel stays, as it should.
-  const canCancel = (hasToken && !rejected) || (rejected && onDismissRejection !== undefined);
+  // Cancel leaves an edit, or the "Not authorised" state; with no token stored the panel stays,
+  // unless the page opened it for one change and can put it away again.
+  const canCancel = (hasToken && !rejected) || (rejected && onDismissRejection !== undefined) || onClose !== undefined;
 
   return (
     <form

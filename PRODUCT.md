@@ -34,7 +34,7 @@ Calm, factual, trustworthy. The interface is quiet by default and only raises it
 ## Design Principles
 
 - Quiet until it matters. A comfortable closet takes up as little attention as possible; a Condition is the loudest thing on the page, and the worst one sets the tone.
-- The server decides, the browser shows. Every Condition, every threshold, and every summary number comes from the API so all pages, and any future alerting, agree.
+- The server decides, the browser shows. Every Condition, its level, and every threshold come only from the API, so all pages, and any future alerting, agree. The dashboard's summary tiles may total what the API returned (counts and averages over the Devices on screen), but never decide a Condition themselves.
 - Say what happened, with the numbers. The value, when it was recorded, and how long ago; history by the day with lows, highs, and averages beside the chart.
 - The same vocabulary everywhere. Labels and copy use the words in CONTEXT.md, so a technician reads the site the way the team talks.
 - Earned familiarity. Standard controls and layouts from the existing shadcn set, used consistently across the three pages, so the tool disappears into the task.

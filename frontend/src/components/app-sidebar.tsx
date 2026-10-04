@@ -17,6 +17,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from "@/components/ui/sidebar"
 
 
@@ -25,6 +26,8 @@ import {
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
 
   const location = useLocation()
+  // On a phone the sidebar is a sheet over the page; picking a page should put it away.
+  const { setOpenMobile } = useSidebar()
 
   const navItems = [
     {
@@ -66,7 +69,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       {navItems.map((item) => (
         <SidebarMenuItem key={item.title}>
           <SidebarMenuButton asChild isActive={item.isActive}>
-            <Link to={item.url}>
+            <Link to={item.url} onClick={() => setOpenMobile(false)}>
               <item.icon />
               <span>{item.title}</span>
             </Link>
@@ -77,17 +80,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </nav>
       </SidebarContent>
       <SidebarFooter>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="sm">
-              <div className="flex flex-1 text-center text-sm leading-tight group-data-[collapsible=icon]:hidden">
-                <span className="truncate text-xs text-muted-foreground">
-                  {new Date().getFullYear()} © 
-                </span>
-              </div>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        {/* Plain text, not a button: there is nothing here to press. */}
+        <p className="truncate px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+          {new Date().getFullYear()} ©
+        </p>
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

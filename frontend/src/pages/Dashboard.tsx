@@ -181,7 +181,8 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
   // Offline is the server's call, and the server only speaks when a Reading arrives. So when a
   // card shown Online has aged past the threshold, ask again: the answer carries Offline. The key
   // changes every second while any such card remains, so a server a second behind is asked again.
-  const pastOffline = devices.filter((device) => device.online && (age(device) ?? -1) >= offlineAfterSeconds).map((device) => device.id);
+  // Strictly past, as the server rules: exactly the threshold is still Online there.
+  const pastOffline = devices.filter((device) => device.online && (age(device) ?? -1) > offlineAfterSeconds).map((device) => device.id);
   const pastOfflineKey = pastOffline.length === 0 ? '' : `${pastOffline.join(',')}@${Math.floor(now / 1000)}`;
   useEffect(() => {
     if (pastOfflineKey !== '') onPastOffline();
@@ -218,7 +219,8 @@ function Summary({ devices }: { devices: DashboardDevice[] }) {
     };
   }, [devices]);
 
-  const reportingNote = reporting === 0 ? 'No readings yet' : `Across ${reporting} reporting`;
+  // An Offline Device's last Reading still counts, so the note says "with a Reading", not "reporting".
+  const reportingNote = reporting === 0 ? 'No readings yet' : `Across ${reporting} with a Reading`;
 
   return (
     <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

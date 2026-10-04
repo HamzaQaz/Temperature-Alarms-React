@@ -67,11 +67,18 @@ services:
   web:
     build: ./frontend
     restart: unless-stopped
+    # nginx runs as non-root inside, on 8080; the host port is unchanged.
     ports:
-      - "${WEB_PORT:-80}:80"
+      - "${WEB_PORT:-80}:8080"
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     logging: *logging
 
 volumes:

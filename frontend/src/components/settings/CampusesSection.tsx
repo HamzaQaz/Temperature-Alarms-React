@@ -80,7 +80,7 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
         title="Campuses"
         description="Every Device belongs to one Campus. The shortcode is what the dashboard filters by."
         action={
-          <Button ref={addButton} size="sm" onClick={openForm} disabled={!canEdit || formOpen}>
+          <Button ref={addButton} size="sm" variant="outline" onClick={openForm} disabled={!canEdit || formOpen}>
             <Plus aria-hidden />
             Add campus
           </Button>
@@ -112,7 +112,7 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
                 onChange={(event) => setShortcode(event.target.value.toUpperCase())}
                 placeholder="CHS"
                 maxLength={SHORTCODE_MAX}
-                className="font-mono uppercase"
+                className="uppercase"
                 aria-invalid={(submitted && shortcodeMissing) || undefined}
                 aria-describedby={submitted && shortcodeMissing ? 'campus-shortcode-error campus-shortcode-hint' : 'campus-shortcode-hint'}
               />
@@ -160,7 +160,7 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
                 state.data.map((campus) => (
                   <AnimatedRow key={campus.id}>
                   <WrappingCell className="font-medium">{campus.name}</WrappingCell>
-                  <TableCell className="font-mono text-muted-foreground">{campus.shortcode}</TableCell>
+                  <TableCell className="text-muted-foreground">{campus.shortcode}</TableCell>
                   <TableCell className="text-right">
                     <DeleteButton
                       label={`Delete ${campus.name}`}
