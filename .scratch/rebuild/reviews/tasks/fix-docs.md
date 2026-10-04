@@ -1,0 +1,14 @@
+Target: DEPLOYMENT.md, README.md, .gitignore, and your deploy tooling (deploy/, .claude/skills/deploy/).
+
+Change:
+1. Fix these findings in .scratch/rebuild/reviews/firmware-docs.md against the docs as they are now (with your new sections in them): 1 (the TLS-in-front Caddyfile redirects Device POSTs: keep plain HTTP for /api/readings, or document exactly how a Device flashed with http://<host> keeps reporting), 2 (the manual nginx template must pass `nginx -t` before certbot), 3 (migrating an old database after the first run), 7 (Node version: the frontend tests need 22.18+), 8 (commands that use $DB_PASSWORD must load .env first, or use the deploy script), 9 (say which hostname to register on first run), 11 (the open-network option: an empty WIFI_PASSWORD), 14 (the DB volume is named after the compose project; explain it, and how the deploy script keeps it stable), 16 (gitignore the inventory sheet and the files bench.py writes next to it). Reproduce 1 and 2 again after your fix where you can (a throwaway caddy or nginx container), as the reviewer did.
+2. Finding 5 in .scratch/rebuild/reviews/backend.md: the legacy count check in DEPLOYMENT.md must account for the startup retention pass deleting rows older than RETENTION_DAYS.
+3. Note in DEPLOYMENT.md that the web container's nginx runs as a non-root user on port 8080 inside the container; the host port is still WEB_PORT (default 80).
+4. Make sure everything else in README.md and DEPLOYMENT.md still matches the code after today's other fixes: backend now returns 422 for temp outside -40..200 °F and humidity outside 0..100, `trust proxy` is 1 (one proxy hop: if an operator puts another proxy in front, say what that means), the migration lock, and History's 30,000-row cap.
+5. Test the deploy skill in a live, headless Claude Code session: in a scratch clone (as before), run `claude -p "<an operator's plain request, e.g. deploy this here on port 8082 under project name deploytest, then tell me the URL>" --permission-mode acceptEdits` (or whatever non-interactive permission flag your Claude Code version needs to run Bash; check `claude --help`), and then a second session asking it to back up the database. Confirm it used the skill and the script, printed no secret, and verified health. Fix the skill if it stumbled. Tear everything down afterwards.
+
+Constraints: several Orca workers may share this worktree; never commit, stash, reset, or checkout. Do not edit backend/, frontend/, arduino/, or compose.yaml.
+
+Ownership: DEPLOYMENT.md, README.md, .gitignore, deploy/, .claude/skills/deploy/. Append a "Fixed" note per finding at the bottom of each review report you fixed from.
+
+Observable acceptance: worker_done naming each finding fixed, the reproduction results for 1 and 2, and the headless skill-run results (what it ran, health result, no secrets in output); --outcome succeeded only if the docs are fixed and the skill deployed and backed up successfully headlessly.
