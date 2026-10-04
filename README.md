@@ -137,7 +137,7 @@ npm run test:db:down   # docker compose down -v
 
 Without Docker, point the suite at any MySQL 8 you can spare with `TEST_DATABASE_URL=mysql://user:password@host:port/database`. The database name must contain `test`: the suite drops every table in it before each test.
 
-The frontend has no component tests. Its pure functions (timing, closet parsing, dates, the API base) have unit tests that run on Node's own test runner and type stripping, so there is nothing extra to install; lint and typecheck cover the rest, and `npm run build` runs the typecheck first.
+The frontend has no component tests. Two of its pure modules, report timing (the countdown and the age of a Reading) and the API base address, have unit tests that run on Node's own test runner and type stripping, so there is nothing extra to install; lint and typecheck cover the rest, and `npm run build` runs the typecheck first.
 
 ```bash
 cd frontend

@@ -370,12 +370,17 @@ class LogFile(unittest.TestCase):
 
 
 class ScriptedPorts:
-    """What list_ports answers on each poll; Ctrl-C arrives as a KeyboardInterrupt from a poll."""
+    """What list_ports answers on each poll; Ctrl-C arrives as a KeyboardInterrupt from a poll.
+
+    A callable in the script runs before the next poll is answered, e.g. to let the boards in progress finish.
+    """
 
     def __init__(self, polls):
         self.polls = list(polls)
 
     def __call__(self):
+        while self.polls and callable(self.polls[0]):
+            self.polls.pop(0)()
         answer = self.polls.pop(0) if self.polls else KeyboardInterrupt
         if answer is KeyboardInterrupt:
             raise KeyboardInterrupt
@@ -456,13 +461,14 @@ class WatcherRun(unittest.TestCase):
             "COM7": {"mac": "EC:FA:BC:7A:ED:5B", "lines": boot_log()},
             "COM9": {"mac": "5C:CF:7F:12:34:AB", "lines": boot_log(hostname="ESP_1234AB", wifi=False)},
         })
-        watcher = self.watcher(tools, polls=[[], ["COM7"], ["COM7"], ["COM7", "COM9"], ["COM7", "COM9"]])
+        def com7_finishes():
+            for thread in watcher._threads:
+                thread.join()
+
+        watcher = self.watcher(tools, polls=[[], ["COM7"], ["COM7"], com7_finishes, ["COM7", "COM9"], ["COM7", "COM9"]])
         self.assertEqual(watcher.run(), 0)
         self.assertIsNone(watcher.stop_reason)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class SheetWriteBack(unittest.TestCase):
@@ -516,3 +522,7 @@ class SheetWriteBack(unittest.TestCase):
     def test_a_sheet_from_text_cannot_be_written(self):
         with self.assertRaises(bench.BenchError):
             bench.Inventory.from_text(SHEET).record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-10")
+
+
+if __name__ == "__main__":
+    unittest.main()
