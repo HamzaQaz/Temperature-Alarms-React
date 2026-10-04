@@ -1,8 +1,8 @@
 import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Pool, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
+import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import { createTestPool, resetDatabase, tableNames } from './helpers/database';
-import { runMigrations } from '../src/migrations';
+import { MigrationLockError, runMigrations, withMigrationLock } from '../src/migrations';
 
 let pool: Pool;
 
@@ -74,6 +74,77 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool, { list: extra });
     assert.deepEqual(applied, ['0002-extra']);
     assert.ok((await tableNames(pool)).includes('extra'));
+  });
+
+  // MySQL commits DDL as it goes, so a run can die after a schema change and before recording it.
+  test('a migration whose change landed but was never recorded runs again cleanly', async () => {
+    await pool.query("DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index')");
+    const applied = await runMigrations(pool);
+    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'readings', 'schema_migrations']);
+    assert.deepEqual((await readingsIndexes()).get('ix_readings_recorded'), ['recorded_at']);
+  });
+});
+
+describe('migration lock', () => {
+  beforeEach(() => resetDatabase(pool));
+
+  const extraTable = (id: string, table: string) => ({
+    id,
+    up: async (conn: PoolConnection) => {
+      await conn.query(`CREATE TABLE ${table} (id INT PRIMARY KEY)`);
+    },
+  });
+
+  /** A first runner that holds the lock until `release` is called. */
+  async function holdLock(): Promise<{ release: () => Promise<void> }> {
+    const conn = await pool.getConnection();
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => (open = resolve));
+    let acquired!: () => void;
+    const holding = new Promise<void>((resolve) => (acquired = resolve));
+    const run = withMigrationLock(conn, async () => {
+      acquired();
+      await gate;
+    }).finally(() => conn.release());
+    await holding;
+    return {
+      release: async () => {
+        open();
+        await run;
+      },
+    };
+  }
+
+  test('a second runner waits for the first to finish, then runs', async () => {
+    const first = await holdLock();
+    let settled = false;
+    const second = runMigrations(pool, { list: [extraTable('0005-extra', 'extra')], lockWaitSeconds: 10 }).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(settled, false, 'the second runner is still waiting');
+    assert.ok(!(await tableNames(pool)).includes('extra'));
+
+    await first.release();
+    assert.deepEqual(await second, ['0005-extra']);
+    assert.ok((await tableNames(pool)).includes('extra'));
+  });
+
+  test('a second runner gives up after the wait rather than run alongside the first', async () => {
+    const first = await holdLock();
+    try {
+      await assert.rejects(runMigrations(pool, { list: [extraTable('0005-extra', 'extra')], lockWaitSeconds: 1 }), MigrationLockError);
+      assert.ok(!(await tableNames(pool)).includes('extra'));
+    } finally {
+      await first.release();
+    }
+  });
+
+  test('the lock is released after a migration fails, so the next run is not blocked', async () => {
+    const failing = { id: '0005-broken', up: async () => { throw new Error('boom'); } };
+    await assert.rejects(runMigrations(pool, { list: [failing], lockWaitSeconds: 1 }), /boom/);
+    assert.deepEqual(await runMigrations(pool, { list: [extraTable('0005-extra', 'extra')], lockWaitSeconds: 1 }), ['0005-extra']);
   });
 });
 

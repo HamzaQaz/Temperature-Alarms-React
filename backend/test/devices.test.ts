@@ -95,7 +95,8 @@ describe('/api/devices', () => {
   });
 
   test('rejects a missing, malformed, or unknown campus with 422', async () => {
-    for (const campusId of [undefined, 'CHS', 0, -1, 1.5, 999]) {
+    // 2 ** 32 is one past INT UNSIGNED, the column's range.
+    for (const campusId of [undefined, 'CHS', 0, -1, 1.5, 999, 2 ** 32, 2 ** 40]) {
       const response = await addDevice({ hostname: 'ESP_A1B2C3', campusId, closet: 'IDF 2' });
       assert.equal(response.status, 422, JSON.stringify(campusId));
       assert.match(await errorOf(response), /campus/i);
@@ -212,7 +213,7 @@ describe('/api/devices', () => {
 
     test('rejects an unknown campus with 422 and changes nothing', async () => {
       const device = await createDevice();
-      for (const campusId of [999, 'CHS', 0, -1, 1.5]) {
+      for (const campusId of [999, 'CHS', 0, -1, 1.5, 2 ** 32, 2 ** 40]) {
         const response = await edit(device.id, { campusId });
         assert.equal(response.status, 422, JSON.stringify(campusId));
         assert.match(await errorOf(response), /campus/i);

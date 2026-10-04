@@ -12,7 +12,9 @@ import { readingsRouter, dashboardRouter, historyRouter } from './routes/reading
 export function createApp(appDeps: AppDeps): Express {
   const deps: RouteDeps = { ...appDeps, sse: appDeps.sse ?? createBroadcaster() };
   const app = express();
-  app.set('trust proxy', true);
+  // One hop: nginx (the stack's web service, or the manual install's). nginx appends the address it
+  // saw to whatever X-Forwarded-For the client sent, so only that last entry can be believed.
+  app.set('trust proxy', 1);
   app.use(corsMiddleware(deps.config));
   app.use(express.json());
 
@@ -51,9 +53,21 @@ export function createApp(appDeps: AppDeps): Express {
       res.status(400).json({ error: 'Malformed JSON body' });
       return;
     }
+    if (isClientHttpError(err)) {
+      // The body parser's own refusals (413 too large, 415 unsupported charset, ...) keep their status.
+      res.status(err.status).json({ error: err.message });
+      return;
+    }
     console.error('Unhandled error:', err);
     res.status(500).json({ error: 'Internal server error' });
   });
 
   return app;
+}
+
+/** An http-errors 4xx, as the body parser throws them, whose message is meant for the client. */
+function isClientHttpError(err: unknown): err is { status: number; message: string } {
+  if (typeof err !== 'object' || err === null) return false;
+  const { status, expose } = err as { status?: unknown; expose?: unknown };
+  return expose === true && typeof status === 'number' && status >= 400 && status < 500;
 }

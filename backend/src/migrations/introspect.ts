@@ -16,6 +16,14 @@ export async function tableExists(conn: PoolConnection, table: string): Promise<
   return rows.length > 0;
 }
 
+export async function indexExists(conn: PoolConnection, table: string, index: string): Promise<boolean> {
+  const [rows] = await conn.query<RowDataPacket[]>(
+    'SELECT 1 FROM information_schema.statistics WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?',
+    [table, index],
+  );
+  return rows.length > 0;
+}
+
 export async function columnExists(conn: PoolConnection, table: string, column: string): Promise<boolean> {
   const [rows] = await conn.query<RowDataPacket[]>(
     'SELECT 1 FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?',

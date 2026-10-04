@@ -1,9 +1,7 @@
 import dotenv from 'dotenv';
 import { loadConfig, ConfigError } from './config';
 import { createPool } from './db';
-import { migrationContext } from './migrations';
-import { legacyCampusesAndDevices } from './migrations/0002-legacy-campuses-and-devices';
-import { legacyReadings } from './migrations/0003-legacy-readings';
+import { migrationContext, runLegacyMigrations } from './migrations';
 
 dotenv.config();
 
@@ -24,13 +22,10 @@ async function main(): Promise<void> {
     throw error;
   }
   const pool = createPool(config.database);
-  const conn = await pool.getConnection();
   try {
-    const context = migrationContext(config);
-    await legacyCampusesAndDevices.up(conn, context);
-    await legacyReadings.up(conn, context);
+    // Under the runner's lock: if the backend is still migrating at startup, this waits for it.
+    await runLegacyMigrations(pool, { context: migrationContext(config) });
   } finally {
-    conn.release();
     await pool.end();
   }
 }

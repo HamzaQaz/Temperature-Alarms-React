@@ -4,6 +4,7 @@ import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, errorOf, type Device, type History } from './helpers/api';
+import { HISTORY_ROW_LIMIT } from '../src/routes/readings';
 
 /** Chicago is six hours behind UTC in September (CDT), so its 5 September starts at 05:00Z. */
 const CHICAGO = 'America/Chicago';
@@ -64,6 +65,7 @@ describe('/api/devices/:id/history', () => {
         from: DAY_START,
         to: NEXT_DAY_START,
         readings: [],
+        truncated: false,
         summary: { tempF: null, humidity: null },
       });
     });
@@ -138,6 +140,28 @@ describe('/api/devices/:id/history', () => {
       const { readings, summary } = await historyOf(first.id);
       assert.deepEqual(readings.map((r) => r.tempF), [70]);
       assert.equal(summary.tempF?.max, 70);
+    });
+
+    test('stops at the row limit, oldest first, and says the day was cut short', async () => {
+      const device = await registerDevice();
+      // One a second from the day's first instant: more than the limit, all inside the day.
+      const start = Date.parse(DAY_START);
+      const rows = Array.from({ length: HISTORY_ROW_LIMIT + 1 }, (_, i) => [device.id, 70, 40, new Date(start + i * 1000)]);
+      for (let i = 0; i < rows.length; i += 5000) {
+        await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [rows.slice(i, i + 5000)]);
+      }
+
+      const history = await historyOf(device.id);
+      assert.equal(history.truncated, true);
+      assert.equal(history.readings.length, HISTORY_ROW_LIMIT);
+      assert.equal(history.readings[0].recordedAt, DAY_START);
+      assert.equal(history.readings.at(-1)?.recordedAt, new Date(start + (HISTORY_ROW_LIMIT - 1) * 1000).toISOString());
+    });
+
+    test('a day under the row limit is not cut short', async () => {
+      const device = await registerDevice();
+      await readingAt(device.id, '2026-09-05T10:00:00Z');
+      assert.equal((await historyOf(device.id)).truncated, false);
     });
 
     test('defaults to today in the zone asked for', async () => {
