@@ -508,6 +508,13 @@ class SheetWriteBack(unittest.TestCase):
         self.assertEqual(lines[6], self.NOTE.rstrip("\r\n"))
         self.assertEqual(self.inventory.find("5C:CF:7F:12:34:AB").row, 6)  # a replug finds the new row
 
+    def test_a_board_appended_to_the_sheet_still_counts_as_one_the_sheet_lacked_at_start(self):
+        self.inventory.record("5C:CF:7F:12:34:AB", "ESP_1234AB", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-10")
+        seen = [bench.Seen(hostname="ESP_1234AB", mac="5C:CF:7F:12:34:AB"), bench.Seen(hostname="ESP_21A8EB", mac="EC:FA:BC:21:A8:EB")]
+        never_seen, not_on_list = bench.reconcile(self.inventory, seen)
+        self.assertEqual([board.hostname for board in not_on_list], ["ESP_1234AB"])
+        self.assertEqual([row.row for row in never_seen], [3, 5])  # the appended row is not a sheet row never seen
+
     def test_the_second_write_updates_the_same_row_and_a_sheet_edited_meanwhile_is_kept(self):
         self.inventory.record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("FAIL", "bad sensor"), when="2026-09-10")
         with open(self.path, "r+", newline="") as handle:

@@ -15,12 +15,14 @@ static_assert(REPORT_INTERVAL_SECONDS >= 2, "The DHT11 cannot be read more often
 
 static const unsigned long REPORT_INTERVAL_MS = REPORT_INTERVAL_SECONDS * 1000UL;
 
-// millis() at which the next Reading is due. Zero means "as soon as WiFi is up".
-static unsigned long nextReportAt = 0;
+// millis() of the last report attempt; until the first one, a Reading is due as soon as WiFi is up.
+static bool attemptedOnce = false;
+static unsigned long lastAttemptAt = 0;
 
 static bool reportDue() {
-  // Signed difference, so the comparison survives millis() wrapping after 49 days.
-  return (long)(millis() - nextReportAt) >= 0;
+  // Unsigned elapsed time is right at any age, across millis() wrapping after 49 days and after
+  // an outage of any length. A deadline compared by signed difference stalls once 24.8 days pass.
+  return !attemptedOnce || millis() - lastAttemptAt >= REPORT_INTERVAL_MS;
 }
 
 void setup() {
@@ -39,7 +41,8 @@ void loop() {
   }
   if (!reportDue()) return;
   // One attempt per interval. A failed read or POST waits for the next interval; nothing retries.
-  nextReportAt = millis() + REPORT_INTERVAL_MS;
+  attemptedOnce = true;
+  lastAttemptAt = millis();
 
   Sample sample;
   if (!sensorRead(sample)) return;
