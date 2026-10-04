@@ -14,6 +14,17 @@ __pycache__/
 .env.*
 !.env.example
 
+# Deploy script: database dumps, and the list of servers (copy deploy/servers.example.txt)
+backups/
+deploy/servers.txt
+
+# The bench watcher's inventory sheet (every board's MAC), its log, and its save-in-progress
+# file, should one be run from inside the repo; the README says to keep the sheet outside
+/*.csv
+/arduino/*.csv
+*.bench.csv
+*.csv.tmp
+
 # Firmware secrets (copy config.example.h to config.h)
 arduino/**/config.h
 
@@ -28,3 +39,6 @@ desktop.ini
 *.swp
 *.swo
 *~
+
+# Review screenshots stay local
+.scratch/rebuild/reviews/ui/

@@ -19,3 +19,7 @@ Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/
 ### Design context
 
 `PRODUCT.md` (who it is for, positioning, principles, anti-references) and `DESIGN.md` (tokens, type, components, do's and don'ts) at the repo root. Read both before any frontend work; `/impeccable` commands load them automatically.
+
+## Deploy
+
+Deploying, upgrading, backing up, or removing the stack, here or on a server, goes through `deploy/deploy.sh` or `deploy/deploy.ps1`, driven by the `deploy` skill (`.claude/skills/deploy/`).

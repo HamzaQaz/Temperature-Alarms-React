@@ -23,13 +23,13 @@ cp .env.example .env        # set ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD (openss
 docker compose up -d --build
 ```
 
-Open `http://localhost/`. On **Settings**, paste the Admin token, add a Campus and a Device. To see a card come alive without a board, run the virtual Device that ships in the stack:
+Open `http://localhost/`. On **Settings**, paste the Admin token, add a Campus, and add a Device with the hostname `ESP_000001`. To see its card come alive without a board, run the virtual Device that ships in the stack as that hostname:
 
 ```bash
 docker compose exec api node scripts/mock-device.mjs --hostname ESP_000001
 ```
 
-The database lives on a named volume, so it survives `docker compose down`; `docker compose down -v` wipes it. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers upgrades, backups, migrating an old database in, TLS, and the manual install for a server that cannot run Docker.
+The database lives on a named volume, so it survives `docker compose down`; `docker compose down -v` wipes it. The volume is named after the folder you cloned into (`temperature-alarms-react_db-data` here), so run the stack from the same folder, or pin the name with `COMPOSE_PROJECT_NAME` in `.env` as DEPLOYMENT.md explains. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers upgrades, backups, migrating an old database in, TLS, and the manual install for a server that cannot run Docker.
 
 ## How it works
 
@@ -66,7 +66,9 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 ├── arduino/       # ESP8266 sketch for the NodeMCU + DHT11 Device, its wiring diagram, and the bench watcher
 ├── backend/       # Express + TypeScript API, MySQL, the migration runner, the virtual Device
 ├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui; e2e/ holds the browser walk
+├── deploy/        # deploy.sh and deploy.ps1: install, upgrade, back up, and remove the stack, here or over ssh
 ├── docs/adr/      # Architecture decision records
+├── .claude/skills/deploy/  # The skill that lets a Claude agent drive the deploy scripts
 ├── compose.yaml   # The whole system: db, api, and web on one port
 ├── .env.example   # The stack's settings; copy to .env
 ├── CONTEXT.md     # Domain vocabulary
@@ -77,7 +79,7 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 
 ## Working on the code
 
-Run the two packages by hand when you are changing them; each reloads on save. You need Node.js 20 or newer and a MySQL 8 the backend can use; the stack's `db` is not published, so it is not that one.
+Run the two packages by hand when you are changing them; each reloads on save. You need Node.js 22.18 or newer (the frontend's tests run TypeScript on Node directly, which needs it; the images use Node 22 too) and a MySQL 8 the backend can use; the stack's `db` is not published, so it is not that one.
 
 **Backend**
 
@@ -176,15 +178,17 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | `POST /api/devices` | Admin | `{hostname, campusId, closet}` → 201 Device; hostname must be `ESP_` plus six hex digits; 409 when it exists; 422 when the Campus does not |
 | `PATCH /api/devices/:id` | Admin | `{closet?, campusId?}` → the updated Device. The hostname never changes: a replaced board is a new Device, and a body carrying `hostname` is 422 |
 | `DELETE /api/devices/:id` | Admin | 204; the Device's Readings go with it |
-| `POST /api/readings` | Device | `{device, temp, humidity}` from the board (`device` is its hostname, `temp` in °F) → 201 `{device, reading: {tempF, humidity, recordedAt}}`; 404 when no Device has that hostname; 422 when a number is missing. Limited to 20 Readings a minute per Device, then 429 |
+| `POST /api/readings` | Device | `{device, temp, humidity}` from the board (`device` is its hostname, `temp` in °F) → 201 `{device, reading: {tempF, humidity, recordedAt}}`; 404 when no Device has that hostname; 422 when a number is missing, `temp` is outside -40 to 200 °F, or `humidity` is outside 0 to 100 (a sensor fault, not a Reading). Limited to 20 Readings a minute per Device, then 429 |
 | `GET /api/dashboard?campus=SHORTCODE` | none | `{reportIntervalSeconds, offlineAfterSeconds, devices}`: every Device (or only that Campus's), by Campus name then closet, each with `latestReading`, `online`, `secondsSinceReading`, and its `conditions` worst first |
 | `GET /api/dashboard/stream` | none | Server-Sent Events: one message per Reading ingested, `{type: "reading", device, reading, online, conditions}`, plus a heartbeat comment every 25 seconds to keep proxies from closing the stream |
-| `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` | none | One local day of Readings, oldest first, with `summary` min, max, and average for each measure. `date` defaults to today and `tz` to the server's zone |
+| `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` | none | One local day of Readings, oldest first, with `summary` min, max, and average for each measure. `date` defaults to today and `tz` to the server's zone. At most 30,000 Readings, more than a day at the ingest limit: past that, the first 30,000 are sent, `truncated` is true, the summary covers only those, and the History page says so |
 | `DELETE /api/devices/:id/history` | Admin | 204; every Reading of that Device is gone |
 
 Tokens are sent as `Authorization: Bearer <token>`. The Admin token is the one the Settings page keeps; the Device token is flashed into every Device. Neither works in the other's place. See ADR 0003 for why there are two and what that trades away. The Conditions the API reports are defined in [`CONTEXT.md`](CONTEXT.md); the thresholds behind them are the `HOT_`, `COLD_`, and `DRY_` settings in `.env.example`.
 
 Browsers are accepted from the API's own origin, which is how the stack serves them, and from one more origin named in `CORS_ORIGIN` for a dev server on another port.
+
+Apart from Readings, which have the per-Device limit above, `/api/` allows 500 requests per 15 minutes per client address. The address is the one the stack's nginx saw: the backend trusts exactly one proxy hop. With another proxy in front, such as the TLS proxy in DEPLOYMENT.md, that address is the proxy's, so every browser shares one allowance.
 
 ## Hardware
 
@@ -235,7 +239,7 @@ Board settings, under Tools: board **NodeMCU 1.0 (ESP-12E Module)**, upload spee
 
 ### Flashing
 
-1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials, the server URL without a trailing slash (the sketch appends `/api/readings`): `http://<host>` where the stack runs, with a port only if `WEB_PORT` was changed, or `https://YOUR_DOMAIN` once TLS sits in front of it. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
+1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials (leave the password `""` for an open network that admits Devices by MAC allowlist), and the server URL without a trailing slash (the sketch appends `/api/readings`): `http://<host>` where the stack runs, with a port only if `WEB_PORT` was changed, or `https://YOUR_DOMAIN` once TLS sits in front of it. A Device flashed with `http://<host>` keeps reporting after TLS goes in front, by hostname or by address, but only through the plain-HTTP Readings route that DEPLOYMENT.md's TLS proxy keeps; the Device cannot follow a redirect to HTTPS. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
 2. Open `TemperatureAlarms.ino` in the Arduino IDE, choose the board setting above and the port the NodeMCU appears on, and click Upload.
 3. Open the serial monitor at 115200 and watch the Device join WiFi.
 
@@ -271,7 +275,7 @@ pip install esptool pyserial
 
 1. **Export the binary once.** Fill in `config.h` as above, then in the IDE choose Sketch, Export Compiled Binary: it lands under `build/` in the sketch folder as `TemperatureAlarms.ino.bin`. One board type per batch, since `DHT_PIN` is in the binary; a batch of integrated boards is a second export.
 2. **Set the Admin token**, from the stack's `.env`, in the environment and nowhere else: `$env:ADMIN_TOKEN = "..."` in PowerShell, `set ADMIN_TOKEN=...` in cmd.
-3. **Run the watcher** against the live server and the inventory sheet, a CSV with a `MAC` column (`ID` and `HOSTNAME` columns are used when present). Close the sheet in Excel first, since an open sheet cannot be written:
+3. **Run the watcher** against the live server and the inventory sheet, a CSV with a `MAC` column (`ID` and `HOSTNAME` columns are used when present). Close the sheet in Excel first, since an open sheet cannot be written. Keep the sheet outside the repo: it lists every board's MAC, and the watcher writes `<sheet>.bench.csv` and, while saving, `<sheet>.tmp` next to it (`.gitignore` covers CSVs at the repo root and in `arduino/` in case one lands there):
 
    ```powershell
    python arduino\bench.py --server http://<host> --inventory "device_log - device_log.csv"
@@ -291,7 +295,12 @@ The watcher has run one batch of 92 boards (91 passed, one bad sensor). Its logi
 
 ## Deployment
 
-The Compose stack from the quick start is the deployment too: the same `docker compose up -d --build` on the district server, with `.env` holding the real tokens. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
+The Compose stack from the quick start is the deployment too, and deploying it is one step, two ways:
+
+- **The deploy script.** On the server, `deploy/deploy.sh deploy --yes` (Linux, macOS) or `deploy\deploy.ps1 deploy --yes` (Windows Server) writes `.env` with generated secrets, builds and starts the stack, and checks it is healthy. Run either with no action for a menu that also upgrades, backs up, restores, shows the tokens and the `config.h` lines, and removes the stack. From one machine, `--host admin@server` (repeatable) or `--servers deploy/servers.txt` does the same on each server over ssh, each keeping its own `.env` and backups.
+- **Ask your Claude agent.** In Claude Code in this repo, say "deploy this to admin@server", "upgrade", or "back up the database"; the `deploy` skill drives the script, keeps the secrets out of the chat, and ends on the health check.
+
+[`DEPLOYMENT.md`](DEPLOYMENT.md) covers both, then the same steps by hand with `docker compose` as the fallback: first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
 
 ## License
 

@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# deploy/deploy.sh must keep LF endings to run under bash on a Windows checkout
+*.sh text eol=lf
