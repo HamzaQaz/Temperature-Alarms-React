@@ -13,6 +13,8 @@ __pycache__/
 .env
 .env.*
 !.env.example
+# deploy.sh demo's throwaway secrets (covered by .env.* too; named so nobody narrows it away)
+.env.demo
 
 # Deploy script: database dumps, and the list of servers (copy deploy/servers.example.txt)
 backups/
@@ -42,3 +44,4 @@ desktop.ini
 
 # Review screenshots stay local
 .scratch/rebuild/reviews/ui/
+.scratch/design/motion/

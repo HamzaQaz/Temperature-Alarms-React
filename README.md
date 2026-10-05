@@ -31,6 +31,18 @@ docker compose exec api node scripts/mock-device.mjs --hostname ESP_000001
 
 The database lives on a named volume, so it survives `docker compose down`; `docker compose down -v` wipes it. The volume is named after the folder you cloned into (`temperature-alarms-react_db-data` here), so run the stack from the same folder, or pin the name with `COMPOSE_PROJECT_NAME` in `.env` as DEPLOYMENT.md explains. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers upgrades, backups, migrating an old database in, TLS, and the manual install for a server that cannot run Docker.
 
+## See it without hardware
+
+One command brings up a living dashboard with no boards attached:
+
+```bash
+deploy/deploy.sh demo          # Windows: powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1 demo
+```
+
+Open `http://localhost:8080/` (`--web-port` picks another port). Four fictional schools and 24 closets appear, each with a week of history, and they keep reporting every 30 seconds. On a ten-minute loop one closet heats up through Hot warning to Hot critical and recovers, one dries out, one sits in Mold risk moderate then high, one goes cold, and one goes silent (late, then Offline) and comes back; the rest stay calm. The script prints the throwaway Admin token for Settings.
+
+The demo runs under its own Compose project, `temperature-alarms-demo`, with its own database volume and generated secrets in `.env.demo`, so it never touches a real install's data. `deploy/deploy.sh demo --down` removes it, volume and `.env.demo` included. The pieces are `compose.demo.yaml` and `backend/scripts/demo.mjs`.
+
 ## How it works
 
 ```
