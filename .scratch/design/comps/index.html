@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Temperature Alarms comps</title>
+<link rel="stylesheet" href="comps.css">
+<style>
+  .gallery { max-width: 1200px; margin: 0 auto; padding: 48px 24px 64px; display: grid; gap: 32px; }
+  .intro h1 { font-size: 1.875rem; font-weight: 700; letter-spacing: -0.025em; line-height: 1.3; }
+  .intro p { margin-top: 8px; color: var(--dimmed-grey); max-width: 68ch; font-size: 1.125rem; }
+  .intro p b { color: var(--readout-white); font-weight: 500; }
+  .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+  .brand b { font-weight: 500; }
+  .brand small { display: block; color: var(--dimmed-grey); font-size: 0.75rem; }
+
+  .list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+  .comp { display: grid; grid-template-rows: auto 1fr; overflow: hidden; text-decoration: none; }
+  .comp:hover { background: var(--raised-grey); }
+  .comp:focus-visible { border-radius: var(--radius-xl); }
+  .shot { aspect-ratio: 16 / 10; background: var(--console-black); border-bottom: 1px solid var(--hairline); overflow: hidden; }
+  .shot img { width: 100%; height: 100%; object-fit: cover; object-position: top left; display: block; }
+  .comp__body { padding: 16px 20px 20px; display: grid; gap: 6px; align-content: start; }
+  .comp__body h2 { font-size: 1.125rem; font-weight: 600; line-height: 1.3; display: flex; justify-content: space-between; gap: 12px; }
+  .comp__body h2 span { font-size: 0.875rem; font-weight: 400; color: var(--dimmed-grey); white-space: nowrap; }
+  .comp__body p { color: var(--dimmed-grey); }
+  .comp__body .for { color: var(--readout-white); }
+
+  .how { color: var(--dimmed-grey); max-width: 75ch; display: grid; gap: 6px; }
+  .how h2 { color: var(--readout-white); font-size: 1.125rem; font-weight: 600; }
+
+  @media (max-width: 767px) {
+    .gallery { padding: 24px 16px 40px; gap: 24px; }
+    .intro h1 { font-size: 1.875rem; line-height: 1.3; }
+    .list { grid-template-columns: 1fr; gap: 16px; }
+  }
+</style>
+</head>
+<body>
+<main class="gallery">
+  <div class="intro">
+    <div class="brand"><span class="mark"><svg class="icon" aria-hidden="true"><use href="#i-thermometer"/></svg></span><div><b>Temperature Alarms</b><small>Design comps, 4 October 2026</small></div></div>
+    <h1>Four screens, four possible audiences</h1>
+    <p>PRODUCT.md has an open decision: someone beyond the network technicians now uses the site, and nobody has said who. Each comp below designs for one candidate, in the product's own Night Shift Console look, so the choice of audience can be made by looking. <b>Pick the audience first; the screen follows.</b></p>
+  </div>
+
+  <div class="list">
+    <a class="card comp" href="wall.html">
+      <div class="shot"><img src="wall-1440.png" alt="" loading="lazy"></div>
+      <div class="comp__body">
+        <h2>Wall screen mode<span>NOC wall screen</span></h2>
+        <p>Every Campus as a column, worst first, readable across the room. A new Condition replaces the "All calm" sentence once, without blinking.</p>
+      </div>
+    </a>
+    <a class="card comp" href="campuses.html">
+      <div class="shot"><img src="campuses-1440.png" alt="" loading="lazy"></div>
+      <div class="comp__body">
+        <h2>Campus overview<span>IT leadership</span></h2>
+        <p>One row per Campus: Conditions now, the worst closet, a 7-day chart of each day's worst high, and days since the last incident.</p>
+      </div>
+    </a>
+    <a class="card comp" href="incidents.html">
+      <div class="shot"><img src="incidents-1440.png" alt="" loading="lazy"></div>
+      <div class="comp__body">
+        <h2>Incident timeline<span>Technicians, mornings</span></h2>
+        <p>What happened overnight: each incident as a sentence with its numbers, and as a span on a shared 18:00 to 08:00 ruler.</p>
+      </div>
+    </a>
+    <a class="card comp" href="facilities.html">
+      <div class="shot"><img src="facilities-1440.png" alt="" loading="lazy"></div>
+      <div class="comp__body">
+        <h2>Facilities view<span>HVAC and facilities</span></h2>
+        <p>Hot, Cold, Dry and Mold risk by building and room, how long each has been out of range, its trend, and what to check.</p>
+      </div>
+    </a>
+  </div>
+
+  <div class="how">
+    <h2>Reading the comps</h2>
+    <p>Each comp has a Notes button (off by default) with its audience, job, key decision, and the DESIGN.md rules it relies on or would change. The play button runs the comp's signature motion once; Reduced motion shows the alternative. All campuses, closets, Devices and Readings are fictional.</p>
+  </div>
+</main>
+<script src="comps.js"></script>
+</body>
+</html>
