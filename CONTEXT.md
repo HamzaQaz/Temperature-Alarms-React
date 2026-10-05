@@ -41,6 +41,10 @@ The single shared secret every Device sends with each Reading.
 A named state a Device's latest Reading is in, computed on the server from global thresholds set once in the backend configuration: Hot, Cold, Dry, Mold risk, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
 _Avoid_: Alert, alarm, risk, status
 
+**Incident**:
+A stretch of time a Device spent in one Condition at warning or worse, recorded by the server: when it started, each level change, when it ended (or that it is ongoing), and its peak Reading. It opens on the first Reading in the Condition and closes after two Readings in a row without it, ending at the first of them; Offline opens when the server would first report the Device Offline and closes on its next Reading. Moderate Mold risk is a heads-up, never an Incident. Kept for the Retention window, like Readings (docs/adr/0006).
+_Avoid_: Alert, alarm, event, outage
+
 **Bench**:
 The holding Campus (shortcode `BENCH`) a Device is registered under between flashing and installation, whatever its bench verdict: a board that failed its check stays registered there too, and the inventory sheet's `TESTED` column says which passed. A Device on the Bench is expected to be Offline until it is moved to its real Campus and Closet.
 _Avoid_: Staging, spare, inventory (that is the spreadsheet of boards, not a place)

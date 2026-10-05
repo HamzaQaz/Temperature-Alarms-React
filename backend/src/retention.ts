@@ -1,5 +1,6 @@
 /**
- * Daily deletion of Readings past the retention window (docs/adr/0004).
+ * Daily deletion of Readings past the retention window (docs/adr/0004), and of the incidents
+ * that ended before it (docs/adr/0006): an incident is kept exactly as long as its Readings.
  *
  * The window is `config.retentionDays` before now. Readings go in bounded batches, with a
  * short pause between full ones, so no single DELETE holds the table for long while Devices
@@ -7,6 +8,7 @@
  */
 import type { ResultSetHeader } from 'mysql2/promise';
 import type { AppDeps } from './deps';
+import { deleteIncidentsEndedBefore } from './incidentStore';
 
 const DAY_MS = 86_400_000;
 const DEFAULT_BATCH_SIZE = 5_000;
@@ -39,7 +41,10 @@ export function retentionCutoff(now: Date, retentionDays: number): Date {
   return new Date(now.getTime() - retentionDays * DAY_MS);
 }
 
-/** Delete every Reading past the window, `batchSize` at a time, and log the total removed. */
+/**
+ * Delete every Reading past the window, then every incident that ended before it (an ongoing
+ * one stays however old), `batchSize` at a time, and log the totals. Returns the Readings removed.
+ */
 export async function deleteReadingsPastWindow(
   { pool, config, now = () => new Date() }: RetentionDeps,
   { batchSize = DEFAULT_BATCH_SIZE, log = console.log }: Pick<RetentionOptions, 'batchSize' | 'log'> = {},
@@ -52,7 +57,15 @@ export async function deleteReadingsPastWindow(
     if (result.affectedRows < batchSize) break;
     await pause(BATCH_PAUSE_MS);
   }
-  log(`retention: removed ${removed} reading${removed === 1 ? '' : 's'} older than ${cutoff.toISOString()} (${config.retentionDays} days)`);
+  let incidents = 0;
+  for (;;) {
+    const affected = await deleteIncidentsEndedBefore(pool, cutoff, batchSize);
+    incidents += affected;
+    if (affected < batchSize) break;
+    await pause(BATCH_PAUSE_MS);
+  }
+  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  log(`retention: removed ${plural(removed, 'reading')} and ${plural(incidents, 'incident')} older than ${cutoff.toISOString()} (${config.retentionDays} days)`);
   return removed;
 }
 

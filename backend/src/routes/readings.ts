@@ -5,10 +5,11 @@ import { requireAdminToken, requireDeviceToken } from '../auth';
 import type { RouteDeps } from '../deps';
 import { closetType } from '../closet';
 import { SELECT_DEVICES, toDevice, type DeviceRow } from './devices';
-import { conditionsFor, isOffline, offlineAfterSeconds, type ConditionRules } from '../conditions';
+import { conditionsFor, isOffline, LEVELS_WORST_FIRST, offlineAfterSeconds, worstLevel, type Condition, type ConditionRules } from '../conditions';
 import type { Config } from '../config';
 import { isTimeZone, localDay, serverTimeZone, todayIn, type LocalDay } from '../localDay';
 import type { ReadingPayload } from '../sse';
+import { broadcastIncidentChanges, deleteDeviceIncidents, recordReadingIncidents, type ChangedIncident } from '../incidentStore';
 
 interface DeviceIdRow extends RowDataPacket {
   id: number;
@@ -97,22 +98,40 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
     }
     const { hostname, tempF, humidity } = parsed;
     try {
-      const [devices] = await pool.query<DeviceIdRow[]>('SELECT id, hostname FROM devices WHERE hostname = ?', [hostname]);
-      const device = devices[0];
-      if (device === undefined) {
-        res.status(404).json({ error: `No device is registered with the hostname ${hostname}` });
-        return;
+      // The Reading and what it does to the Device's incidents commit together, under the Device's
+      // row lock, so two Readings of one Device are never judged at once (docs/adr/0006).
+      const conn = await pool.getConnection();
+      let device: DeviceIdRow | undefined;
+      let recordedAt: Date;
+      let changed: ChangedIncident[];
+      try {
+        await conn.beginTransaction();
+        const [devices] = await conn.query<DeviceIdRow[]>('SELECT id, hostname FROM devices WHERE hostname = ? FOR UPDATE', [hostname]);
+        device = devices[0];
+        if (device === undefined) {
+          await conn.rollback();
+          res.status(404).json({ error: `No device is registered with the hostname ${hostname}` });
+          return;
+        }
+        recordedAt = serverNow();
+        await conn.query<ResultSetHeader>(
+          'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
+          [device.id, tempF, humidity, recordedAt],
+        );
+        changed = await recordReadingIncidents(conn, device.id, { tempF, humidity, recordedAt }, rules);
+        await conn.commit();
+      } catch (error) {
+        await conn.rollback();
+        throw error;
+      } finally {
+        conn.release();
       }
-      const recordedAt = serverNow();
-      await pool.query<ResultSetHeader>(
-        'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
-        [device.id, tempF, humidity, recordedAt],
-      );
       const reading: ReadingPayload = { tempF, humidity, recordedAt: recordedAt.toISOString() };
       res.status(201).json({ device: device.hostname, reading });
       // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
       const conditions = conditionsFor({ reading: { tempF, humidity }, secondsSinceReading: 0, ...rules });
       sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions });
+      await broadcastIncidentChanges(pool, sse, changed);
     } catch (error) {
       next(error);
     }
@@ -170,8 +189,20 @@ function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules) 
   };
 }
 
+/** How the Dashboard lists its Devices: worst first (the default), or by Campus name then closet. */
+const DASHBOARD_ORDERS = ['worst', 'campus'] as const;
+type DashboardOrder = (typeof DASHBOARD_ORDERS)[number];
+
+const isDashboardOrder = (value: string): value is DashboardOrder => (DASHBOARD_ORDERS as readonly string[]).includes(value);
+
+/** A Device's place in the worst-first order: its worst level's rank (Offline counts at warning), none after moderate. */
+const severity = (conditions: Condition[]): number => {
+  const worst = worstLevel(conditions);
+  return worst === null ? LEVELS_WORST_FIRST.length : LEVELS_WORST_FIRST.indexOf(worst);
+};
+
 /**
- * Dashboard (GET /api/dashboard?campus=SHORTCODE) and its live stream
+ * Dashboard (GET /api/dashboard?campus=SHORTCODE&order=worst|campus) and its live stream
  * (GET /api/dashboard/stream), which carries every Reading as it is ingested.
  */
 export function dashboardRouter({ pool, config, sse, now = () => new Date() }: RouteDeps): Router {
@@ -182,16 +213,24 @@ export function dashboardRouter({ pool, config, sse, now = () => new Date() }: R
   router.get('/stream', sse.handler);
 
   router.get('/', async (req, res, next) => {
+    const order = typeof req.query.order === 'string' && req.query.order.trim() !== '' ? req.query.order.trim() : 'worst';
+    if (!isDashboardOrder(order)) {
+      res.status(422).json({ error: `order must be one of ${DASHBOARD_ORDERS.join(', ')}, got ${order}` });
+      return;
+    }
     const campus = typeof req.query.campus === 'string' ? req.query.campus.trim() : '';
     // Shortcodes match in any case, as the old filter did.
     const [where, params] = campus === '' ? ['', []] : ['WHERE LOWER(c.shortcode) = LOWER(?)', [campus]];
     try {
       const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, params);
       const at = now();
+      const devices = rows.map((row) => toDashboardDevice(row, at, rules));
+      // Array sort is stable, so Devices at the same level keep the Campus and closet order of the query.
+      if (order === 'worst') devices.sort((a, b) => severity(a.conditions) - severity(b.conditions));
       res.json({
         reportIntervalSeconds,
         offlineAfterSeconds: offlineAfterSeconds(reportIntervalSeconds, thresholds),
-        devices: rows.map((row) => toDashboardDevice(row, at, rules)),
+        devices,
       });
     } catch (error) {
       next(error);
@@ -306,6 +345,8 @@ export function historyRouter({ pool, config, now = () => new Date() }: RouteDep
         return;
       }
       await pool.query<ResultSetHeader>('DELETE FROM readings WHERE device_id = ?', [device.id]);
+      // An incident points at Readings that are gone, so it goes too.
+      await deleteDeviceIncidents(pool, device.id);
       res.status(204).end();
     } catch (error) {
       next(error);

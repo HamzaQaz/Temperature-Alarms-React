@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { Pool } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
-import { api, json, type Dashboard, type RecordedReading } from './helpers/api';
+import { api, errorOf, json, type Dashboard, type RecordedReading } from './helpers/api';
 import { DEFAULT_THRESHOLDS } from '../src/conditions';
 
 describe('GET /api/dashboard', () => {
@@ -162,6 +162,67 @@ describe('GET /api/dashboard', () => {
       await seed();
       assert.equal((await hostnames('')).length, 3);
       assert.equal((await hostnames('  ')).length, 3);
+    });
+  });
+
+  describe('?order=', () => {
+    // Central's closets sort before West's by name; the Readings give each a different worst level.
+    const seed = async () => {
+      const central = await addCampus('Central High School', 'CHS');
+      const west = await addCampus('West Elementary', 'WES');
+      await addDevice(central.id, 'ESP_000001', 'IDF 1'); // comfortable
+      await addDevice(central.id, 'ESP_000002', 'IDF 2'); // Mold risk moderate
+      await addDevice(central.id, 'ESP_000003', 'MDF'); // never reported: Offline at warning
+      await addDevice(west.id, 'ESP_000004', 'IDF 1'); // Hot warning
+      await addDevice(west.id, 'ESP_000005', 'IDF 2'); // Mold risk high
+      await addDevice(west.id, 'ESP_000006', 'MDF'); // Hot critical
+      await postReading('ESP_000001', 72, 40);
+      await postReading('ESP_000002', 72, 65);
+      await postReading('ESP_000004', 84, 40);
+      await postReading('ESP_000005', 80, 75);
+      await postReading('ESP_000006', 95, 40);
+    };
+    const hostnamesFor = async (query: string) => {
+      const response = await fetch(client.dashboard.url(query));
+      assert.equal(response.status, 200, query);
+      return (await json<Dashboard>(response)).devices.map((d) => d.hostname);
+    };
+    const WORST_FIRST = ['ESP_000006', 'ESP_000005', 'ESP_000003', 'ESP_000004', 'ESP_000002', 'ESP_000001'];
+
+    test('worst lists critical, high, warning (Offline among them), moderate, then none; ties by campus and closet', async () => {
+      await seed();
+      assert.deepEqual(await hostnamesFor('?order=worst'), WORST_FIRST);
+    });
+
+    test('is worst first when no order is given, or a blank one', async () => {
+      await seed();
+      assert.deepEqual(await hostnamesFor(''), WORST_FIRST);
+      assert.deepEqual(await hostnamesFor('?order='), WORST_FIRST);
+    });
+
+    test('campus lists by campus name then closet, whatever the Conditions', async () => {
+      await seed();
+      assert.deepEqual(await hostnamesFor('?order=campus'), ['ESP_000001', 'ESP_000002', 'ESP_000003', 'ESP_000004', 'ESP_000005', 'ESP_000006']);
+    });
+
+    test('combines with the campus filter', async () => {
+      await seed();
+      assert.deepEqual(await hostnamesFor('?campus=WES'), ['ESP_000006', 'ESP_000005', 'ESP_000004']);
+      assert.deepEqual(await hostnamesFor('?campus=WES&order=campus'), ['ESP_000004', 'ESP_000005', 'ESP_000006']);
+    });
+
+    test('a Reading that changes the worst level moves the Device; one at the same level does not', async () => {
+      await seed();
+      await postReading('ESP_000001', 91, 40);
+      assert.deepEqual((await hostnamesFor('')).slice(0, 2), ['ESP_000001', 'ESP_000006'], 'two criticals, Central before West');
+      await postReading('ESP_000006', 99, 40);
+      assert.deepEqual((await hostnamesFor('')).slice(0, 2), ['ESP_000001', 'ESP_000006'], 'still critical, still in place');
+    });
+
+    test('refuses an unknown order with 422 and says which are allowed', async () => {
+      const response = await fetch(client.dashboard.url('?order=newest'));
+      assert.equal(response.status, 422);
+      assert.match(await errorOf(response), /worst, campus/);
     });
   });
 

@@ -7,6 +7,7 @@ import { healthRouter } from './routes/health';
 import { campusesRouter } from './routes/campuses';
 import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
+import { incidentsRouter } from './routes/incidents';
 
 /** The Express app, without a listening socket, so tests can drive it directly. */
 export function createApp(appDeps: AppDeps): Express {
@@ -39,6 +40,7 @@ export function createApp(appDeps: AppDeps): Express {
   app.use('/api/devices', devicesRouter(deps));
   app.use('/api/readings', readingsRouter(deps));
   app.use('/api/dashboard', dashboardRouter(deps));
+  app.use('/api/incidents', incidentsRouter(deps));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });
