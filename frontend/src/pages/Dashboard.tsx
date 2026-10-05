@@ -12,7 +12,7 @@ import { Regroup } from '@/components/Regroup';
 import { Placeholder } from '@/components/Placeholder';
 import { NoValue, Tile } from '@/components/Tile';
 import { Button } from '@/components/ui/button';
-import { hasWarningOrWorse, isWarningOrWorse } from '@/lib/conditions';
+import { hasWarningOrWorse, isWarningOrWorse, worstCondition } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useNow } from '@/hooks/use-now';
@@ -20,7 +20,7 @@ import { arrive, regroup, settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
-import type { Campus, Dashboard as DashboardPayload, DashboardDevice, ReadingEvent } from '@/types';
+import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, ReadingEvent } from '@/types';
 
 const ALL = 'all';
 
@@ -32,11 +32,15 @@ const ALL = 'all';
 const dashboardCache = new Map<string, LoadedDashboard>();
 let campusCache: Campus[] | undefined;
 
-/** The dashboard: every Device's latest Reading, filtered by Campus from the URL. */
+const cacheKey = (campus: string, order: DashboardOrder): string => `${order}:${campus}`;
+
+/** The dashboard: every Device's latest Reading, filtered by Campus and ordered as the URL says. */
 export default function Dashboard() {
   usePageTitle('Dashboard');
   const [searchParams, setSearchParams] = useSearchParams();
   const campusParam = searchParams.get('campus') ?? '';
+  // Worst first is the default and stays out of the URL; only `?order=campus` is written.
+  const order: DashboardOrder = searchParams.get('order') === 'campus' ? 'campus' : 'worst';
   const campuses = useResource(getCampuses, campusCache);
   useEffect(() => {
     if (campuses.state.status === 'ready') campusCache = campuses.state.data;
@@ -52,7 +56,10 @@ export default function Dashboard() {
   const selected = campusList.find((c) => c.shortcode.toLowerCase() === campusParam.toLowerCase());
   const tabValue = campusParam === '' ? ALL : (selected?.shortcode ?? campusParam);
 
-  const showCampus = (value: string) => setSearchParams(value === ALL ? {} : { campus: value });
+  const showView = (campus: string, nextOrder: DashboardOrder) =>
+    setSearchParams({ ...(campus === '' ? {} : { campus }), ...(nextOrder === 'worst' ? {} : { order: nextOrder }) });
+  const showCampus = (value: string) => showView(value === ALL ? '' : value, order);
+  const showOrder = (value: string) => showView(campusParam, value === 'campus' ? 'campus' : 'worst');
 
   return (
     <div className="flex-1 space-y-6">
@@ -63,27 +70,37 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* The filter's own placeholder, so the cards below do not jump when the Campuses arrive. */}
-      {campuses.state.status === 'loading' && <Skeleton className="h-9 w-80 max-w-full rounded-lg" />}
-      {campusList.length > 0 && (
-        <Tabs value={tabValue} onValueChange={showCampus}>
-          {/* A strip that scrolls sideways; on a phone it runs to the screen's edges, so a Campus cut off there reads as more to scroll. */}
-          <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
-            <TabsList aria-label="Filter by campus">
-              <TabsTrigger value={ALL}>All campuses</TabsTrigger>
-              {campusList.map((campus) => (
-                <TabsTrigger key={campus.id} value={campus.shortcode}>
-                  {campus.name}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          {/* The filter's own placeholder, so the cards below do not jump when the Campuses arrive. */}
+          {campuses.state.status === 'loading' && <Skeleton className="h-9 w-80 max-w-full rounded-lg" />}
+          {campusList.length > 0 && (
+            <Tabs value={tabValue} onValueChange={showCampus}>
+              {/* A strip that scrolls sideways; on a phone it runs to the screen's edges, so a Campus cut off there reads as more to scroll. */}
+              <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+                <TabsList aria-label="Filter by campus">
+                  <TabsTrigger value={ALL}>All campuses</TabsTrigger>
+                  {campusList.map((campus) => (
+                    <TabsTrigger key={campus.id} value={campus.shortcode}>
+                      {campus.name}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </div>
+            </Tabs>
+          )}
+        </div>
+        <Tabs value={order} onValueChange={showOrder} className="shrink-0">
+          <TabsList aria-label="Order">
+            <TabsTrigger value="worst">Worst first</TabsTrigger>
+            <TabsTrigger value="campus">By Campus</TabsTrigger>
+          </TabsList>
         </Tabs>
-      )}
+      </div>
 
-      {/* Not keyed by campus: on a switch the cards on screen stay until the new Campus's arrive,
+      {/* Not keyed by campus or order: on a switch the cards on screen stay until the new answer arrives,
           then the ones that stay glide to their new places and the rest fade. */}
-      <DashboardContent campus={campusParam} campusName={selected?.name} onShowAll={() => showCampus(ALL)} />
+      <DashboardContent campus={campusParam} order={order} campusName={selected?.name} onShowAll={() => showCampus(ALL)} />
     </div>
   );
 }
@@ -96,13 +113,28 @@ interface LiveDevice extends DashboardDevice {
 interface LoadedDashboard extends Omit<DashboardPayload, 'devices'> {
   /** The Campus filter these Devices answer, '' for all. */
   campus: string;
+  /** The order the server listed them in. */
+  order: DashboardOrder;
   devices: LiveDevice[];
 }
 
-async function loadDashboard(campus: string): Promise<LoadedDashboard> {
-  const payload = await getDashboard(campus || undefined);
+async function loadDashboard(campus: string, order: DashboardOrder): Promise<LoadedDashboard> {
+  const payload = await getDashboard(campus || undefined, order);
   const asOf = Date.now();
-  return { ...payload, campus, devices: payload.devices.map((device) => ({ ...device, asOf })) };
+  return { ...payload, campus, order, devices: payload.devices.map((device) => ({ ...device, asOf })) };
+}
+
+/**
+ * Whether this Reading changes its card's place: only under worst first, and only when it changes
+ * the card's worst level, so a new Reading at the same level leaves every card where it is. The
+ * browser does not sort; it asks the server again, which answers in the new order.
+ */
+function movesCard(dashboard: LoadedDashboard, event: ReadingEvent): boolean {
+  if (dashboard.order !== 'worst') return false;
+  const device = dashboard.devices.find((d) => d.hostname === event.device);
+  if (device === undefined) return false;
+  if (device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt) return false;
+  return worstCondition(device.conditions)?.level !== worstCondition(event.conditions)?.level;
 }
 
 /**
@@ -122,23 +154,33 @@ function applyReading(dashboard: LoadedDashboard, event: ReadingEvent): LoadedDa
 
 interface DashboardContentProps {
   campus: string;
+  order: DashboardOrder;
   campusName: string | undefined;
   onShowAll: () => void;
 }
 
-function DashboardContent({ campus, campusName, onShowAll }: DashboardContentProps) {
-  const load = useCallback(() => loadDashboard(campus), [campus]);
+function DashboardContent({ campus, order, campusName, onShowAll }: DashboardContentProps) {
+  const load = useCallback(() => loadDashboard(campus, order), [campus, order]);
   // Read once, at mount: whether this visit starts from what the last one showed.
-  const [cached] = useState(() => dashboardCache.get(campus));
+  const [cached] = useState(() => dashboardCache.get(cacheKey(campus, order)));
   const { state, reload, update } = useResource(load, cached);
   const [refreshing, setRefreshing] = useState(false);
+  // What is on screen now, for telling whether a Reading changes a card's place.
+  const shown = useRef<LoadedDashboard | undefined>(undefined);
   useEffect(() => {
-    if (state.status === 'ready') dashboardCache.set(state.data.campus, state.data);
+    shown.current = state.status === 'ready' ? state.data : undefined;
+    if (state.status === 'ready') dashboardCache.set(cacheKey(state.data.campus, state.data.order), state.data);
   }, [state]);
 
-  // Each Reading lands on its card as it arrives. After a dropped stream, reload: anything sent meanwhile was missed.
+  // Each Reading lands on its card as it arrives; one that changes a card's worst level under worst
+  // first also asks the server for the new order, and the card glides there. Only a Reading starts
+  // this, never the answer, so it cannot loop. After a dropped stream, reload: anything sent meanwhile was missed.
   const stream = useReadingStream({
-    onReading: (event) => update((dashboard) => applyReading(dashboard, event)),
+    onReading: (event) => {
+      const moves = shown.current !== undefined && movesCard(shown.current, event);
+      update((dashboard) => applyReading(dashboard, event));
+      if (moves) void reload();
+    },
     onReconnect: () => void reload(),
   });
 
@@ -168,8 +210,8 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
   }
 
   const { devices, reportIntervalSeconds, offlineAfterSeconds } = state.data;
-  // A Campus switch in flight: the cards on screen belong to the last one until the new answer lands.
-  const pending = state.data.campus !== campus;
+  // A Campus or order switch in flight: the cards on screen answer the last one until the new answer lands.
+  const pending = state.data.campus !== campus || state.data.order !== order;
 
   return (
     <motion.div className="space-y-6" initial={cached ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
@@ -212,7 +254,7 @@ interface DeviceGridProps {
   onPastOffline: () => void;
   /** Cards rise in one after the next on a first visit; a return visit starts settled. */
   arriveOnMount: boolean;
-  /** A Campus switch is in flight and these cards are the previous Campus's. */
+  /** A Campus or order switch is in flight and these cards answer the previous one. */
   pending: boolean;
 }
 

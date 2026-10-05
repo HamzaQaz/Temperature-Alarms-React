@@ -59,6 +59,9 @@ export interface ReadingEvent {
   conditions: Condition[];
 }
 
+/** How the dashboard lists its Devices; the server sorts, the browser shows the order it gets. */
+export type DashboardOrder = 'worst' | 'campus';
+
 export interface Dashboard {
   /** How often a healthy Device sends a Reading, so the UI never hardcodes it. */
   reportIntervalSeconds: number;

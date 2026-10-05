@@ -1,4 +1,4 @@
-import type { Device, Campus, Dashboard, History } from './types';
+import type { Device, Campus, Dashboard, DashboardOrder, History } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -104,9 +104,17 @@ export const deleteDevice = (id: number): Promise<void> => request(`/api/devices
 
 // ==================== DASHBOARD ====================
 
-/** Every Device with its latest Reading, optionally only those at one Campus. */
-export const getDashboard = (campus?: string): Promise<Dashboard> =>
-  request(`/api/dashboard${campus ? `?campus=${encodeURIComponent(campus)}` : ''}`);
+/**
+ * Every Device with its latest Reading, optionally only those at one Campus, in the server's
+ * order: worst first unless `order` is 'campus' (by Campus name, then closet).
+ */
+export const getDashboard = (campus?: string, order: DashboardOrder = 'worst'): Promise<Dashboard> => {
+  const query = new URLSearchParams();
+  if (campus) query.set('campus', campus);
+  if (order !== 'worst') query.set('order', order);
+  const search = query.toString();
+  return request(`/api/dashboard${search ? `?${search}` : ''}`);
+};
 
 /**
  * The live stream of Readings (Server-Sent Events). The browser reconnects on its own after
