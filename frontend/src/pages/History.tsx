@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { usePageTitle } from '@/hooks/use-page-title';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Info, Trash2 } from 'lucide-react';
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
@@ -28,9 +28,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAdminToken } from '@/hooks/use-admin-token';
 import { useChange } from '@/hooks/use-change';
-import { motion } from 'framer-motion';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { useReadingStream } from '@/hooks/use-reading-stream';
-import { settle } from '@/lib/motion';
+import { cardScope, headingScope, morphTo, readSeed, type HistorySeed } from '@/lib/card-morph';
+import { dayShift, settle } from '@/lib/motion';
 import { useResource } from '@/hooks/use-resource';
 import { clearAdminToken, getAdminToken, setAdminToken } from '@/lib/adminToken';
 import { addDays, formatDayLong, formatDayShort, formatHour, formatTime, formatTimeSeconds, isDateString, today } from '@/lib/localDate';
@@ -56,12 +57,30 @@ export default function History() {
   const [, rerender] = useReducer((n: number) => n + 1, 0);
   const date = followsToday ? today() : dateParam;
 
+  // What the card knew, if History was opened from one: the header renders from it at once.
+  // The way back is read once, since stepping to another day replaces the navigation state.
+  const location = useLocation();
+  const seed = readSeed(location.state, deviceId);
+  const [back] = useState(() => seed?.back ?? '/');
+
   if (!Number.isInteger(deviceId) || deviceId <= 0) return <NoDevice />;
 
   const showDay = (day: string) => setSearchParams(day === today() ? {} : { date: day });
 
-  // Keyed by device and day so a step to another day shows placeholders, not the previous day's chart.
-  return <DayView key={`${deviceId}:${date}`} deviceId={deviceId} date={date} followsToday={followsToday} onShowDay={showDay} onDayRolledOver={rerender} />;
+  // Keyed by Device only: a step to another day keeps the header and the day picker still while
+  // the day's content slides across, rather than dropping back to placeholders.
+  return (
+    <DayView
+      key={deviceId}
+      deviceId={deviceId}
+      date={date}
+      seed={seed}
+      back={back}
+      followsToday={followsToday}
+      onShowDay={showDay}
+      onDayRolledOver={rerender}
+    />
+  );
 }
 
 function NoDevice() {
@@ -85,33 +104,90 @@ interface PageHeadingProps {
   subtitle: React.ReactNode;
   tag?: React.ReactNode;
   actions?: React.ReactNode;
+  /** The Device this header names; it is then the end of the move from its dashboard card, and the start of the move back. */
+  deviceId?: number;
+  /** Where the back button goes: the dashboard, with the Campus filter it was opened from. */
+  back?: string;
+  /** The day's last temperature, beside the title. */
+  readout?: React.ReactNode;
 }
 
-function PageHeading({ title, subtitle, tag, actions }: PageHeadingProps) {
+function PageHeading({ title, subtitle, tag, actions, deviceId, back = '/', readout }: PageHeadingProps) {
+  const navigate = useNavigate();
+  const goBack = (event: React.MouseEvent<HTMLAnchorElement>) => {
+    if (deviceId === undefined || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    morphTo(
+      headingScope(deviceId),
+      () => navigate(back),
+      () => cardScope(deviceId),
+      (card) => {
+        // Bring the card into view before the move lands on it, so the way back ends where the eye can follow.
+        const box = card.getBoundingClientRect();
+        if (box.top < 0 || box.bottom > window.innerHeight) window.scrollBy(0, box.top - (window.innerHeight - box.height) / 2);
+      },
+    );
+  };
   return (
-    <header className="flex flex-wrap items-start justify-between gap-3">
+    <header data-device-heading={deviceId} className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex min-w-0 items-start gap-3">
         <Button asChild variant="outline" size="icon" className="mt-0.5 shrink-0">
-          <Link to="/" aria-label="Back to the dashboard">
+          <Link to={back} onClick={goBack} aria-label="Back to the dashboard">
             <ArrowLeft aria-hidden />
           </Link>
         </Button>
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
+            <h1 data-morph="closet" className="text-3xl font-bold tracking-tight">
+              {title}
+            </h1>
             {tag}
           </div>
           <p className="text-muted-foreground">{subtitle}</p>
         </div>
+        {readout && <div className="ml-3 shrink-0 pt-1">{readout}</div>}
       </div>
       {actions}
     </header>
   );
 }
 
+/** The day's last Reading in the header: the dashboard card's readout, landed here. */
+function LastReading({ tempF }: { tempF: number }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-muted-foreground">Last Reading</p>
+      <p data-morph="temp" className="text-3xl font-semibold tabular-nums leading-none tracking-tight">
+        <NumberFlow value={tempF} />
+        <span className="text-lg font-medium text-muted-foreground">°F</span>
+      </p>
+    </div>
+  );
+}
+
+/** The header subtitle: the Campus (which travels from the card) and the hostname. */
+const DeviceSubtitle = ({ campus, hostname }: { campus: string; hostname: string }) => (
+  <>
+    <span data-morph="campus" className="inline-block align-top">
+      {campus}
+    </span>{' '}
+    · <span className="font-mono text-sm">{hostname}</span>
+  </>
+);
+
+const ClosetTag = ({ type }: { type: 'IDF' | 'MDF' | null }) =>
+  type && (
+    <Badge variant="outline" className={cn(type === 'MDF' && 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300')}>
+      {type}
+    </Badge>
+  );
+
 interface DayViewProps {
   deviceId: number;
   date: string;
+  /** What the dashboard card knew, when History was opened from one. */
+  seed: HistorySeed | undefined;
+  back: string;
   /** True when the URL names no day, so the page should move on to the next day at midnight. */
   followsToday: boolean;
   onShowDay: (day: string) => void;
@@ -119,7 +195,7 @@ interface DayViewProps {
   onDayRolledOver: () => void;
 }
 
-function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: DayViewProps) {
+function DayView({ deviceId, date, seed, back, followsToday, onShowDay, onDayRolledOver }: DayViewProps) {
   const load = useCallback(() => getHistory(deviceId, date), [deviceId, date]);
   const { state, reload } = useResource(load);
   usePageTitle(state.status === 'ready' ? `${state.data.device.closet}, ${state.data.device.campus.name}` : 'History');
@@ -128,7 +204,17 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
   // summary and the chart both change, and the server is the one that cuts the day.
   const loaded = state.status === 'ready' ? state.data : undefined;
   const reloadTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useEffect(() => () => clearTimeout(reloadTimer.current), []);
+  // A live reload queued for one day must not land after a step to another.
+  useEffect(() => () => clearTimeout(reloadTimer.current), [date]);
+
+  // Which way the day moved, for the slide: later days come in from the right, earlier from the left.
+  const [shown, setShown] = useState<{ date: string | undefined; direction: number }>({ date: undefined, direction: 0 });
+  if (loaded !== undefined && loaded.date !== shown.date) {
+    setShown({ date: loaded.date, direction: shown.date === undefined ? 0 : loaded.date > shown.date ? 1 : -1 });
+  }
+  // Under reduced motion the day crossfades in place: no offset, not even an instant one.
+  const reduced = useReducedMotion();
+  const direction = reduced ? 0 : shown.direction;
   const stream = useReadingStream({
     onReading: (event) => {
       if (loaded === undefined || event.device !== loaded.device.hostname) return;
@@ -158,12 +244,10 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
     if ((await change.run(() => resetHistory(deviceId))).ok) await reload();
   };
 
-  if (state.status === 'loading') return <DaySkeleton />;
-
   if (state.status === 'error') {
     return (
       <div className="flex-1 space-y-6">
-        <PageHeading title="History" subtitle={formatDayLong(date)} />
+        <PageHeading title="History" subtitle={formatDayLong(date)} back={back} />
         <Placeholder role="alert">
           <p className="flex items-center gap-2 text-sm">
             <AlertCircle className="size-4 text-destructive" aria-hidden />
@@ -183,93 +267,135 @@ function DayView({ deviceId, date, followsToday, onShowDay, onDayRolledOver }: D
     );
   }
 
-  const history = state.data;
-  const { device, readings, summary } = history;
   const isToday = date === today();
+  const last = loaded?.readings.at(-1);
+
+  // The header is the same element whether it renders from the day or from the card's seed,
+  // so it stays put (and the move from the card lands on it) while the day loads beneath.
+  const heading = loaded ? (
+    <PageHeading
+      deviceId={deviceId}
+      back={back}
+      title={loaded.device.closet}
+      subtitle={<DeviceSubtitle campus={loaded.device.campus.name} hostname={loaded.device.hostname} />}
+      tag={<ClosetTag type={loaded.device.closetType} />}
+      readout={last && <LastReading tempF={last.tempF} />}
+      actions={
+        <div className="flex items-center gap-3">
+          {/* A past day never changes, so only today says whether Readings are arriving. */}
+          {isToday && <LiveStatus status={stream} />}
+          {/* Not gated on the day shown: reset is the whole history, and a junk board's Readings may all be on other days. */}
+          <ResetButton closet={loaded.device.closet} disabled={change.pending} pending={change.pending} onConfirm={() => void reset()} />
+        </div>
+      }
+    />
+  ) : seed ? (
+    <PageHeading
+      deviceId={deviceId}
+      back={back}
+      title={seed.closet}
+      subtitle={<DeviceSubtitle campus={seed.campusName} hostname={seed.hostname} />}
+      tag={<ClosetTag type={seed.closetType} />}
+      readout={seed.tempF !== null && <LastReading tempF={seed.tempF} />}
+      actions={<Skeleton className="h-8 w-32 rounded-md" />}
+    />
+  ) : (
+    <HeadingSkeleton />
+  );
+
+  if (loaded === undefined) {
+    return (
+      <div className="flex-1 space-y-6" aria-busy aria-label="Loading the day">
+        {heading}
+        <DayBodySkeleton />
+      </div>
+    );
+  }
+
+  const { readings, summary } = loaded;
+  const shownIsToday = loaded.date === today();
 
   return (
-    <motion.div className="flex-1 space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
-      <PageHeading
-        title={device.closet}
-        subtitle={
-          <>
-            {device.campus.name} · <span className="font-mono text-sm">{device.hostname}</span>
-          </>
-        }
-        tag={
-          device.closetType && (
-            <Badge variant="outline" className={cn(device.closetType === 'MDF' && 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300')}>
-              {device.closetType}
-            </Badge>
-          )
-        }
-        actions={
-          <div className="flex items-center gap-3">
-            {/* A past day never changes, so only today says whether Readings are arriving. */}
-            {isToday && <LiveStatus status={stream} />}
-            {/* Not gated on the day shown: reset is the whole history, and a junk board's Readings may all be on other days. */}
-            <ResetButton closet={device.closet} disabled={change.pending} pending={change.pending} onConfirm={() => void reset()} />
-          </div>
-        }
-      />
+    <div className="flex-1 space-y-6">
+      {heading}
 
-      {prompt !== 'closed' && (
-        <AdminTokenPanel
-          action="Resetting a Device's history"
-          hasToken={token !== null}
-          rejected={prompt === 'rejected'}
-          onSave={(value) => {
-            setAdminToken(value);
-            setPrompt('closed');
-          }}
-          onForget={() => {
-            clearAdminToken();
-            setPrompt('closed');
-          }}
-          onClose={() => setPrompt('closed')}
-        />
-      )}
+      <motion.div className="space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
+        {prompt !== 'closed' && (
+          <AdminTokenPanel
+            action="Resetting a Device's history"
+            hasToken={token !== null}
+            rejected={prompt === 'rejected'}
+            onSave={(value) => {
+              setAdminToken(value);
+              setPrompt('closed');
+            }}
+            onForget={() => {
+              clearAdminToken();
+              setPrompt('closed');
+            }}
+            onClose={() => setPrompt('closed')}
+          />
+        )}
 
-      {change.error && (
-        <p role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
-          <AlertCircle className="size-4 shrink-0 text-destructive" aria-hidden />
-          {change.error}
-        </p>
-      )}
-
-      <DayPicker date={date} onShowDay={onShowDay} />
-
-      {history.truncated && (
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Info className="size-4 shrink-0" aria-hidden />
-          <span>
-            This day holds more Readings than History loads at once. The first <span className="tabular-nums">{readings.length.toLocaleString()}</span> are
-            shown, and the numbers, chart, and table cover only those.
-          </span>
-        </p>
-      )}
-
-      <DaySummaryTiles summary={summary} readings={readings} />
-
-      {readings.length === 0 ? (
-        <Placeholder>
-          <p className="font-medium">No Readings on {formatDayShort(date)}</p>
-          <p className="max-w-sm text-sm text-muted-foreground">
-            {isToday ? 'Nothing has arrived from this Device yet today. New Readings appear here as they come in.' : 'This Device sent nothing that day, or its Readings have since been deleted.'}
+        {change.error && (
+          <p role="alert" className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm">
+            <AlertCircle className="size-4 shrink-0 text-destructive" aria-hidden />
+            {change.error}
           </p>
-          {!isToday && (
-            <Button variant="outline" size="sm" onClick={() => onShowDay(today())}>
-              Show today
-            </Button>
-          )}
-        </Placeholder>
-      ) : (
-        <>
-          <DayChart history={history} />
-          <ReadingsTable readings={readings} date={date} />
-        </>
-      )}
-    </motion.div>
+        )}
+
+        <DayPicker date={date} onShowDay={onShowDay} />
+
+        {/* The day itself: a step to another day slides it a short way in the direction of
+            travel and crossfades, while the header and the picker above stay still. */}
+        <div className="relative">
+          <AnimatePresence initial={false} mode="popLayout" custom={direction}>
+            <motion.div
+              key={loaded.date}
+              className="space-y-6"
+              custom={direction}
+              variants={dayShift}
+              initial="enter"
+              animate="center"
+              exit="exit"
+            >
+              {loaded.truncated && (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Info className="size-4 shrink-0" aria-hidden />
+                  <span>
+                    This day holds more Readings than History loads at once. The first <span className="tabular-nums">{readings.length.toLocaleString()}</span>{' '}
+                    are shown, and the numbers, chart, and table cover only those.
+                  </span>
+                </p>
+              )}
+
+              <DaySummaryTiles summary={summary} readings={readings} />
+
+              {readings.length === 0 ? (
+                <Placeholder>
+                  <p className="font-medium">No Readings on {formatDayShort(loaded.date)}</p>
+                  <p className="max-w-sm text-sm text-muted-foreground">
+                    {shownIsToday
+                      ? 'Nothing has arrived from this Device yet today. New Readings appear here as they come in.'
+                      : 'This Device sent nothing that day, or its Readings have since been deleted.'}
+                  </p>
+                  {!shownIsToday && (
+                    <Button variant="outline" size="sm" onClick={() => onShowDay(today())}>
+                      Show today
+                    </Button>
+                  )}
+                </Placeholder>
+              ) : (
+                <>
+                  <DayChart history={loaded} />
+                  <ReadingsTable readings={readings} date={loaded.date} />
+                </>
+              )}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </motion.div>
+    </div>
   );
 }
 
@@ -377,6 +503,8 @@ const chartConfig = {
 } satisfies ChartConfig;
 
 const MS_PER_HOUR = 3_600_000;
+/** How long the temperature line takes to draw across the day. */
+const DRAW_MS = 700;
 
 /** An axis range on multiples of five with a step of room either side, so ticks land on round numbers and a flat day is not a line along the edge. */
 function niceDomain(values: number[], step = 5): [number, number] {
@@ -401,6 +529,9 @@ function DayChart({ history }: { history: HistoryPayload }) {
   const humidityDomain = useMemo(() => niceDomain(data.flatMap((d) => (d.humidity === null ? [] : [d.humidity]))), [data]);
   // Dots on a few points help; on a full day of 30-second Readings they are noise.
   const sparse = data.length <= 48;
+  // Mounted once per day shown (the day's content is keyed by date), so this is the day's first load.
+  const reduced = useReducedMotion();
+  const [drawing, setDrawing] = useState(!reduced);
 
   return (
     <Card>
@@ -448,7 +579,20 @@ function DayChart({ history }: { history: HistoryPayload }) {
               }
             />
             <ChartLegend content={<ChartLegendContent />} />
-            <Line yAxisId="tempF" dataKey="tempF" type="monotone" stroke="var(--color-tempF)" strokeWidth={2} dot={sparse} activeDot={{ r: 4 }} isAnimationActive={false} />
+            {/* The temperature line draws once, left to right, when a day first loads; a live reload of the same day never redraws it. */}
+            <Line
+              yAxisId="tempF"
+              dataKey="tempF"
+              type="monotone"
+              stroke="var(--color-tempF)"
+              strokeWidth={2}
+              dot={sparse}
+              activeDot={{ r: 4 }}
+              isAnimationActive={drawing}
+              animationDuration={DRAW_MS}
+              animationEasing="ease-out"
+              onAnimationEnd={() => setDrawing(false)}
+            />
             <Line yAxisId="humidity" dataKey="humidity" type="monotone" stroke="var(--color-humidity)" strokeWidth={2} strokeDasharray="4 3" dot={sparse} activeDot={{ r: 4 }} isAnimationActive={false} />
           </LineChart>
         </ChartContainer>
@@ -521,16 +665,23 @@ function ReadingsTable({ readings, date }: { readings: Reading[]; date: string }
   );
 }
 
-function DaySkeleton() {
+/** The header's shape while the day loads and no card handed over what it knew. */
+function HeadingSkeleton() {
   return (
-    <div className="flex-1 space-y-6" aria-busy aria-label="Loading the day">
-      <div className="flex items-start gap-3">
-        <Skeleton className="size-9 rounded-md" />
-        <div className="space-y-2">
-          <Skeleton className="h-8 w-40" />
-          <Skeleton className="h-4 w-64" />
-        </div>
+    <div className="flex items-start gap-3">
+      <Skeleton className="mt-0.5 size-9 rounded-md" />
+      <div className="space-y-1">
+        <Skeleton className="h-9 w-40" />
+        <Skeleton className="h-6 w-64" />
       </div>
+    </div>
+  );
+}
+
+/** Everything under the header, in the shape it will take, so the day lands without a jump. */
+function DayBodySkeleton() {
+  return (
+    <div className="space-y-6">
       <div className="flex items-center gap-2">
         <Skeleton className="size-9 rounded-md" />
         <Skeleton className="h-9 w-36 rounded-md" />

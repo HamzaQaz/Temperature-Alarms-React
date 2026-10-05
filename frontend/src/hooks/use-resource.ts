@@ -13,14 +13,16 @@ export type ResourceState<T> =
  * load is in flight is replayed on top of what the load returns, so a live change
  * is never lost to a slower request that started before it.
  * `load` must be a stable function (a module-level API call, not an inline closure).
+ * `initial`, when given, is shown at once (data kept from an earlier visit) and refreshed
+ * by the first load like any reload, so a page returned to never flashes its skeleton.
  */
-export function useResource<T>(load: () => Promise<T>): {
+export function useResource<T>(load: () => Promise<T>, initial?: T): {
   state: ResourceState<T>;
   reload: () => Promise<void>;
   /** Change the loaded data in place (a live update). Applied now if ready, and again on top of any load in flight. */
   update: (change: (data: T) => T) => void;
 } {
-  const [state, setState] = useState<ResourceState<T>>({ status: 'loading' });
+  const [state, setState] = useState<ResourceState<T>>(() => (initial === undefined ? { status: 'loading' } : { status: 'ready', data: initial }));
   /** Changes made since the current load began; null when no load is in flight. */
   const inFlight = useRef<Array<(data: T) => T> | null>(null);
   /** The latest load; an earlier one that settles after it has nothing newer to say and is dropped. */
