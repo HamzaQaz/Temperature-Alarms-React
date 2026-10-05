@@ -9,6 +9,7 @@
 export const EASE_OUT_QUINT: [number, number, number, number] = [0.22, 1, 0.36, 1];
 export const EASE_OUT_EXPO: [number, number, number, number] = [0.16, 1, 0.3, 1];
 export const EASE_OUT_EXPO_CSS = 'cubic-bezier(0.16, 1, 0.3, 1)';
+export const EASE_OUT_QUINT_CSS = 'cubic-bezier(0.22, 1, 0.36, 1)';
 
 /** Something arriving or changing: 200 ms, decelerating. */
 export const settle = { duration: 0.2, ease: EASE_OUT_QUINT };
@@ -35,7 +36,7 @@ export const arrive = (index = 0) => ({
 
 /**
  * A card joining or leaving a grid that is already on screen (the Campus filter): a plain
- * fade in, a quicker fade out, and the cards that stay glide to their new places (FLIP).
+ * fade in and a quicker fade out. The cards that stay are moved by `Regroup`.
  */
 export const regroup = {
   initial: { opacity: 0 },
@@ -43,8 +44,13 @@ export const regroup = {
   exit: { opacity: 0, transition: { duration: 0.12, ease: EASE_OUT_QUINT } },
 };
 
-/** How the cards that stay move to their new places: a layout (FLIP) transition, transforms only. */
-export const reflow = { layout: { duration: 0.32, ease: EASE_OUT_EXPO } };
+/**
+ * How the cards that stay reach their new places (components/Regroup.tsx): a card on screen
+ * both before and after the change glides there (FLIP, transforms only); any other card that
+ * stays fades in where it lands, since a glide from off screen is a long move the eye cannot follow.
+ */
+export const GLIDE_MS = 320;
+export const FADE_IN_PLACE_MS = 200;
 
 /**
  * The escalation trace: the new border is drawn around the card from its badge, once.
@@ -56,12 +62,24 @@ export const TRACE_FADE_MS = 360;
 /**
  * A Condition badge arriving: revealed from the side the trace starts on, so the badge
  * and the border read as one event. `from` is the edge the reveal starts at.
+ *
+ * On the way out, `name` is checked against the Condition names still on the card (the
+ * AnimatePresence `custom`): a badge whose Condition is still there was replaced by a worse
+ * level and goes at once, so the old level is never shown beside the new border. A Condition
+ * that is really leaving fades, behind any badge that moves into its place.
  */
-export const reveal = (from: 'left' | 'right') => ({
-  initial: { opacity: 0, clipPath: from === 'left' ? 'inset(0% 100% 0% 0% round 8px)' : 'inset(0% 0% 0% 100% round 8px)' },
-  animate: { opacity: 1, clipPath: 'inset(0% 0% 0% 0% round 8px)', transition: { duration: 0.36, ease: EASE_OUT_EXPO } },
-  // Behind the badge replacing it (a Condition that worsened), so the new one is what the eye catches.
-  exit: { opacity: 0, zIndex: 0, transition: { ...leave, zIndex: { duration: 0 } } },
+export const reveal = (from: 'left' | 'right', name?: string) => ({
+  variants: {
+    hidden: { opacity: 0, clipPath: from === 'left' ? 'inset(0% 100% 0% 0% round 8px)' : 'inset(0% 0% 0% 100% round 8px)' },
+    shown: { opacity: 1, clipPath: 'inset(0% 0% 0% 0% round 8px)', transition: { duration: 0.36, ease: EASE_OUT_EXPO } },
+    gone: (present: string[] | undefined) =>
+      name !== undefined && present?.includes(name)
+        ? { opacity: 0, transition: { duration: 0 } }
+        : { opacity: 0, zIndex: 0, transition: { ...leave, zIndex: { duration: 0 } } },
+  },
+  initial: 'hidden',
+  animate: 'shown',
+  exit: 'gone',
 });
 
 /**

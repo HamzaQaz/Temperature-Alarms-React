@@ -11,7 +11,7 @@ import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { useLanded } from '@/hooks/use-landed';
 import { headingScope, morphTo, type HistorySeed } from '@/lib/card-morph';
 import { levelLook, levelRank, worstCondition } from '@/lib/conditions';
-import { crossfade, reveal } from '@/lib/motion';
+import { EASE_OUT_EXPO_CSS, crossfade, reveal } from '@/lib/motion';
 import { formatAge, nextReport, type NextReport } from '@/lib/reportTiming';
 import { cn } from '@/lib/utils';
 import type { Condition, ConditionLevel, DashboardDevice } from '@/types';
@@ -33,7 +33,14 @@ interface MeasureProps {
   dimmed: boolean;
 }
 
-/** A large reading meant to be legible from across a room. */
+/** A digit rolling to a new Reading: brisk and decelerating, so it settles before the eye leaves it. */
+const SPIN = { duration: 400, easing: EASE_OUT_EXPO_CSS };
+
+/**
+ * A large reading meant to be legible from across a room. The readout clips vertically so a
+ * rolling digit stays inside its own line and never crosses the label above. The temperature's
+ * unit is half the figure, as in History's header, so the two line up when the readout travels there.
+ */
 function Measure({ label, value, unit, size, dimmed }: MeasureProps) {
   return (
     <div className="min-w-0">
@@ -41,7 +48,7 @@ function Measure({ label, value, unit, size, dimmed }: MeasureProps) {
       <p
         data-morph={size === 'lg' ? 'temp' : undefined}
         className={cn(
-          'font-semibold tabular-nums leading-none tracking-tight transition-colors duration-300 ease-out-quint',
+          'w-fit overflow-y-clip font-semibold tabular-nums leading-none tracking-tight transition-colors duration-300 ease-out-quint',
           size === 'lg' ? 'text-5xl xl:text-6xl' : 'text-3xl xl:text-4xl',
           dimmed || value === null ? 'text-muted-foreground' : 'text-foreground',
         )}
@@ -50,8 +57,8 @@ function Measure({ label, value, unit, size, dimmed }: MeasureProps) {
           <span aria-label={`No ${label.toLowerCase()} reading`}>—</span>
         ) : (
           <>
-            <NumberFlow value={value} />
-            <span className={cn('font-medium text-muted-foreground', size === 'lg' ? 'text-2xl xl:text-3xl' : 'text-lg xl:text-xl')}>{unit}</span>
+            <NumberFlow value={value} spinTiming={SPIN} />
+            <span className={cn('font-medium text-muted-foreground', size === 'lg' ? 'text-[0.5em]' : 'text-lg xl:text-xl')}>{unit}</span>
           </>
         )}
       </p>
@@ -222,8 +229,9 @@ export function DeviceCard({ device, secondsSinceReading, anchorMs, reportInterv
                 {device.campus.name}
               </span>
             </p>
-            <div className="mt-0.5 flex items-center gap-2">
-              <h2 id={titleId} data-morph="closet" title={device.closet} className="min-w-0 truncate text-lg font-semibold leading-tight">
+            {/* The name and its IDF/MDF tag travel to History together, as one piece of the header. */}
+            <div data-morph="closet" className="mt-0.5 flex w-fit max-w-full items-center gap-2">
+              <h2 id={titleId} title={device.closet} className="min-w-0 truncate text-lg font-semibold leading-tight">
                 {device.closet}
               </h2>
               {device.closetType && (
@@ -257,8 +265,9 @@ export function DeviceCard({ device, secondsSinceReading, anchorMs, reportInterv
         <AnimatePresence initial={false}>
           {readingConditions.length > 0 && (
             <motion.ul key="conditions" className="relative flex flex-wrap gap-1.5" aria-label="Conditions" {...crossfade}>
-              {/* Keyed by level too, so a Condition that worsens arrives again from the edge the trace starts on. */}
-              <AnimatePresence initial={false} mode="popLayout">
+              {/* Keyed by level too, so a Condition that worsens arrives again from the edge the trace starts on.
+                  The names still present tell an outgoing badge whether it was replaced (gone at once) or is leaving (fades). */}
+              <AnimatePresence initial={false} mode="popLayout" custom={readingConditions.map((c) => c.name)}>
                 {readingConditions.map((condition) => (
                   <motion.li
                     key={`${condition.name}:${condition.level}`}
@@ -266,7 +275,7 @@ export function DeviceCard({ device, secondsSinceReading, anchorMs, reportInterv
                     className="relative z-[1]"
                     layout="position"
                     layoutDependency={readingConditions.map((c) => c.name + c.level).join()}
-                    {...(reduced ? crossfade : reveal('left'))}
+                    {...(reduced ? crossfade : reveal('left', condition.name))}
                   >
                     <ConditionBadge condition={condition} />
                   </motion.li>

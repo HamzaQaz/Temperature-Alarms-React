@@ -18,7 +18,7 @@ interface TileProps {
 export function Tile({ label, value, note, noteTone = 'muted' }: TileProps) {
   return (
     <Card className="gap-1 py-4">
-      <CardContent className="px-5">
+      <CardContent className="px-4 sm:px-5">
         <dt className="text-sm text-muted-foreground">{label}</dt>
         <dd className="mt-1 text-3xl font-semibold tabular-nums leading-none tracking-tight">{value}</dd>
         <dd className={noteTone === 'warn' ? 'mt-2 text-xs font-medium tabular-nums text-amber-700 dark:text-amber-400' : 'mt-2 text-xs tabular-nums text-muted-foreground'}>

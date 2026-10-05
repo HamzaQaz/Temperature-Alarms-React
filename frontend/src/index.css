@@ -165,23 +165,39 @@
   animation-fill-mode: forwards;
 }
 
-/* Card to History and back (lib/card-morph.ts): the Closet name, Campus and temperature travel
-   between the card and History's header on an expo ease; the old page fades out quickly under
-   them while the new one fades in with its own route fade. */
+/* Card to History and back (lib/card-morph.ts): the Closet name with its tag, the Campus and
+   the temperature travel between the card and History's header on an expo ease. The old page
+   fades out quickly under them and the new one fades in 50 ms behind, so the header assembles
+   over a page that is already arriving (a later start leaves blank frames between the two).
+   Each part swaps its two images early (old out in 100 ms, new in by 160 ms), so a name or a
+   figure is never seen twice. */
 ::view-transition-group(device-closet),
 ::view-transition-group(device-campus),
 ::view-transition-group(device-temp) {
   animation-duration: 440ms;
   animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
+::view-transition-old(device-closet),
+::view-transition-old(device-campus),
+::view-transition-old(device-temp) {
+  animation: 100ms cubic-bezier(0.22, 1, 0.36, 1) both view-fade-out;
+}
+::view-transition-new(device-closet),
+::view-transition-new(device-campus),
+::view-transition-new(device-temp) {
+  animation: 160ms cubic-bezier(0.22, 1, 0.36, 1) both view-fade-in;
+}
 ::view-transition-old(root) {
   animation: 140ms cubic-bezier(0.22, 1, 0.36, 1) both view-fade-out;
 }
 ::view-transition-new(root) {
-  animation: none;
+  animation: 180ms cubic-bezier(0.22, 1, 0.36, 1) 50ms both view-fade-in;
 }
 @keyframes view-fade-out {
   to { opacity: 0; }
+}
+@keyframes view-fade-in {
+  from { opacity: 0; }
 }
 
 /* Reduced motion: nothing moves. Animations complete at once, except the few marked

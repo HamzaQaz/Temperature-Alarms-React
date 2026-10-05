@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
@@ -8,6 +8,7 @@ import { getCampuses, getDashboard } from '@/api';
 import { loadHistory } from './history-loader';
 import { LiveStatus } from '@/components/LiveStatus';
 import { DeviceCard } from '@/components/DeviceCard';
+import { Regroup } from '@/components/Regroup';
 import { Placeholder } from '@/components/Placeholder';
 import { NoValue, Tile } from '@/components/Tile';
 import { Button } from '@/components/ui/button';
@@ -15,7 +16,7 @@ import { hasWarningOrWorse, isWarningOrWorse } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useNow } from '@/hooks/use-now';
-import { arrive, reflow, regroup, settle } from '@/lib/motion';
+import { arrive, regroup, settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
@@ -66,7 +67,8 @@ export default function Dashboard() {
       {campuses.state.status === 'loading' && <Skeleton className="h-9 w-80 max-w-full rounded-lg" />}
       {campusList.length > 0 && (
         <Tabs value={tabValue} onValueChange={showCampus}>
-          <div className="overflow-x-auto pb-1">
+          {/* A strip that scrolls sideways; on a phone it runs to the screen's edges, so a Campus cut off there reads as more to scroll. */}
+          <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
             <TabsList aria-label="Filter by campus">
               <TabsTrigger value={ALL}>All campuses</TabsTrigger>
               {campusList.map((campus) => (
@@ -222,6 +224,8 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
   // Cards measure their place only when the set or order of cards changes, never on the
   // once-a-second tick, so sixty cards cost nothing to keep FLIP-ready.
   const order = devices.map((device) => device.id).join();
+  const list = useRef<HTMLUListElement>(null);
+  const reduced = useReducedMotion() ?? false;
   // Each card ages from the moment its own data was true, so a live Reading resets only that card's age.
   const age = (device: LiveDevice): number | null =>
     device.secondsSinceReading === null ? null : device.secondsSinceReading + Math.max(0, Math.floor((now - device.asOf) / 1000));
@@ -237,25 +241,28 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
   }, [pastOfflineKey, onPastOffline]);
   return (
     <ul
+      ref={list}
       className={cn(
-        'relative grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-4 transition-opacity duration-200 ease-out-quint',
+        'relative grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4 transition-opacity duration-200 ease-out-quint',
         pending && 'opacity-60 delay-150',
       )}
       aria-label="Devices"
       aria-busy={pending || undefined}
     >
-      <AnimatePresence initial={arriveOnMount} mode="popLayout">
-        {devices.map((device, index) => (
-          <motion.li key={device.id} className="flex" layout="position" layoutDependency={order} transition={reflow} {...(settled ? regroup : arrive(index))}>
-            <DeviceCard
-              device={device}
-              secondsSinceReading={age(device)}
-              anchorMs={device.secondsSinceReading === null ? null : device.asOf - device.secondsSinceReading * 1000}
-              reportIntervalSeconds={reportIntervalSeconds}
-            />
-          </motion.li>
-        ))}
-      </AnimatePresence>
+      <Regroup list={list} order={order} still={reduced}>
+        <AnimatePresence initial={arriveOnMount} mode="popLayout">
+          {devices.map((device, index) => (
+            <motion.li key={device.id} data-regroup={device.id} className="flex" {...(settled ? regroup : arrive(index))}>
+              <DeviceCard
+                device={device}
+                secondsSinceReading={age(device)}
+                anchorMs={device.secondsSinceReading === null ? null : device.asOf - device.secondsSinceReading * 1000}
+                reportIntervalSeconds={reportIntervalSeconds}
+              />
+            </motion.li>
+          ))}
+        </AnimatePresence>
+      </Regroup>
     </ul>
   );
 }
@@ -283,7 +290,7 @@ function Summary({ devices }: { devices: DashboardDevice[] }) {
   const reportingNote = reporting === 0 ? 'No readings yet' : `Across ${reporting} with a Reading`;
 
   return (
-    <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
       <Tile
         label="Devices"
         value={<NumberFlow value={devices.length} />}
@@ -340,12 +347,12 @@ function DashboardSkeleton() {
         <Skeleton className="h-4 w-72" />
         <Skeleton className="h-8 w-24" />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         {Array.from({ length: 4 }, (_, i) => (
           <Skeleton key={i} className="h-[6.5rem] rounded-xl" />
         ))}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4">
         {Array.from({ length: 6 }, (_, i) => (
           <Skeleton key={i} className="h-60 rounded-xl" />
         ))}
