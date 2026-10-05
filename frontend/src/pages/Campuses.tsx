@@ -46,7 +46,7 @@ interface LoadedOverview extends Overview {
 const loadOverview = async (): Promise<LoadedOverview> => ({ ...(await getCampusOverview()), asOf: Date.now() });
 
 /** A link that reads as text until it is pointed at or focused; the focus ring is the controls' own. */
-const quietLink = 'rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50';
+const quietLink = 'rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring';
 
 /**
  * Campuses: the district in one look, for IT leadership. One row per Campus in the server's
@@ -82,7 +82,7 @@ export default function Campuses() {
   return (
     <div className="flex-1 space-y-6">
       <header className="space-y-1">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-3xl font-bold tracking-tight">Campuses</h1>
           <LiveStatus status={stream} />
         </div>

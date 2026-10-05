@@ -23,6 +23,8 @@ interface AdminTokenPanelProps {
  * Asks for the Admin token once and shows where it lives afterwards.
  * Expands on its own when no token is stored or the server rejected the last one.
  * After a save, focus lands on the Change button so a keyboard user is still in the panel.
+ * Opening it (Change, a rejection, or a page asking for it for one change) puts focus in the field;
+ * a page that merely loads with no token stored leaves focus where the page starts.
  */
 export function AdminTokenPanel({
   hasToken,
@@ -39,9 +41,12 @@ export function AdminTokenPanel({
   const inputRef = useRef<HTMLInputElement>(null);
   const changeRef = useRef<HTMLButtonElement>(null);
   const open = !hasToken || editing || rejected;
+  // Mounted open by a page for one change (History) is an opening; mounted open by Settings' load is not.
+  const wasOpen = useRef(open && onClose === undefined);
 
   useEffect(() => {
-    if (open) inputRef.current?.focus();
+    if (open && !wasOpen.current) inputRef.current?.focus();
+    wasOpen.current = open;
   }, [open]);
 
   useEffect(() => {
@@ -108,7 +113,7 @@ export function AdminTokenPanel({
             {rejected ? 'Not authorised' : hasToken ? 'Change the Admin token' : 'Admin token needed'}
           </h2>
           {/* The rejection is announced from here, so the heading keeps its role and the sentence is heard whole. */}
-          <p className="max-w-prose text-sm text-muted-foreground" role={rejected ? 'alert' : undefined}>
+          <p id="admin-token-description" className="max-w-prose text-sm text-muted-foreground" role={rejected ? 'alert' : undefined}>
             {rejected
               ? 'The server rejected the Admin token. Enter the current one to keep going. Nothing was changed.'
               : `${action} sends the shared Admin token. Viewing the dashboard never needs it. It is kept in this browser only.`}
@@ -128,6 +133,7 @@ export function AdminTokenPanel({
             onChange={(event) => setDraft(event.target.value)}
             placeholder="Paste the token from the server's .env"
             aria-invalid={rejected || undefined}
+            aria-describedby="admin-token-description"
           />
         </div>
         <div className="flex gap-2">

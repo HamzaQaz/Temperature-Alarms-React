@@ -35,6 +35,7 @@ import { dayShift, settle } from '@/lib/motion';
 import { useResource } from '@/hooks/use-resource';
 import { clearAdminToken, getAdminToken, setAdminToken } from '@/lib/adminToken';
 import { bucketReadings, extremes, type Extreme } from '@/lib/chartBuckets';
+import { describeDay } from '@/lib/chartSummary';
 import { addDays, formatDayLong, formatDayShort, formatHour, formatTime, formatTimeSeconds, isDateString, today } from '@/lib/localDate';
 import { cn } from '@/lib/utils';
 import type { DaySummary, History as HistoryPayload, Reading } from '@/types';
@@ -460,7 +461,7 @@ function DayPicker({ date, onShowDay }: DayPickerProps) {
           onChange={(event) => {
             if (isDateString(event.target.value)) onShowDay(event.target.value);
           }}
-          className="h-9 pointer-coarse:min-h-11 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          className="h-9 pointer-coarse:min-h-11 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring"
         />
       </label>
       <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, 1))} disabled={isLatest} aria-label="Next day">
@@ -565,16 +566,31 @@ function DayChart({ history }: { history: HistoryPayload }) {
   // Mounted once per day shown (the day's content is keyed by date), so this is the day's first load.
   const reduced = useReducedMotion();
   const [drawing, setDrawing] = useState(!reduced);
+  // The chart in words: each series' low and high and when, for a screen reader (the table below holds every value).
+  const described = useMemo(() => describeDay(history.readings), [history.readings]);
+  const describedId = `day-chart-${history.date}`;
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Over the day</CardTitle>
+        <CardTitle role="heading" aria-level={2}>
+          Over the day
+        </CardTitle>
         <CardDescription>Temperature on the left axis, humidity on the right.</CardDescription>
       </CardHeader>
       <CardContent>
-        <ChartContainer config={chartConfig} className="aspect-auto h-64 w-full sm:h-80">
-          <LineChart accessibilityLayer data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <p id={describedId} className="sr-only">
+          {described}
+        </p>
+        {/* The arrow keys walk the chart's points once it has focus, so it shows the controls' focus ring. */}
+        <ChartContainer
+          config={chartConfig}
+          role="figure"
+          aria-label="Temperature and humidity over the day"
+          aria-describedby={describedId}
+          className="aspect-auto h-64 w-full sm:h-80 [&_.recharts-surface]:rounded-md [&_.recharts-surface:focus-visible]:outline-[3px] [&_.recharts-surface:focus-visible]:outline-ring/50"
+        >
+          <LineChart accessibilityLayer title="Temperature and humidity over the day" data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
             <CartesianGrid vertical={false} />
             <XAxis
               dataKey="at"
@@ -657,14 +673,22 @@ function ReadingsTable({ readings, date }: { readings: Reading[]; date: string }
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Readings</CardTitle>
+        <CardTitle role="heading" aria-level={2}>
+          Readings
+        </CardTitle>
         <CardDescription>
           Newest first. {readings.length === 1 ? 'One Reading' : `${readings.length.toLocaleString()} Readings`} on {formatDayShort(date)}.
         </CardDescription>
       </CardHeader>
       <CardContent>
         {/* The page keeps its shape whatever the day holds: the rows scroll inside, under a header that stays put. */}
-        <div className="max-h-[30rem] overflow-y-auto rounded-md border">
+        {/* A region that scrolls is a tab stop of its own, named, so a keyboard can scroll it and a screen reader knows what it holds. */}
+        <div
+          role="region"
+          aria-label={`Readings on ${formatDayShort(date)}, newest first`}
+          tabIndex={0}
+          className="max-h-[30rem] overflow-y-auto rounded-md border outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring"
+        >
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-card">
             <TableRow>

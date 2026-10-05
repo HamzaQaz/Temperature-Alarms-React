@@ -12,6 +12,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useNow } from '@/hooks/use-now';
 import { usePageTitle } from '@/hooks/use-page-title';
 import { useReadingStream } from '@/hooks/use-reading-stream';
+import { useAnnouncer } from '@/hooks/use-announcer';
+import { LiveAnnouncement } from '@/components/LiveAnnouncement';
 import { useResource } from '@/hooks/use-resource';
 import { levelLook } from '@/lib/conditions';
 import {
@@ -50,6 +52,9 @@ const STEP_NAMES: Record<WindowKind, { previous: string; next: string }> = {
 
 const ms = (iso: string): number => new Date(iso).getTime();
 
+/** The log the window tabs pick; they filter it rather than switch panels, so each names it as what it controls. */
+const LOG_ID = 'incidents-log';
+
 /**
  * Incidents: every Condition at warning or worse, start to end, in a night, a day, or a week.
  * The window and its day live in the URL (`?window=today|week`, `?date=`), so a night can be
@@ -83,7 +88,8 @@ export default function Incidents() {
   // Rows that arrived or changed level while the page was open, by incident id: how many times, so each takes the wash once.
   const [landed, setLanded] = useState<Record<number, number>>({});
   const [arrived, setArrived] = useState<ReadonlySet<number>>(() => new Set());
-  const [announcement, setAnnouncement] = useState('');
+  // New incidents and level changes, spoken politely and together when several land at once.
+  const { message, announce } = useAnnouncer();
   // A wash belongs to the window it happened in: stepping away and back must not play it again.
   const [washedWindow, setWashedWindow] = useState(`${kind}|${date}`);
   if (washedWindow !== `${kind}|${date}`) {
@@ -109,9 +115,9 @@ export default function Incidents() {
       setLanded((counts) => ({ ...counts, [incident.id]: (counts[incident.id] ?? 0) + 1 }));
       if (!present) {
         setArrived((ids) => new Set(ids).add(incident.id));
-        setAnnouncement(`New incident: ${incident.condition} ${incident.level}, ${incident.device.closet}, ${incident.device.campus.name}`);
+        announce({ key: String(incident.id), text: `New incident: ${incident.condition} ${incident.level}, ${incident.device.closet}, ${incident.device.campus.name}` });
       } else if (change === 'level') {
-        setAnnouncement(`${incident.device.closet}, ${incident.device.campus.name}: ${incident.condition} is now ${incident.level}`);
+        announce({ key: String(incident.id), text: `${incident.device.closet}, ${incident.device.campus.name}: ${incident.condition} is now ${incident.level}` });
       }
     },
     onReconnect: () => void reload(),
@@ -124,7 +130,7 @@ export default function Incidents() {
     <div className="flex-1 space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
         <div className="space-y-1">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <h1 className="text-3xl font-bold tracking-tight">Incidents</h1>
             {followsLatest && <LiveStatus status={stream} />}
           </div>
@@ -134,9 +140,9 @@ export default function Incidents() {
         <div className="flex flex-wrap items-center gap-3 max-md:w-full">
           <Tabs value={kind} onValueChange={(value) => show(parseWindowKind(value))}>
             <TabsList aria-label="Window">
-              <TabsTrigger value="overnight">Overnight</TabsTrigger>
-              <TabsTrigger value="today">Today</TabsTrigger>
-              <TabsTrigger value="week">7 days</TabsTrigger>
+              <TabsTrigger value="overnight" aria-controls={LOG_ID}>Overnight</TabsTrigger>
+              <TabsTrigger value="today" aria-controls={LOG_ID}>Today</TabsTrigger>
+              <TabsTrigger value="week" aria-controls={LOG_ID}>7 days</TabsTrigger>
             </TabsList>
           </Tabs>
           <nav aria-label="Window shown" className="flex items-center gap-1.5 max-md:w-full">
@@ -145,7 +151,7 @@ export default function Incidents() {
             </Button>
             <p
               aria-live="polite"
-              className="flex h-9 items-center gap-2 rounded-md border border-input px-3 text-sm whitespace-nowrap tabular-nums shadow-xs pointer-coarse:min-h-11 max-md:flex-1 dark:bg-input/30"
+              className="flex min-h-9 min-w-0 items-center gap-2 rounded-md border border-input px-3 py-1 text-sm tabular-nums shadow-xs pointer-coarse:min-h-11 max-md:flex-1 md:whitespace-nowrap dark:bg-input/30"
             >
               <CalendarDays className="size-4 shrink-0 text-muted-foreground" aria-hidden />
               {windowLabel(kind, date)}
@@ -163,10 +169,9 @@ export default function Incidents() {
         </div>
       </header>
 
-      <p className="sr-only" aria-live="polite">
-        {announcement}
-      </p>
+      <LiveAnnouncement message={message} />
 
+      <div id={LOG_ID}>
       {state.status === 'error' ? (
         <Placeholder role="alert">
           <p className="flex items-center gap-2 text-sm">
@@ -207,6 +212,7 @@ export default function Incidents() {
           )}
         </motion.div>
       )}
+      </div>
     </div>
   );
 }
@@ -525,9 +531,10 @@ function Track({ incident, from, to, now, marks, nowAt }: { incident: Incident; 
           style={{ left: pct(span.left), width: pct(span.width) }}
         >
           {span.pieces.map((piece, i) => (
-            <i key={i} className={cn('absolute inset-y-0', levelLook(piece.level).span)} style={{ left: pct(piece.left), width: pct(piece.width) }} />
+            // Forced colours drop fills: the span is drawn in the text colour there, and the row's text gives the levels.
+            <i key={i} className={cn('absolute inset-y-0 forced-colors:bg-[CanvasText] forced-colors:forced-color-adjust-none', levelLook(piece.level).span)} style={{ left: pct(piece.left), width: pct(piece.width) }} />
           ))}
-          {span.ongoing && <i className="absolute inset-y-0 right-0 w-0.5 bg-foreground" />}
+          {span.ongoing && <i className="absolute inset-y-0 right-0 w-0.5 bg-foreground forced-colors:bg-[Canvas] forced-colors:forced-color-adjust-none" />}
         </span>
       </div>
     </div>

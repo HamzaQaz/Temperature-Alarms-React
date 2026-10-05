@@ -19,10 +19,15 @@ import { useNow } from '@/hooks/use-now';
 import { arrive, regroup, settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { useReadingStream } from '@/hooks/use-reading-stream';
+import { useAnnouncer } from '@/hooks/use-announcer';
+import { LiveAnnouncement } from '@/components/LiveAnnouncement';
+import { deviceChanges, type Announcement } from '@/lib/announce';
 import { useResource } from '@/hooks/use-resource';
 import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, ReadingEvent } from '@/types';
 
 const ALL = 'all';
+/** The cards the Campus and order tabs filter and sort; the tabs name it as what they control. */
+const CONTENT_ID = 'dashboard-devices';
 
 /**
  * What the dashboard last showed, kept for this tab's lifetime so coming back from History
@@ -60,6 +65,7 @@ export default function Dashboard() {
     setSearchParams({ ...(campus === '' ? {} : { campus }), ...(nextOrder === 'worst' ? {} : { order: nextOrder }) });
   const showCampus = (value: string) => showView(value === ALL ? '' : value, order);
   const showOrder = (value: string) => showView(campusParam, value === 'campus' ? 'campus' : 'worst');
+  const { message, announce } = useAnnouncer();
 
   return (
     <div className="flex-1 space-y-6">
@@ -80,9 +86,9 @@ export default function Dashboard() {
               {/* A strip that scrolls sideways; on a phone it runs to the screen's edges, so a Campus cut off there reads as more to scroll. */}
               <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
                 <TabsList aria-label="Filter by campus">
-                  <TabsTrigger value={ALL}>All campuses</TabsTrigger>
+                  <TabsTrigger value={ALL} aria-controls={CONTENT_ID}>All campuses</TabsTrigger>
                   {campusList.map((campus) => (
-                    <TabsTrigger key={campus.id} value={campus.shortcode}>
+                    <TabsTrigger key={campus.id} value={campus.shortcode} aria-controls={CONTENT_ID}>
                       {campus.name}
                     </TabsTrigger>
                   ))}
@@ -93,15 +99,19 @@ export default function Dashboard() {
         </div>
         <Tabs value={order} onValueChange={showOrder} className="shrink-0">
           <TabsList aria-label="Order">
-            <TabsTrigger value="worst">Worst first</TabsTrigger>
-            <TabsTrigger value="campus">By Campus</TabsTrigger>
+            <TabsTrigger value="worst" aria-controls={CONTENT_ID}>Worst first</TabsTrigger>
+            <TabsTrigger value="campus" aria-controls={CONTENT_ID}>By Campus</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
-      {/* Not keyed by campus or order: on a switch the cards on screen stay until the new answer arrives,
-          then the ones that stay glide to their new places and the rest fade. */}
-      <DashboardContent campus={campusParam} order={order} campusName={selected?.name} onShowAll={() => showCampus(ALL)} />
+      {/* Tabs filter one set of cards rather than switch between panels, so each names this as what it controls. */}
+      <div id={CONTENT_ID}>
+        {/* Not keyed by campus or order: on a switch the cards on screen stay until the new answer arrives,
+            then the ones that stay glide to their new places and the rest fade. */}
+        <DashboardContent campus={campusParam} order={order} campusName={selected?.name} onShowAll={() => showCampus(ALL)} announce={announce} />
+      </div>
+      <LiveAnnouncement message={message} />
     </div>
   );
 }
@@ -158,9 +168,11 @@ interface DashboardContentProps {
   order: DashboardOrder;
   campusName: string | undefined;
   onShowAll: () => void;
+  /** Tells a screen reader when a card's worst Condition or Online changes; never for a Reading at the same level. */
+  announce: (announcement: Announcement) => void;
 }
 
-function DashboardContent({ campus, order, campusName, onShowAll }: DashboardContentProps) {
+function DashboardContent({ campus, order, campusName, onShowAll, announce }: DashboardContentProps) {
   const load = useCallback(() => loadDashboard(campus, order), [campus, order]);
   // Read once, at mount: whether this visit starts from what the last one showed.
   const [cached] = useState(() => dashboardCache.get(cacheKey(campus, order)));
@@ -169,9 +181,11 @@ function DashboardContent({ campus, order, campusName, onShowAll }: DashboardCon
   // What is on screen now, for telling whether a Reading changes a card's place.
   const shown = useRef<LoadedDashboard | undefined>(undefined);
   useEffect(() => {
+    const before = shown.current;
+    if (before !== undefined && state.status === 'ready') deviceChanges(before.devices, state.data.devices).forEach(announce);
     shown.current = state.status === 'ready' ? state.data : undefined;
     if (state.status === 'ready') dashboardCache.set(cacheKey(state.data.campus, state.data.order), state.data);
-  }, [state]);
+  }, [state, announce]);
 
   // Hostnames a reload was already asked for without a card coming back (another Campus's under
   // the filter), so each Device costs at most one request per view, however often it reports.
@@ -298,7 +312,7 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
     <ul
       ref={list}
       className={cn(
-        'relative grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4 transition-opacity duration-200 ease-out-quint',
+        'relative grid grid-cols-[repeat(auto-fill,minmax(min(19rem,100%),1fr))] gap-4 transition-opacity duration-200 ease-out-quint',
         pending && 'opacity-60 delay-150',
       )}
       aria-label="Devices"
@@ -407,7 +421,7 @@ function DashboardSkeleton() {
           <Skeleton key={i} className="h-[6.5rem] rounded-xl" />
         ))}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(19rem,100%),1fr))] gap-4">
         {Array.from({ length: 6 }, (_, i) => (
           <Skeleton key={i} className="h-60 rounded-xl" />
         ))}
