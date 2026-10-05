@@ -24,6 +24,11 @@ $Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
 # repeated deploy leaves the running containers alone instead of recreating them.
 if (-not $env:BUILDX_NO_DEFAULT_ATTESTATIONS) { $env:BUILDX_NO_DEFAULT_ATTESTATIONS = '1' }
+# The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
+$DemoProject = 'temperature-alarms-demo'
+$DemoPort = '8080'
+# Extra arguments for every docker compose call; the demo sets its project and files here.
+$DcArgs = @()
 
 $OnWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or $IsWindows
 $UseColour = (-not [Console]::IsOutputRedirected) -and (-not $env:NO_COLOR)
@@ -32,7 +37,7 @@ $O = @{
     Action = ''; File = ''; Yes = $false; Project = ''; WebPort = ''; Sets = @(); Pull = $null
     Reveal = $false; Reconfigure = $false; Wipe = $false; Confirm = ''; Follow = $false; Tail = '200'
     Service = ''; Hosts = @(); Servers = ''; Dir = 'temperature-alarms'; Repo = ''; Branch = ''
-    SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'
+    SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'; Down = $false
 }
 $OrigArgs = @($args | ForEach-Object { "$_" })
 
@@ -68,6 +73,11 @@ With no action at a console, shows a menu. Actions:
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
                      (typed confirmation). .env and backups\ stay.
+  demo               See it without hardware: the stack plus sample Campuses, Devices, a week
+                     of history, and live Readings that loop through every Condition. Its own
+                     project (temperature-alarms-demo) and throwaway secrets in .env.demo, so
+                     it never touches a real install. --web-port (default 8080); --down
+                     removes it, volume and .env.demo included.
 
 Options:
   -y, --yes             Non-interactive: take flag values and defaults, never prompt
@@ -80,6 +90,7 @@ Options:
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
       --wipe            uninstall also deletes the database volume
+      --down            demo: remove the demo instead of starting it
       --file FILE       Backup file for restore
       --follow, --service NAME, --tail N   For logs
 Remote Linux servers (runs deploy.sh there over ssh; each keeps its own .env and backups):
@@ -116,6 +127,7 @@ function Read-Args([string[]]$List) {
                 'reveal' { $O.Reveal = $true; $O.Pass += '--reveal' }
                 'confirm' { $takesValue = $true; $O.Confirm = $next; $O.Pass += @('--confirm', $next) }
                 'wipe' { $O.Wipe = $true; $O.Pass += '--wipe' }
+                'down' { $O.Down = $true; $O.Pass += '--down' }
                 'file' { $takesValue = $true; $O.File = $next; $O.Pass += @('--file', $next) }
                 { $_ -in 'f', 'follow' } { $O.Follow = $true; $O.Pass += '--follow' }
                 'service' { $takesValue = $true; $O.Service = $next; $O.Pass += @('--service', $next) }
@@ -281,7 +293,7 @@ function Add-MissingSecrets {
 # The project Compose itself runs under: -p or COMPOSE_PROJECT_NAME when given, otherwise the
 # folder name. The database volume is named after it, so the default is never overridden.
 function Get-ProjectName {
-    $line = & docker compose config 2>$null | Where-Object { $_ -match '^name: ' } | Select-Object -First 1
+    $line = & docker compose @DcArgs config 2>$null | Where-Object { $_ -match '^name: ' } | Select-Object -First 1
     if ($line) { return ($line -replace '^name: ', '').Trim('"', ' ') }
     $name = $env:COMPOSE_PROJECT_NAME
     if (-not $name) { $name = Get-EnvValue 'COMPOSE_PROJECT_NAME' }
@@ -304,10 +316,10 @@ function Get-WebHost {
 }
 function Get-WebPortNumber { $wp = Get-WebPortSetting; return $wp.Substring($wp.LastIndexOf(':') + 1) }
 
-function Invoke-Dc { & docker compose @args }
+function Invoke-Dc { & docker compose @DcArgs @args }
 
 function Test-Running([string]$Service) {
-    $id = & docker compose ps --status running -q $Service 2>$null
+    $id = & docker compose @DcArgs ps --status running -q $Service 2>$null
     return [bool]$id
 }
 
@@ -343,7 +355,7 @@ function Invoke-Preflight {
     try { $inUse = $client.ConnectAsync($webHost, $port).Wait(1000) -and $client.Connected } catch { $inUse = $false }
     $client.Close()
     if ($inUse) {
-        $published = & docker port (& docker compose ps -q web 2>$null) 2>$null
+        $published = & docker port (& docker compose @DcArgs ps -q web 2>$null) 2>$null
         if ((Test-Running 'web') -and (@($published) -match ":$port`$")) { Ok "port $port is this stack's own web" }
         else { Bad "port $port on $webHost is in use by something else; pick another with --web-port"; $failed = $true }
     }
@@ -586,6 +598,61 @@ function Invoke-Uninstall {
     Write-Host "  .env and backups\ are left in $RepoDir."
 }
 
+# --- demo ------------------------------------------------------------------------------
+# Everything below runs against the demo's own project and .env.demo, never the real ones.
+function Use-Demo {
+    $script:EnvPath = Join-Path $RepoDir '.env.demo'
+    $script:DcArgs = @('-p', $DemoProject, '--env-file', '.env.demo', '-f', 'compose.yaml', '-f', 'compose.demo.yaml')
+}
+
+function New-DemoEnv {
+    Write-Lines $EnvPath @(
+        '# Throwaway settings for deploy.ps1 demo (compose.demo.yaml). deploy.ps1 demo --down deletes this file.'
+        "COMPOSE_PROJECT_NAME=$DemoProject"
+        "WEB_PORT=$DemoPort"
+    )
+    Protect-EnvFile
+    foreach ($k in $Secrets) { Set-EnvValue $k (New-Secret) }
+    Ok 'created .env.demo with fresh secrets'
+}
+
+function Invoke-Demo {
+    if (-not (Test-Path -LiteralPath (Join-Path $RepoDir 'compose.demo.yaml'))) { Fail "compose.demo.yaml is missing in $RepoDir" }
+    Use-Demo
+    if ($O.Down) {
+        Step "Remove the demo ($DemoProject)"
+        # down reads the files, and compose.yaml needs the secrets set, so a missing file is remade first.
+        if (-not (Test-Path -LiteralPath $EnvPath)) { New-DemoEnv }
+        Invoke-Dc down -v --rmi local --remove-orphans
+        if ($LASTEXITCODE -ne 0) { Fail 'docker compose down failed' }
+        Remove-Item -LiteralPath $EnvPath -Force
+        $left = & docker volume ls -q --filter "label=com.docker.compose.project=$DemoProject"
+        if ($left) { Fail "a $DemoProject volume is still there: docker volume ls --filter label=com.docker.compose.project=$DemoProject" }
+        Ok 'containers, images, the demo database volume, and .env.demo removed'
+        return
+    }
+    Step 'Demo settings (.env.demo)'
+    if (Test-Path -LiteralPath $EnvPath) { Ok '.env.demo exists; keeping its secrets' } else { New-DemoEnv }
+    Set-FlagsInEnv
+    if (-not (Invoke-Preflight)) { Fail 'preflight failed; fix the [FAIL] lines above' }
+    Step "Build and start the demo (project $DemoProject)"
+    Invoke-Dc up -d --build --remove-orphans --wait --wait-timeout 600
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Dc ps
+        Write-Host 'Last demo log lines:'; Invoke-Dc logs --tail 40 demo api
+        Fail 'the demo did not come up'
+    }
+    Step 'Health through web'
+    if (-not (Test-Health 30)) { Fail "the demo is up but /api/health through web failed; see: docker compose -p $DemoProject logs" }
+    Write-Host ''
+    Write-Line "Demo running. Dashboard: $(Get-SiteUrl)" 'Green'
+    Write-Host '  The first minute seeds 4 Campuses and 24 Devices and writes a week of history; then'
+    Write-Host '  the closets loop through Hot, Dry, Mold risk, Cold, late, and Offline every 10 minutes.'
+    Write-Host "  Admin token for Settings (throwaway): $(Get-EnvValue 'ADMIN_TOKEN')"
+    Write-Host "  Watch it:  docker compose -p $DemoProject logs -f demo"
+    Write-Host '  Remove it: deploy\deploy.ps1 demo --down'
+}
+
 function Show-ScheduleHint([string]$Name) {
     Warn 'Windows has no cron; schedule the backup with Task Scheduler. In a Command Prompt:'
     if ($Name -eq 'schedule-backup') {
@@ -611,6 +678,7 @@ function Invoke-Action([string]$Name) {
         'info' { Invoke-Info }
         'stop' { Invoke-Stop }
         'uninstall' { Invoke-Uninstall }
+        'demo' { Invoke-Demo }
         'bootstrap' { Fail 'bootstrap prepares a Linux server; run it there (deploy/deploy.sh bootstrap), or from here with --host USER@SERVER. On Windows, install Docker Desktop.' }
         { $_ -in 'schedule-backup', 'unschedule-backup' } { Show-ScheduleHint $Name }
         default { Fail "unknown action '$Name' (see --help)" }
@@ -619,7 +687,7 @@ function Invoke-Action([string]$Name) {
 
 function Show-Menu {
     $map = @{ '1' = 'preflight'; '2' = 'install'; '3' = 'deploy'; '4' = 'status'; '5' = 'logs'; '6' = 'backup'
-        '7' = 'restore'; '8' = 'migrate-legacy'; '9' = 'info'; '10' = 'stop'; '11' = 'uninstall' }
+        '7' = 'restore'; '8' = 'migrate-legacy'; '9' = 'info'; '10' = 'stop'; '11' = 'uninstall'; '12' = 'demo' }
     while ($true) {
         Write-Host ''
         Write-Line "Temperature Alarms deploy  $RepoDir  (project $(Get-ProjectName), port $(Get-WebPortSetting))" 'Cyan'
@@ -628,14 +696,17 @@ function Show-Menu {
         Write-Host '   3) Deploy / upgrade          9) Show URL and tokens'
         Write-Host '   4) Status                   10) Stop'
         Write-Host '   5) Logs                     11) Uninstall'
-        Write-Host '   6) Back up the database      q) Quit'
+        Write-Host '   6) Back up the database     12) Demo, no hardware needed'
+        Write-Host '                                q) Quit'
         $choice = Read-Host '  Choose'
         if ($null -eq $choice -or $choice -in @('q', 'quit', 'exit')) { return }
         if (-not $map.ContainsKey($choice.Trim())) { Warn 'no such choice'; continue }
         $action = $map[$choice.Trim()]
         try { Invoke-Action $action }
         catch { Write-Line "Error: $($_.Exception.Message)" 'Red'; Warn "$action did not finish" }
-        $O.File = ''; $O.Reveal = $false; $O.Wipe = $false
+        $O.File = ''; $O.Reveal = $false; $O.Wipe = $false; $O.Down = $false
+        # The demo points these at its own project and .env.demo; the next action gets the real ones.
+        $script:EnvPath = Join-Path $RepoDir '.env'; $script:DcArgs = @()
     }
 }
 
