@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { openDashboardStream } from '@/api';
-import type { ReadingEvent } from '@/types';
+import type { IncidentEvent, ReadingEvent } from '@/types';
 
 /**
  * connecting: no stream yet. live: Readings arrive as they happen.
@@ -9,7 +9,9 @@ import type { ReadingEvent } from '@/types';
 export type StreamStatus = 'connecting' | 'live' | 'reconnecting';
 
 interface ReadingStreamHandlers {
-  onReading: (event: ReadingEvent) => void;
+  onReading?: (event: ReadingEvent) => void;
+  /** An incident opened, changed level, or closed. */
+  onIncident?: (event: IncidentEvent) => void;
   /** The stream is open again after a drop. Reload, because anything sent meanwhile was missed. */
   onReconnect: () => void;
 }
@@ -18,17 +20,17 @@ interface ReadingStreamHandlers {
 const REOPEN_AFTER_MS = 5_000;
 
 /**
- * Subscribe to the live stream of Readings for as long as the component is mounted.
+ * Subscribe to the live stream of Readings (and incidents) for as long as the component is mounted.
  * The browser's EventSource retries a dropped connection by itself; the one case it
  * gives up on (a non-200 answer, as from a proxy mid-restart) is reopened here after a
  * pause, so a dashboard on a wall screen never needs a hand.
  */
-export function useReadingStream({ onReading, onReconnect }: ReadingStreamHandlers): StreamStatus {
+export function useReadingStream({ onReading, onIncident, onReconnect }: ReadingStreamHandlers): StreamStatus {
   const [status, setStatus] = useState<StreamStatus>('connecting');
   // Handlers change identity on every render; the stream must not.
-  const handlers = useRef({ onReading, onReconnect });
+  const handlers = useRef({ onReading, onIncident, onReconnect });
   useEffect(() => {
-    handlers.current = { onReading, onReconnect };
+    handlers.current = { onReading, onIncident, onReconnect };
   });
 
   useEffect(() => {
@@ -46,13 +48,14 @@ export function useReadingStream({ onReading, onReconnect }: ReadingStreamHandle
         }
       };
       stream.onmessage = (message: MessageEvent<string>) => {
-        let event: ReadingEvent;
+        let event: ReadingEvent | IncidentEvent;
         try {
-          event = JSON.parse(message.data) as ReadingEvent;
+          event = JSON.parse(message.data) as ReadingEvent | IncidentEvent;
         } catch {
           return;
         }
-        if (event.type === 'reading') handlers.current.onReading(event);
+        if (event.type === 'reading') handlers.current.onReading?.(event);
+        else if (event.type === 'incident') handlers.current.onIncident?.(event);
       };
       stream.onerror = () => {
         dropped = true;

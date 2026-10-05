@@ -1,4 +1,4 @@
-import type { Device, Campus, Dashboard, DashboardOrder, History } from './types';
+import type { Device, Campus, Dashboard, DashboardOrder, History, Incidents } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -137,3 +137,11 @@ export const getHistory = (deviceId: number, date?: string): Promise<History> =>
 /** Delete every Reading the Device has. Needs the Admin token. */
 export const resetHistory = (deviceId: number): Promise<void> =>
   request(`/api/devices/${deviceId}/history`, { method: 'DELETE' });
+
+// ==================== INCIDENTS ====================
+
+/** Every incident that overlaps the window, ongoing ones included, oldest first. At most eight days. */
+export const getIncidents = (from: Date, to: Date): Promise<Incidents> => {
+  const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
+  return request(`/api/incidents?${query}`);
+};

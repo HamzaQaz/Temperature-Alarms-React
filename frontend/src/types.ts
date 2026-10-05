@@ -101,3 +101,40 @@ export interface History {
     humidity: DaySummary | null;
   };
 }
+
+/** One stretch of an incident at one level. ISO instants in UTC; `end` is null while it lasts. */
+export interface IncidentSegment {
+  level: ConditionLevel;
+  start: string;
+  end: string | null;
+}
+
+/** A stretch of time a Device spent in one Condition at warning or worse, as the server recorded it (ADR 0006). */
+export interface Incident {
+  id: number;
+  device: Device;
+  condition: ConditionName;
+  /** The worst level any segment reached. */
+  level: ConditionLevel;
+  start: string;
+  /** Null while the incident is ongoing. */
+  end: string | null;
+  /** The worst Reading during the incident; for Offline, the last Reading before it. `value` is °F for Hot and Cold, percent for Dry and Mold risk, null for Offline. */
+  peak: { value: number | null; tempF: number; humidity: number | null; recordedAt: string };
+  /** Oldest first; only the last can be open. */
+  segments: IncidentSegment[];
+}
+
+/** Every incident that overlaps a window, oldest first. */
+export interface Incidents {
+  from: string;
+  to: string;
+  incidents: Incident[];
+}
+
+/** What the live stream sends when an incident opens, changes level, or closes. */
+export interface IncidentEvent {
+  type: 'incident';
+  change: 'opened' | 'level' | 'closed';
+  incident: Incident;
+}
