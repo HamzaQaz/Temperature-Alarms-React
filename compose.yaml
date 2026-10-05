@@ -21,6 +21,10 @@ services:
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
     volumes:
       - db-data:/var/lib/mysql
+    # The entrypoint chowns the data directory and drops to the mysql user; nothing else is needed.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt: ["no-new-privileges:true"]
     # Not published: only api reaches it. Use `docker compose exec db mysql ...` from the host.
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
@@ -55,6 +59,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # It writes nothing to disk: the image is read-only and holds no capabilities.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     # Not published: web proxies /api/ to it.
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
@@ -73,6 +82,11 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # nginx-unprivileged keeps its pid and temp files under /tmp.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
       interval: 10s

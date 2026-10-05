@@ -451,6 +451,11 @@ function Invoke-Deploy {
     Assert-Secrets
     Invoke-MaybePull
     if (-not (Invoke-Preflight)) { Fail 'preflight failed; fix the [FAIL] lines above' }
+    # A plain `up --build` reuses whatever node and nginx base images are cached, so a server
+    # would never get their security patches; --pull checks for newer ones on every deploy.
+    Step 'Build with fresh base images (docker compose build --pull)'
+    Invoke-Dc build --pull
+    if ($LASTEXITCODE -ne 0) { Warn 'the build with --pull failed (no registry?); the next step builds from the local cache' }
     Step 'Build and start (docker compose up -d --build --wait)'
     Invoke-Dc up -d --build --remove-orphans --wait --wait-timeout 600
     if ($LASTEXITCODE -ne 0) {

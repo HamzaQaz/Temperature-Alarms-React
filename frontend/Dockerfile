@@ -11,5 +11,6 @@ RUN npm run build
 # listens on 8080 (nginx.conf); compose.yaml maps the host's WEB_PORT onto it.
 FROM nginxinc/nginx-unprivileged:1.28-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080

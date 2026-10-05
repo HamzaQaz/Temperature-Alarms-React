@@ -485,6 +485,12 @@ do_deploy() {
   check_secrets
   maybe_pull
   do_preflight || die "preflight failed; fix the [FAIL] lines above"
+  # A plain `up --build` reuses whatever node and nginx base images are cached, so a server
+  # would never get their security patches; --pull checks for newer ones on every deploy.
+  step "Build with fresh base images (docker compose build --pull)"
+  if ! dc build --pull; then
+    warn "the build with --pull failed (no registry?); the next step builds from the local cache"
+  fi
   step "Build and start (docker compose up -d --build --wait)"
   if ! dc up -d --build --remove-orphans --wait --wait-timeout 600; then
     dc ps

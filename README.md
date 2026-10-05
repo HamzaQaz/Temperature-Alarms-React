@@ -370,7 +370,7 @@ cd temperature-alarms && deploy/deploy.sh deploy --yes
 
 From another machine, `deploy/deploy.sh deploy --bootstrap --host admin@server --yes` does both over ssh, with no git needed on the server first.
 
-[`DEPLOYMENT.md`](DEPLOYMENT.md) covers both, then the same steps by hand with `docker compose` as the fallback: first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
+[`DEPLOYMENT.md`](DEPLOYMENT.md) covers both, then the same steps by hand with `docker compose` as the fallback: first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, what the stack hardens and what it needs from you, and the manual PM2 and nginx install for a server that cannot run Docker.
 
 ## License
 

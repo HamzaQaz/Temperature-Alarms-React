@@ -40,6 +40,11 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # Like api: it writes nothing to disk and needs no capabilities.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
       options:

@@ -298,3 +298,65 @@ Build with a fresh base on `deploy`/`upgrade`: run `dc build --pull` before `dc 
 - backend/test/security.test.ts (new), backend/test/config.test.ts, backend/test/retention.test.ts
 - backend/package-lock.json, frontend/package-lock.json
 - .scratch/prodtest/security.md
+
+## Infra hardening applied
+
+By the infra agent. The routed changes above are applied and were proven on the production deploy path. The test was a fresh Debian 12 CT stand-in (`.scratch/ct/`) running a git bundle of HEAD 88f02b7 plus these changes: `deploy.sh bootstrap`, then `deploy --yes`. Raw output is in `.scratch/prodtest/runs/infra/`. Afterwards the stack was uninstalled with `--wipe` and the CT, its image and its volumes were removed.
+
+### Pass/fail
+
+| Check | Result | Evidence |
+|---|---|---|
+| shellcheck 0.9 on deploy.sh; deploy.ps1 parses | PASS | 0 findings; 0 parse errors |
+| `bootstrap` then `deploy --yes` on a fresh CT | PASS | `bootstrap.log`, `deploy.log`; the `build --pull` step ran, then `up --build` was fully cached |
+| Headers from the host on `/`, `/api/health`, an asset, the SPA fallback, an API 404 | PASS | `headers.txt`: CSP, nosniff, Referrer-Policy, X-Frame-Options, Permissions-Policy on all of them; `Server: nginx` with no version, also on the 404 page; 200 KB POST → 413 |
+| `node frontend/e2e/walk.mjs` from Windows against the CT (:8090) | PASS, 36/36 | `walk.txt`; its final check (no console errors) passes, and a CSP violation would appear there as a console error |
+| CSP probe in Chromium: every page, Settings with the token, a live update, framing | PASS: **0 CSP violations**, 0 console errors, framing blocked | `csp-probe.txt` (new `.scratch/ct/csp-probe.mjs` listens for `securitypolicyviolation` events and "Refused to" console lines) |
+| The same probe on the demo's populated data | PASS: 0 violations | `csp-probe-demo.txt` |
+| SSE through nginx delivers a Reading | PASS | `sse-limits.txt`: `data: {"type":"reading",...}` within 2 s of the POST; the stream carries every security header |
+| 25 streams from one address | PASS as designed: 1–20 → 200, 21–25 → 429 (nginx); a slot frees on close | `sse-limits.txt` |
+| 25 streams across two addresses | PASS: the host holds 20 and the CT itself opens 5 more, all 200 | `sse-limits.txt` |
+| The limits agree | PASS: nginx `limit_conn` is 20 and the api's own cap is 20. With nginx bypassed (25 straight at api:3001), 1–20 → 200 and 21–25 → 429 with the api's JSON message | `sse-limits.txt` |
+| Hardened compose applied | PASS: api and web have `ReadonlyRootfs=true`, `CapDrop=[ALL]`, no-new-privileges and a `/tmp` tmpfs; db has `CapDrop=[ALL]` plus the 5 caps and no-new-privileges | `backup-restore.txt` |
+| Backup and restore under read_only/cap_drop | PASS | `backup-restore.txt`: backup ok (dir 700, file 600); a Campus added after the backup is gone after `restore --file … --confirm`; the earlier Reading is back; api healthy |
+| Demo (`deploy.sh demo --web-port 8091`) under the new compose | PASS | `demo-check.txt`: 4 Campuses and 24 Devices, 478,715 history rows, live loop, a read-only `demo` container with 0 restarts, headers on :8091, live SSE; `demo --down` removed it all |
+| Redeploy is a no-op | PASS | `redeploy.log`: `deploy --yes` again recreated 0 containers, so `build --pull` keeps the "unchanged checkout, same image" property |
+| CT restart, planned (`docker restart ta-ct`) | PASS: healthy within 9 s, data kept, CSP and stream ok | `restart.txt` |
+| CT restart, unplanned (the host's Docker engine went down, see I3) | PASS: healthy 13 s after `docker start ta-ct`, data kept | `restart.txt` |
+| `uninstall --wipe --confirm`, then the CT removed | PASS | `uninstall.txt`: 0 containers, volumes or images left in the CT, no crontab; `run.sh down` removed ta-ct, its image, and ta-ct-docker/ta-ct-containerd |
+
+### Changes applied
+
+1. **frontend/nginx.conf**: `server_tokens off`, `client_max_body_size 128k`, the `sse_per_addr` zone, and `location = /api/dashboard/stream` with `limit_conn 20` / `limit_conn_status 429`. One deviation from the routed diff: the five headers live in a new **frontend/security-headers.conf**. It is included at server level and again in the two locations that add their own `add_header`, so the CSP is written once instead of three times and the copies can't drift. The header values are exactly the routed ones.
+2. **frontend/Dockerfile**: copies `security-headers.conf` to `/etc/nginx/snippets/`.
+3. **compose.yaml**: the routed diff as written (db: cap_drop ALL plus 5 caps and no-new-privileges; api and web: read_only, a `/tmp` tmpfs, cap_drop ALL and no-new-privileges).
+4. **compose.demo.yaml**: the api's lines on the `demo` service, now tested.
+5. **deploy/deploy.sh** and **deploy/deploy.ps1**: `deploy` (and so `upgrade`) runs `docker compose build --pull` before `up -d --build`. If the pull fails (no registry), it warns and the next step builds from the local cache, so an offline upgrade still works. The demo doesn't pull, because its images are throwaway.
+6. **DEPLOYMENT.md**: `build --pull` in the by-hand upgrade. The TLS section now says which two limits all browsers share behind a host proxy, and what it takes to count them per browser. A new **Security** section covers what the stack hardens and what it needs from the operator: keep technicians out of the docker group, put the boards on their own VLAN/SSID with client isolation, and upgrade with `--pull`.
+7. **README.md**: the deployment paragraph's list of DEPLOYMENT.md topics now includes the security section.
+
+Nothing in the app needed changing. The CSP broke nothing.
+
+### Findings, by production impact
+
+No blockers.
+
+**Should fix: I1. Behind the documented TLS proxy, every browser shares one address, so at most 20 dashboard tabs can be live district-wide.** The Caddy setup in DEPLOYMENT.md puts a host proxy in front of the stack's nginx. Both nginx's `limit_conn` (keyed on `$binary_remote_addr`) and the api's cap (`trust proxy` 1) then see the proxy's address for everyone. Tab 21 gets a 429 and shows Reconnecting, retrying every 5 s. With technicians plus IT leadership, wall screens included, 20 is reachable. The same was already true of the general 500/15 min API allowance. This is now documented, but the fix belongs to other owners:
+- backend (security agent): make `trust proxy` configurable, e.g. `TRUST_PROXY` (default 1, 2 behind a host proxy), in `backend/src/app.ts`.
+- nginx (infra, after that): when the stack sits behind a host proxy, take the client address from it with `set_real_ip_from <docker bridge gateway>; real_ip_header X-Forwarded-For;`, so `limit_conn` keys on the browser. The conf is baked into the image and the container is read-only, so making this switchable needs a small design choice. One option is a second conf selected by a build arg. The other is to raise the nginx cap and rely on the api's.
+
+Repro: the 25-stream test above shows the cut at 20 for one address. Behind a host proxy, every browser is that one address.
+
+**Note: I2. The 21st stream's 429 comes from nginx, not the api.** Both caps are 20, so nginx always refuses first, with its HTML 429 page. The api's explanatory JSON ("close a tab and try again") is never seen through nginx. EventSource can't read either body, so users see the same Reconnecting state. If the message matters, set nginx's cap a little above the api's (e.g. 24). nginx would then remain the backstop for worker connections, and the api would give the answer.
+
+**Note: I3. The host's Docker engine restarted mid-run (17:15:33Z).** Docker Desktop's backend log shows the WSL pipes closing across every distro, followed by an engine shutdown. Every container exited 255, including the shared `backend-test-db-1` and `ta-a11y-db`. Nothing in this stack caused it: the only commands running at the time were `docker stats` and exec calls into the CT. I restarted both DBs, which were up before, and told the coordinator. `ta-load` came back on its own restart policy.
+
+**Note: I4. Assets send two Cache-Control lines.** `expires 1y` adds `max-age=31536000`, and `add_header` adds `public, immutable`. This predates these changes and browsers merge the two. Left as is.
+
+**Note: I5. The accessibility agent's uncommitted frontend/src was not in the CT build.** The bundle is HEAD plus infra only. A grep of their diff and new files found no inline script, `eval`, `dangerouslySetInnerHTML` or external URL, so the CSP should hold. Rerun `node .scratch/ct/csp-probe.mjs` (with WEB, ADMIN_TOKEN and DEVICE_TOKEN set) against any stack built after their merge to confirm.
+
+**Note: I6. For the commit: deploy/deploy.sh shows `old mode 100755 / new mode 100644` in this worktree.** That mode change was already there before this task (a Windows checkout artifact). Commit it as 100755: the bundle I tested was 100755, and `bootstrap` needs the executable bit.
+
+### Files modified
+
+frontend/nginx.conf, frontend/security-headers.conf (new), frontend/Dockerfile, compose.yaml, compose.demo.yaml, deploy/deploy.sh, deploy/deploy.ps1, DEPLOYMENT.md, README.md, .scratch/ct/csp-probe.mjs (new), .scratch/prodtest/security.md (this section).

@@ -199,6 +199,7 @@ Once a day, and once at every start, the backend deletes Readings older than `RE
 
 ```bash
 git pull
+docker compose build --pull       # newer node and nginx base images, for their security patches
 docker compose up -d --build
 docker image prune -f             # drop the previous images
 ```
@@ -318,7 +319,26 @@ With nginx and certbot instead, follow steps 5 and 6 of the [manual install](#5-
 
 No Device needs to change at certificate renewal: one with an `https://` server URL sends over TLS without checking the certificate (see the firmware section of the README). One with `http://YOUR_DOMAIN`, or `http://` and the server's address, keeps posting over plain HTTP through the blocks above; with the stack on `127.0.0.1:8080`, the proxy is now the only way in.
 
-Behind this proxy there are two hops, the proxy and the stack's own nginx, and the backend trusts one (`trust proxy` is 1). It sees every request as coming from the host proxy, so the general limit of 500 API requests per 15 minutes per address (Readings have their own per-Device limit and are not counted) is shared by every browser together. A handful of open dashboards stays far below it. If browsers start getting 429s, that shared allowance is the cause.
+Behind this proxy there are two hops, the proxy and the stack's own nginx, and the backend trusts one (`trust proxy` is 1). It sees every request as coming from the host proxy, so two per-address limits are shared by every browser together:
+
+- the general limit of 500 API requests per 15 minutes (Readings have their own per-Device limit and are not counted). A handful of open dashboards stays far below it.
+- the cap of 20 open live streams, one per open dashboard tab, which both the stack's nginx and the backend apply. The 21st tab open at the same time gets a 429 for its stream, shows Reconnecting, and tries again every 5 seconds until one of the others closes.
+
+If browsers start getting 429s, that shared allowance is the cause. Counting each browser separately needs the backend to trust two hops (`app.set('trust proxy', 2)` in `backend/src/app.ts`) and the stack's nginx to take the client address from the proxy's `X-Forwarded-For`; neither is configurable from `.env` yet.
+
+### Security
+
+What the stack does by itself:
+
+- nginx sends a Content-Security-Policy (scripts, styles, fetches, and the live stream only from the site's own origin; no framing), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and a Permissions-Policy, and does not name its version. The headers live in `frontend/security-headers.conf`. Add `Strict-Transport-Security` at the TLS proxy, not there.
+- `api` and `web` run with a read-only root filesystem (only `/tmp` is writable), no Linux capabilities, and `no-new-privileges`; `db` keeps only the five capabilities its entrypoint needs to hand the data directory to the mysql user. A shell from `docker compose exec` in those containers cannot write outside `/tmp`, which is expected.
+- Only `web` is published; the database and the backend are not reachable from outside the host.
+
+What it needs from you:
+
+- **Keep technicians out of the `docker` group.** The secrets are environment variables, so `docker inspect` shows them, and the group is root on the host anyway. Give technicians the dashboard, and the Admin token if they manage Campuses and Devices.
+- **Put the boards on their own VLAN or SSID with client isolation** when Devices post over plain HTTP. Anyone who can see a board's traffic can read the Device token, and with it post false Readings (it cannot change Campuses or Devices, or read anything the dashboard does not already show). A Device with an `https://` server URL sends over TLS instead (see TLS in front of the stack).
+- Run every upgrade through `deploy.sh deploy` or with `docker compose build --pull` first, so the base images pick up their security patches.
 
 ## Upgrading a database from the old per-Device tables
 
