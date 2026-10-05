@@ -195,6 +195,7 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | --- | --- | --- |
 | `GET /api/health` | none | `{status, database}`; 503 when the database cannot be reached |
 | `GET /api/campuses` | none | `[{id, name, shortcode}]` by name |
+| `GET /api/campuses/overview?tz=America/Chicago` | none | `{timeZone, threshold, campuses}` for IT leadership: every Campus, worst first by its worst closet now (as the dashboard ranks Devices), then by name. Each is `{id, name, shortcode, closets, level, now, worst, days, lastIncident}`: `now.conditions` counts closets per Condition and level at warning or worse, and `now.headsUp` counts moderate Mold risk apart; `worst` is the worst closet with its `latestReading`, `level`, `offline`, and `conditions` (null with no Devices); `days` is the last seven local days in `tz` (the server's zone by default; an unknown one is 422), oldest first, each with its bounds, `maxTempF` (null with no Readings), and `incident`, true when an incident overlapped it; today is `partial`. `lastIncident` is `{ongoing: true, start}` while one is open, else `{ongoing: false, end}` for the latest to close within the retention window, else null. `threshold` is the Hot warning line the server uses, for the chart. The completed days' highs are reused for up to five minutes; today's are read on every request. Example below |
 | `POST /api/campuses` | Admin | `{name, shortcode}` → 201 Campus; 409 when the shortcode exists |
 | `DELETE /api/campuses/:id` | Admin | 204; 409 while the Campus still has Devices |
 | `GET /api/devices` | none | `[{id, hostname, closet, campus}]` by Campus name, then closet |
@@ -207,6 +208,34 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | `GET /api/incidents?from=<ISO>&to=<ISO>` | none | `{from, to, incidents}`: every incident that overlaps the window, ongoing ones included, oldest first. Each is `{id, device: {id, hostname, closet, campus}, condition, level, start, end, peak: {value, tempF, humidity, recordedAt}, segments: [{level, start, end}]}`: `level` is the worst reached, `end` is null while ongoing, `peak.value` is °F for Hot and Cold, percent for Dry and Mold risk, and null for Offline (whose peak is the last Reading before it). `from` and `to` are ISO instants with a zone; 422 unless `from` is before `to` and the window is at most 8 days. An incident is a Condition at warning or worse; see ADR 0006 for when one opens and closes |
 | `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` | none | One local day of Readings, oldest first, with `summary` min, max, and average for each measure. `date` defaults to today and `tz` to the server's zone. At most 30,000 Readings, more than a day at the ingest limit: past that, the first 30,000 are sent, `truncated` is true, the summary covers only those, and the History page says so |
 | `DELETE /api/devices/:id/history` | Admin | 204; every Reading and incident of that Device is gone |
+
+An overview with one Campus, trimmed to two of its seven days:
+
+```json
+{
+  "timeZone": "America/Chicago",
+  "threshold": { "name": "Hot", "level": "warning", "tempF": 82 },
+  "campuses": [
+    {
+      "id": 1, "name": "Riverside High School", "shortcode": "RHS", "closets": 8, "level": "critical",
+      "now": {
+        "conditions": [{ "name": "Hot", "level": "critical", "count": 1 }, { "name": "Offline", "level": "warning", "count": 1 }],
+        "headsUp": [{ "name": "Mold risk", "level": "moderate", "count": 1 }]
+      },
+      "worst": {
+        "id": 3, "hostname": "ESP_4F2A10", "closet": "IDF 3 (Gym)", "closetType": "IDF",
+        "latestReading": { "tempF": 91, "humidity": 35, "recordedAt": "2026-10-05T03:20:00Z" },
+        "level": "critical", "offline": false, "conditions": [{ "name": "Hot", "level": "critical" }]
+      },
+      "days": [
+        { "date": "2026-10-03", "from": "2026-10-03T05:00:00Z", "to": "2026-10-04T05:00:00Z", "partial": false, "maxTempF": 83, "incident": true },
+        { "date": "2026-10-04", "from": "2026-10-04T05:00:00Z", "to": "2026-10-05T05:00:00Z", "partial": true, "maxTempF": 91, "incident": true }
+      ],
+      "lastIncident": { "ongoing": true, "start": "2026-10-05T03:17:30Z" }
+    }
+  ]
+}
+```
 
 Tokens are sent as `Authorization: Bearer <token>`. The Admin token is the one the Settings page keeps; the Device token is flashed into every Device. Neither works in the other's place. See ADR 0003 for why there are two and what that trades away. The Conditions the API reports are defined in [`CONTEXT.md`](CONTEXT.md); the thresholds behind them are the `HOT_`, `COLD_`, and `DRY_` settings in `.env.example`.
 

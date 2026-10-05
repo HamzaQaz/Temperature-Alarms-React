@@ -1,0 +1,302 @@
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import type { Pool } from 'mysql2/promise';
+import { createTestPool, resetDatabase } from './helpers/database';
+import { startServer, testConfig, type RunningServer } from './helpers/server';
+import { api, errorOf, json, type Campus, type Condition, type Reading } from './helpers/api';
+import { insertIncident } from '../src/incidentStore';
+import { PAST_DAYS_CACHE_MS } from '../src/routes/campusOverview';
+import type { IncidentState } from '../src/incidents';
+
+const DAY_MS = 86_400_000;
+
+interface OverviewDay {
+  date: string;
+  from: string;
+  to: string;
+  partial: boolean;
+  maxTempF: number | null;
+  incident: boolean;
+}
+
+interface CampusOverview {
+  id: number;
+  name: string;
+  shortcode: string;
+  closets: number;
+  level: Condition['level'] | null;
+  now: {
+    conditions: (Condition & { count: number })[];
+    headsUp: (Condition & { count: number })[];
+  };
+  worst: {
+    id: number;
+    hostname: string;
+    closet: string;
+    closetType: 'IDF' | 'MDF' | null;
+    latestReading: Reading | null;
+    level: Condition['level'] | null;
+    offline: boolean;
+    conditions: Condition[];
+  } | null;
+  days: OverviewDay[];
+  lastIncident: { ongoing: true; start: string } | { ongoing: false; end: string } | null;
+}
+
+interface Overview {
+  timeZone: string;
+  threshold: { name: 'Hot'; level: 'warning'; tempF: number };
+  campuses: CampusOverview[];
+}
+
+/** 10:00 on Monday 5 October 2026 in Chicago (CDT, five hours behind UTC). */
+const NOW = new Date('2026-10-05T15:00:00Z');
+
+describe('GET /api/campuses/overview', () => {
+  let pool: Pool;
+  let server: RunningServer | undefined;
+  let client: ReturnType<typeof api>;
+  let admin: RunningServer;
+
+  before(() => {
+    pool = createTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    // Campuses and Devices go in through the API; the overview server is started per test with its clock pinned.
+    admin = await startServer(pool);
+    client = api(admin);
+  });
+  afterEach(async () => {
+    await admin.close();
+    await server?.close();
+    server = undefined;
+  });
+  after(() => pool.end());
+
+  const overviewAt = async (now: Date, query = ''): Promise<Response> => {
+    await server?.close();
+    server = await startServer(pool, testConfig(), { now: () => now });
+    return fetch(`${server.url}/api/campuses/overview${query}`);
+  };
+  const overview = async (now = NOW, query = '?tz=America/Chicago'): Promise<Overview> => {
+    const response = await overviewAt(now, query);
+    assert.equal(response.status, 200, await response.clone().text());
+    return json<Overview>(response);
+  };
+  const campus = (name: string, shortcode: string): Promise<Campus> => client.campuses.create(name, shortcode);
+  let hostnames = 0;
+  const device = async (campusId: number, closet = 'IDF 1') =>
+    client.devices.create(campusId, `ESP_${(0xa00000 + ++hostnames).toString(16).toUpperCase()}`, closet);
+  // Ingest stamps the server's time, so a Reading at a chosen instant is written directly.
+  const readingAt = async (deviceId: number, recordedAt: Date, tempF = 72, humidity = 40) => {
+    await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)', [deviceId, tempF, humidity, recordedAt]);
+  };
+  const incident = async (deviceId: number, start: Date, end: Date | null, condition: IncidentState['condition'] = 'Hot') => {
+    await insertIncident(pool, deviceId, {
+      condition,
+      level: 'warning',
+      start,
+      end,
+      peak: { tempF: 85, humidity: 40, recordedAt: start },
+      segments: [{ level: 'warning', start, end }],
+      cleanReadings: end === null ? 0 : 2,
+      firstCleanAt: end,
+    });
+  };
+  const secondsAgo = (s: number) => new Date(NOW.getTime() - s * 1000);
+  const byShortcode = (o: Overview, shortcode: string): CampusOverview => {
+    const found = o.campuses.find((c) => c.shortcode === shortcode);
+    assert.ok(found, `no ${shortcode} in ${JSON.stringify(o.campuses.map((c) => c.shortcode))}`);
+    return found;
+  };
+
+  test('needs no token, names the Hot warning threshold the server uses, and refuses an unknown zone (422)', async () => {
+    const response = await overviewAt(NOW);
+    assert.equal(response.status, 200);
+    const body = await json<Overview>(response);
+    assert.deepEqual(body.threshold, { name: 'Hot', level: 'warning', tempF: 82 });
+    assert.deepEqual(body.campuses, []);
+
+    const bad = await overviewAt(NOW, '?tz=Mars/Olympus');
+    assert.equal(bad.status, 422);
+    assert.match(await errorOf(bad), /Unknown time zone Mars\/Olympus/);
+  });
+
+  test('a Campus with no Devices: no closets, no worst, seven empty days, no last incident', async () => {
+    await campus('Empty Elementary', 'EE');
+    const [empty] = (await overview()).campuses;
+    assert.equal(empty.closets, 0);
+    assert.equal(empty.level, null);
+    assert.deepEqual(empty.now, { conditions: [], headsUp: [] });
+    assert.equal(empty.worst, null);
+    assert.equal(empty.days.length, 7);
+    assert.ok(empty.days.every((d) => d.maxTempF === null && !d.incident));
+    assert.equal(empty.lastIncident, null);
+  });
+
+  test('a Campus with no incident in 90 days has no last incident, though an older one is still stored', async () => {
+    const c = await campus('Calm High', 'CH');
+    const d = await device(c.id);
+    await readingAt(d.id, secondsAgo(10), 72, 40);
+    await incident(d.id, new Date(NOW.getTime() - 100 * DAY_MS), new Date(NOW.getTime() - 99 * DAY_MS));
+
+    const [calm] = (await overview()).campuses;
+    assert.equal(calm.lastIncident, null);
+    assert.equal(calm.level, null);
+    assert.equal(calm.worst?.hostname, d.hostname);
+    assert.equal(calm.worst?.offline, false);
+    assert.deepEqual(calm.worst?.latestReading, { tempF: 72, humidity: 40, recordedAt: secondsAgo(10).toISOString() });
+    assert.ok(calm.days.every((day) => !day.incident));
+    assert.equal(calm.days.at(-1)?.maxTempF, 72);
+  });
+
+  test('a day that held an incident is marked, the others are not, and its end is the last incident', async () => {
+    const c = await campus('Recent Middle', 'RM');
+    const d = await device(c.id);
+    await readingAt(d.id, secondsAgo(10));
+    // 2 October, 14:00 to 15:30 in Chicago.
+    const start = new Date('2026-10-02T19:00:00Z');
+    const end = new Date('2026-10-02T20:30:00Z');
+    await incident(d.id, start, end);
+    // An older one, also closed, must not be taken for the last.
+    await incident(d.id, new Date(NOW.getTime() - 30 * DAY_MS), new Date(NOW.getTime() - 29 * DAY_MS));
+
+    const [recent] = (await overview()).campuses;
+    assert.deepEqual(recent.days.map((day) => [day.date, day.incident]), [
+      ['2026-09-29', false],
+      ['2026-09-30', false],
+      ['2026-10-01', false],
+      ['2026-10-02', true],
+      ['2026-10-03', false],
+      ['2026-10-04', false],
+      ['2026-10-05', false],
+    ]);
+    assert.deepEqual(recent.lastIncident, { ongoing: false, end: end.toISOString() });
+  });
+
+  test('an ongoing incident marks every day since it began and is reported with its start', async () => {
+    const c = await campus('Ongoing Academy', 'OA');
+    const d = await device(c.id);
+    await readingAt(d.id, secondsAgo(10), 88, 40);
+    const start = new Date('2026-10-03T23:00:00Z'); // 18:00 on 3 October in Chicago
+    await incident(d.id, start, null);
+    await incident(d.id, new Date('2026-10-01T15:00:00Z'), new Date('2026-10-01T16:00:00Z'), 'Dry');
+
+    const [ongoing] = (await overview()).campuses;
+    assert.deepEqual(ongoing.lastIncident, { ongoing: true, start: start.toISOString() });
+    assert.deepEqual(ongoing.days.filter((day) => day.incident).map((day) => day.date), ['2026-10-01', '2026-10-03', '2026-10-04', '2026-10-05']);
+  });
+
+  test('the seven days are the configured zone\'s days, today partial, each with its highest temperature', async () => {
+    const c = await campus('Boundary High', 'BH');
+    const d = await device(c.id);
+    await readingAt(d.id, new Date('2026-09-29T04:59:59Z'), 99); // 23:59:59 on 28 September in Chicago: before the window
+    await readingAt(d.id, new Date('2026-09-29T05:00:00Z'), 70); // midnight starting 29 September
+    await readingAt(d.id, new Date('2026-09-30T04:59:59Z'), 75); // the last second of 29 September
+    await readingAt(d.id, new Date('2026-09-30T05:00:00Z'), 80); // midnight starting 30 September
+    await readingAt(d.id, secondsAgo(10), 77);
+    await readingAt(d.id, new Date('2026-10-06T04:59:59Z'), 95); // later today, past the pinned clock: still today
+
+    const chicago = (await overview()).campuses[0];
+    assert.equal(chicago.days[0].date, '2026-09-29');
+    assert.equal(chicago.days[0].from, '2026-09-29T05:00:00.000Z');
+    assert.equal(chicago.days[0].to, '2026-09-30T05:00:00.000Z');
+    assert.deepEqual(chicago.days.map((day) => [day.date, day.maxTempF, day.partial]), [
+      ['2026-09-29', 75, false],
+      ['2026-09-30', 80, false],
+      ['2026-10-01', null, false],
+      ['2026-10-02', null, false],
+      ['2026-10-03', null, false],
+      ['2026-10-04', null, false],
+      ['2026-10-05', 95, true],
+    ]);
+
+    // In UTC the same Readings fall on other days: the 99 °F one is now inside the window.
+    const utc = await overview(NOW, '?tz=UTC');
+    assert.equal(utc.timeZone, 'UTC');
+    assert.deepEqual(utc.campuses[0].days.slice(0, 2).map((day) => [day.date, day.maxTempF]), [
+      ['2026-09-29', 99],
+      ['2026-09-30', 80],
+    ]);
+  });
+
+  test('today is read fresh on every request; the completed days are reused for a few minutes', async () => {
+    const c = await campus('Cache High', 'CA');
+    const d = await device(c.id);
+    await readingAt(d.id, new Date('2026-10-01T17:00:00Z'), 74);
+    await readingAt(d.id, secondsAgo(60), 75);
+    let clock = NOW;
+    server = await startServer(pool, testConfig(), { now: () => clock });
+    const get = async () => (await json<Overview>(await fetch(`${server!.url}/api/campuses/overview?tz=America/Chicago`))).campuses[0].days;
+    const highOn = (days: OverviewDay[], date: string) => days.find((day) => day.date === date)?.maxTempF;
+
+    assert.equal(highOn(await get(), '2026-10-01'), 74);
+    await readingAt(d.id, new Date('2026-10-01T18:00:00Z'), 81);
+    await readingAt(d.id, secondsAgo(30), 80);
+    const soon = await get();
+    assert.equal(highOn(soon, '2026-10-05'), 80, 'today is never cached');
+    assert.equal(highOn(soon, '2026-10-01'), 74, 'a finished day is reused');
+
+    clock = new Date(NOW.getTime() + PAST_DAYS_CACHE_MS);
+    assert.equal(highOn(await get(), '2026-10-01'), 81, 'and read again once the cache has aged out');
+  });
+
+  test('a day the clocks go back on is 25 hours long', async () => {
+    await campus('Clock Change High', 'CC');
+    // 3 November 2026 in Chicago; the clocks went back at 02:00 on 1 November.
+    const [c] = (await overview(new Date('2026-11-03T18:00:00Z'))).campuses;
+    const fallBack = c.days.find((day) => day.date === '2026-11-01');
+    assert.ok(fallBack);
+    assert.equal(new Date(fallBack.to).getTime() - new Date(fallBack.from).getTime(), 25 * 3_600_000);
+  });
+
+  test('worst first by the worst closet now, then by name; counts per Condition, with moderate Mold risk apart', async () => {
+    const calm = await campus('Alpha Calm', 'AC');
+    const hot = await campus('Zulu Hot', 'ZH');
+    const silent = await campus('Mike Silent', 'MS');
+    const damp = await campus('Echo Damp', 'ED');
+    await campus('Bravo Empty', 'BE');
+
+    await readingAt((await device(calm.id)).id, secondsAgo(10), 72, 40);
+
+    const critical = await device(hot.id, 'MDF');
+    await readingAt(critical.id, secondsAgo(10), 93, 40);
+    await readingAt((await device(hot.id, 'IDF 1')).id, secondsAgo(10), 84, 40);
+    await readingAt((await device(hot.id, 'IDF 2')).id, secondsAgo(10), 85, 40);
+    await readingAt((await device(hot.id, 'IDF 3')).id, secondsAgo(10), 72, 65);
+
+    const dead = await device(silent.id);
+    await readingAt(dead.id, secondsAgo(600), 72, 40);
+
+    await readingAt((await device(damp.id)).id, secondsAgo(10), 72, 65);
+
+    const body = await overview();
+    assert.deepEqual(body.campuses.map((c) => [c.shortcode, c.level]), [
+      ['ZH', 'critical'],
+      ['MS', 'warning'],
+      ['ED', 'moderate'],
+      ['AC', null],
+      ['BE', null],
+    ]);
+
+    const zulu = byShortcode(body, 'ZH');
+    assert.equal(zulu.closets, 4);
+    assert.deepEqual(zulu.now.conditions, [
+      { name: 'Hot', level: 'critical', count: 1 },
+      { name: 'Hot', level: 'warning', count: 2 },
+    ]);
+    assert.deepEqual(zulu.now.headsUp, [{ name: 'Mold risk', level: 'moderate', count: 1 }]);
+    assert.equal(zulu.worst?.id, critical.id);
+    assert.equal(zulu.worst?.closetType, 'MDF');
+    assert.equal(zulu.worst?.level, 'critical');
+    assert.equal(zulu.worst?.latestReading?.tempF, 93);
+
+    const mike = byShortcode(body, 'MS');
+    assert.deepEqual(mike.now.conditions, [{ name: 'Offline', level: 'warning', count: 1 }]);
+    assert.equal(mike.worst?.offline, true);
+    assert.equal(mike.worst?.id, dead.id);
+
+    assert.deepEqual(byShortcode(body, 'ED').now, { conditions: [], headsUp: [{ name: 'Mold risk', level: 'moderate', count: 1 }] });
+  });
+});
