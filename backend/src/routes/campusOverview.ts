@@ -34,6 +34,8 @@ interface DayMaxRow extends RowDataPacket {
 
 interface IncidentSpanRow extends RowDataPacket {
   campusId: number;
+  /** A stretch of an incident at one level: its segment. */
+  level: ConditionLevel;
   startedAt: Date;
   endedAt: Date | null;
 }
@@ -52,7 +54,7 @@ const SELECT_DEVICES = `
   LEFT JOIN readings r ON r.id = (
     SELECT r2.id FROM readings r2
     WHERE r2.device_id = d.id
-    ORDER BY r2.recorded_at DESC, r2.id DESC
+    ORDER BY r2.device_id DESC, r2.recorded_at DESC, r2.id DESC
     LIMIT 1
   )
   ORDER BY d.closet, d.hostname`;
@@ -84,6 +86,9 @@ function selectDayMaxima(days: LocalDay[], first: number): { sql: string; params
  * is the price of not reading them on every request. Today is always read fresh.
  */
 export const PAST_DAYS_CACHE_MS = 5 * 60_000;
+
+/** How many zones' completed days are kept at once; a district's browsers share one or two. */
+export const PAST_DAYS_CACHE_ZONES = 8;
 
 /** The dates, YYYY-MM-DD, of the `count` days ending with `today`, oldest first. */
 function lastDates(today: string, count: number): string[] {
@@ -144,6 +149,8 @@ export function campusOverviewRouter({ pool, config, now = () => new Date() }: R
     const [rows] = await pool.query<DayMaxRow[]>(sql, params);
     // One entry per zone in use; yesterday's keys go once today's arrive.
     for (const old of pastDays.keys()) if (old.startsWith(`${days[0].timeZone}|`)) pastDays.delete(old);
+    // The endpoint is public and takes any zone: a handful of zones are kept, the oldest read going first.
+    if (pastDays.size >= PAST_DAYS_CACHE_ZONES) pastDays.delete(pastDays.keys().next().value as string);
     pastDays.set(key, { readAt: at.getTime(), rows });
     return rows;
   };
@@ -167,10 +174,14 @@ export function campusOverviewRouter({ pool, config, now = () => new Date() }: R
         pastDayMaxima(days.slice(0, -1), at),
         pool.query<DayMaxRow[]>(today.sql, today.params),
         pool.query<IncidentSpanRow[]>(
-          `SELECT d.campus_id AS campusId, i.started_at AS startedAt, i.ended_at AS endedAt
-           FROM incidents i JOIN devices d ON d.id = i.device_id
-           WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)`,
-          [windowTo, windowFrom],
+          // Segments, not whole incidents, so a day is marked with the level it saw, not one reached on another day.
+          `SELECT d.campus_id AS campusId, s.level, s.started_at AS startedAt, s.ended_at AS endedAt
+           FROM incidents i
+           JOIN devices d ON d.id = i.device_id
+           JOIN incident_segments s ON s.incident_id = i.id
+           WHERE i.started_at < ? AND (i.ended_at IS NULL OR i.ended_at > ?)
+             AND s.started_at < ? AND (s.ended_at IS NULL OR s.ended_at > ?)`,
+          [windowTo, windowFrom, windowTo, windowFrom],
         ),
         pool.query<LastIncidentRow[]>(
           `SELECT d.campus_id AS campusId, MAX(i.ended_at) AS lastEnd, MIN(CASE WHEN i.ended_at IS NULL THEN i.started_at END) AS openSince
@@ -221,15 +232,20 @@ export function campusOverviewRouter({ pool, config, now = () => new Date() }: R
                   offline: isOffline(worst.conditions),
                   conditions: worst.conditions,
                 },
-          days: days.map((day, i) => ({
-            date: day.date,
-            from: day.from.toISOString(),
-            to: day.to.toISOString(),
-            /** Today is still going: its high so far. */
-            partial: i === days.length - 1,
-            maxTempF: highest(dayMaxima.filter((m) => Number(m.day) === i && closets.some((c) => c.row.id === m.deviceId)).map((m) => m.maxTempF)),
-            incident: campusSpans.some((s) => s.startedAt < day.to && (s.endedAt === null || s.endedAt > day.from)),
-          })),
+          days: days.map((day, i) => {
+            const touched = campusSpans.filter((s) => s.startedAt < day.to && (s.endedAt === null || s.endedAt > day.from));
+            return {
+              date: day.date,
+              from: day.from.toISOString(),
+              to: day.to.toISOString(),
+              /** Today is still going: its high so far. */
+              partial: i === days.length - 1,
+              maxTempF: highest(dayMaxima.filter((m) => Number(m.day) === i && closets.some((c) => c.row.id === m.deviceId)).map((m) => m.maxTempF)),
+              incident: touched.length > 0,
+              /** The worst level an incident reached that day, so the chart colours the day by the One Meaning Rule. */
+              incidentLevel: touched.reduce<ConditionLevel | null>((worst, s) => (rankOf(s.level) < rankOf(worst) ? s.level : worst), null),
+            };
+          }),
           lastIncident:
             last === undefined
               ? null

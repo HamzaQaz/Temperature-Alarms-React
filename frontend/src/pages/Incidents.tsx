@@ -84,6 +84,13 @@ export default function Incidents() {
   const [landed, setLanded] = useState<Record<number, number>>({});
   const [arrived, setArrived] = useState<ReadonlySet<number>>(() => new Set());
   const [announcement, setAnnouncement] = useState('');
+  // A wash belongs to the window it happened in: stepping away and back must not play it again.
+  const [washedWindow, setWashedWindow] = useState(`${kind}|${date}`);
+  if (washedWindow !== `${kind}|${date}`) {
+    setWashedWindow(`${kind}|${date}`);
+    setLanded({});
+    setArrived(new Set());
+  }
 
   const loaded = state.status === 'ready' ? state.data : undefined;
   const stream = useReadingStream({
@@ -457,7 +464,8 @@ function Facts({ incident }: { incident: Incident }) {
         </>
       );
     }
-    return <>{strong(`No Readings for ${formatDuration(ms(incident.end) - ms(peak.recordedAt))}`)}, then the Device reported again.</>;
+    // Times, not a second duration: the silence began at the last Reading, the incident (and the row's duration) only once the server reported it Offline.
+    return <>{strong(`No Readings from ${formatTime(peak.recordedAt)} to ${formatTime(incident.end)}`)}, then the Device reported again.</>;
   }
   const value = peakFigure(incident) ?? '';
   const when = formatTime(peak.recordedAt);

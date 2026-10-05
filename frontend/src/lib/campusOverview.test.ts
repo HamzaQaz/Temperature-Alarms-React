@@ -4,7 +4,7 @@ import { CHART, chartLabel, chartLayout, formatGap, listNames, sinceLast, weekPe
 import { addDays } from './localDate.ts';
 import type { OverviewDay } from '../types.ts';
 
-const week = (highs: Array<number | null>, flagged: number[] = []): OverviewDay[] =>
+const week = (highs: Array<number | null>, flagged: number[] = [], level: OverviewDay['incidentLevel'] = 'warning'): OverviewDay[] =>
   highs.map((maxTempF, i) => ({
     date: addDays('2026-09-28', i),
     from: '',
@@ -12,6 +12,7 @@ const week = (highs: Array<number | null>, flagged: number[] = []): OverviewDay[
     partial: i === highs.length - 1,
     maxTempF,
     incident: flagged.includes(i),
+    incidentLevel: flagged.includes(i) ? level : null,
   }));
 
 describe('the 7-day chart', () => {
@@ -37,7 +38,8 @@ describe('the 7-day chart', () => {
     assert.match(label, /^Daily high: \w+ 78°F,/);
     assert.match(label, /Today 84°F so far\./);
     assert.match(label, /Hot warning line at 82°F\./);
-    assert.match(label, /An incident on \w+, \w+, Today\./);
+    assert.match(label, /An incident on \w+ \(warning\), \w+ \(warning\), Today \(warning\)\./);
+    assert.match(chartLabel(week([90, 70, 70, 70, 70, 70, 70], [0], 'critical'), 82), /An incident on \w+ \(critical\)\./, 'the level the server sent, so a critical day is never read as warning');
     assert.match(chartLabel(week([70, null, 70, 70, 70, 70, 70]), 82), /no Readings.*No incident in the 7 days\./);
   });
 
@@ -63,6 +65,13 @@ describe('since last incident', () => {
     assert.equal(since.value, '2 days');
     assert.match(since.note, /^Ended .+, 4:42 PM$/);
     assert.equal(since.date, '2026-10-01');
+  });
+
+  it('reads just now for an end under a minute ago, never "0 min"', () => {
+    for (const ago of [0, 20_000, 59_999]) assert.equal(sinceLast({ ongoing: false, end: new Date(now - ago).toISOString() }, now, 90).value, 'Just now');
+    assert.equal(sinceLast({ ongoing: false, end: new Date(now - 60_000).toISOString() }, now, 90).value, '1 min');
+    // A browser clock a little behind the server's must not read a future end as a gap.
+    assert.equal(sinceLast({ ongoing: false, end: new Date(now + 5_000).toISOString() }, now, 90).value, 'Just now');
   });
 
   it('reads none in the retention window when there is no last incident', () => {

@@ -8,6 +8,7 @@ import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql
 import type { ConditionLevel, ConditionName, ConditionRules } from './conditions';
 import {
   applyReading,
+  missedOffline,
   offlineIncident,
   offlineStartsAt,
   peakValue,
@@ -141,7 +142,19 @@ async function saveSteps(db: Db, deviceId: number, steps: IncidentStep[]): Promi
  */
 export async function recordReadingIncidents(conn: PoolConnection, deviceId: number, reading: TimedReading, rules: ConditionRules): Promise<ChangedIncident[]> {
   const open = await loadOpenIncidents(conn, deviceId);
-  return saveSteps(conn, deviceId, applyReading(open, reading, rules));
+  const steps = applyReading(open, reading, rules);
+  if (!open.some((i) => i.condition === 'Offline')) {
+    // The Reading before this one, one step back along ix_readings_device_recorded.
+    const [previous] = await conn.query<LatestReadingRow[]>(
+      `SELECT temp_f AS tempF, humidity, recorded_at AS recordedAt FROM readings
+       WHERE device_id = ? ORDER BY device_id DESC, recorded_at DESC, id DESC LIMIT 1 OFFSET 1`,
+      [deviceId],
+    );
+    // The sweep runs once every Report interval (offlineSweep.ts).
+    const missed = missedOffline(previous[0] ?? null, reading, rules, rules.reportIntervalSeconds);
+    if (missed !== null) steps.unshift(missed);
+  }
+  return saveSteps(conn, deviceId, steps);
 }
 
 interface LatestReadingRow extends RowDataPacket {
@@ -155,7 +168,7 @@ interface LatestReadingRow extends RowDataPacket {
 const LATEST_READING = `
   SELECT r2.id FROM readings r2
   WHERE r2.device_id = d.id
-  ORDER BY r2.recorded_at DESC, r2.id DESC
+  ORDER BY r2.device_id DESC, r2.recorded_at DESC, r2.id DESC
   LIMIT 1`;
 
 /**

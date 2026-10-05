@@ -154,7 +154,10 @@ interface DashboardRow extends RowDataPacket {
 
 /**
  * Every Device with its latest Reading, in one statement. The correlated subquery walks
- * ix_readings_device_recorded backwards one step per Device.
+ * ix_readings_device_recorded backwards one step per Device. The order starts with device_id,
+ * a constant here, so MySQL sees the index gives it: ordered by recorded_at alone it walks
+ * ix_readings_recorded (retention's) backwards instead, through every Reading since a silent
+ * Device's last, and one Device off for a week cost the query seconds.
  */
 const SELECT_DASHBOARD = `
   SELECT d.id, d.hostname, d.closet,
@@ -165,7 +168,7 @@ const SELECT_DASHBOARD = `
   LEFT JOIN readings r ON r.id = (
     SELECT r2.id FROM readings r2
     WHERE r2.device_id = d.id
-    ORDER BY r2.recorded_at DESC, r2.id DESC
+    ORDER BY r2.device_id DESC, r2.recorded_at DESC, r2.id DESC
     LIMIT 1
   )`;
 const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
@@ -344,9 +347,21 @@ export function historyRouter({ pool, config, now = () => new Date() }: RouteDep
         res.status(404).json({ error: 'Device not found' });
         return;
       }
-      await pool.query<ResultSetHeader>('DELETE FROM readings WHERE device_id = ?', [device.id]);
-      // An incident points at Readings that are gone, so it goes too.
-      await deleteDeviceIncidents(pool, device.id);
+      // An incident points at Readings that are gone, so it goes too: both together, under the
+      // Device's row lock, so a Reading landing meanwhile cannot open an incident between them.
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        await conn.query('SELECT id FROM devices WHERE id = ? FOR UPDATE', [device.id]);
+        await conn.query<ResultSetHeader>('DELETE FROM readings WHERE device_id = ?', [device.id]);
+        await deleteDeviceIncidents(conn, device.id);
+        await conn.commit();
+      } catch (error) {
+        await conn.rollback();
+        throw error;
+      } finally {
+        conn.release();
+      }
       res.status(204).end();
     } catch (error) {
       next(error);

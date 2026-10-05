@@ -19,3 +19,5 @@ Ownership: the whole repo, for fixes. Keep fixes minimal and within the tickets'
 Observable acceptance: backend `npm test` and `typecheck`; frontend `lint`, `typecheck`, `test`, and `build`; `node e2e/walk.mjs` on a fresh stack; and `python -m unittest arduino/test_bench.py`, all passing. Send worker_done with the findings count, a fix summary, the check results, and --files-modified.
 
 Also investigate: on a freshly started demo stack, one run of the card-order check saw a Reading never reach the browser over SSE (the Need attention tile stayed 0); later runs were fine. Reproduce by starting the demo, opening the Dashboard immediately, and posting a Reading. If it is real (for example, the stream connects before the API is ready and does not retry, or a proxy buffers the first event), fix it with a test.
+
+Also check: on an Offline incident the row says "2 h 38 min" while its sentence says "No Readings for 2 h 40 min" (.scratch/design/incidents/backfilled-night-1440.png). The two durations come from different start points (incident start vs last Reading); make them agree or say why they differ.

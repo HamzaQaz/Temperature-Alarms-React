@@ -15,6 +15,7 @@ import { usePageTitle } from '@/hooks/use-page-title';
 import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
 import type { HistorySeed } from '@/lib/card-morph';
+import { levelLook } from '@/lib/conditions';
 import {
   CHART,
   CHART_WIDTH,
@@ -114,8 +115,8 @@ export default function Campuses() {
           <CampusTable data={loaded} now={now} />
           <p className="max-w-[75ch] text-sm text-pretty text-muted-foreground">
             An incident is a Condition at warning or worse; moderate Mold risk is a heads-up and is not counted. The dashed line is the{' '}
-            {loaded.threshold.name} {loaded.threshold.level} threshold the server uses, <span className="tabular-nums">{figure(loaded.threshold.tempF)}°F</span>, and an amber
-            column is a day an incident touched. Readings are kept <span className="tabular-nums">{loaded.retentionDays} days</span>, so “since last incident” looks back{' '}
+            {loaded.threshold.name} {loaded.threshold.level} threshold the server uses, <span className="tabular-nums">{figure(loaded.threshold.tempF)}°F</span>, and a coloured
+            column is a day an incident touched, in the colour of the worst level it reached that day. Readings are kept <span className="tabular-nums">{loaded.retentionDays} days</span>, so “since last incident” looks back{' '}
             <span className="tabular-nums">{loaded.retentionDays} days</span> at most.
           </p>
         </motion.div>
@@ -186,7 +187,8 @@ function CampusTable({ data, now }: { data: LoadedOverview; now: number }) {
             <TableHead className="px-4 text-sm font-medium text-muted-foreground">Since last incident</TableHead>
           </TableRow>
         </TableHeader>
-        <TableBody className="max-md:block">
+        {/* The table drops the last row's border; on a phone each row is a card and keeps all four. */}
+        <TableBody className="max-md:block max-md:[&_tr:last-child]:border">
           {data.campuses.map((campus) => (
             <CampusRow key={campus.id} campus={campus} data={data} now={now} />
           ))}
@@ -332,9 +334,9 @@ function WorstCell({ campus, now }: { campus: CampusOverview; now: number }) {
 }
 
 /**
- * Each day's high as a small column against the server's Hot warning line. A column is amber
- * only on a day the server flagged as holding an incident (the One Meaning Rule); today, still
- * going, is a step brighter. The week's peak sits beside it on a wide screen.
+ * Each day's high as a small column against the server's Hot warning line. A column takes a
+ * signal colour only on a day the server flagged as holding an incident, the colour of the worst
+ * level the server says it reached (the One Meaning Rule); today, still going, is a step brighter. The week's peak sits beside it on a wide screen.
  */
 function WeekCell({ days, thresholdF }: { days: OverviewDay[]; thresholdF: number }) {
   const { columns, lineY } = chartLayout(days, thresholdF);
@@ -360,15 +362,13 @@ function WeekCell({ days, thresholdF }: { days: OverviewDay[]; thresholdF: numbe
                 width={CHART.column}
                 height={height}
                 rx={3}
-                className={cn(
-                  day.incident
-                    ? day.partial
-                      ? 'fill-amber-600 dark:fill-amber-500'
-                      : 'fill-amber-600/70 dark:fill-amber-500/70'
+                className={
+                  day.incidentLevel !== null
+                    ? levelLook(day.incidentLevel).column[day.partial ? 'today' : 'past']
                     : day.partial
                       ? 'fill-muted-foreground'
-                      : 'fill-muted-foreground/45',
-                )}
+                      : 'fill-muted-foreground/45'
+                }
               />
             )}
             <text x={x + CHART.column / 2} y={CHART.plot + 14} textAnchor="middle" className="fill-muted-foreground text-xs">

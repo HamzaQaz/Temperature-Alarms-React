@@ -4,10 +4,13 @@
 
 Live temperature and humidity monitoring for the network closets across a school district. A NodeMCU board with a DHT11 sensor sits in each closet and posts a Reading every 30 seconds. The backend works out which Conditions a closet is in (Hot, Cold, Dry, Mold risk, Offline) and pushes every Reading to every open dashboard the moment it arrives.
 
-![The dashboard on the demo: 24 closets across four campuses, four needing attention (Mold risk, Offline, Hot, Dry), the first row led by a closet in Mold risk high](docs/screenshots/dashboard-dark.png)
+![The dashboard on the demo, worst first: 24 closets across four campuses, three needing attention, led by a closet in Hot critical, then Mold risk high and Dry](docs/screenshots/dashboard-dark.png)
 
 - **Live, not polled.** Cards update over Server-Sent Events. A Device that goes quiet reads as late, then Offline, with no reload.
 - **Decided once, on the server.** Thresholds, Conditions, and Online or Offline are computed in one place, so every browser shows the same truth.
+- **Worst first.** The Dashboard leads with the closet in the worst Condition, and a closet that worsens rises to the top as it happens; "By Campus" restores the familiar order.
+- **What happened overnight.** The server records every incident (a Condition at warning or worse) as it starts, changes level, and ends. The Incidents page lays a night, a day, or a week out as a log on one shared ruler.
+- **The district in one look.** The Campuses page puts every school on one row, worst first, with what it is in now, its worst closet, a week of daily highs against the Hot line, and the time since its last incident.
 - **A day of history per Device.** Min, max, and average for each measure, any day in the last 90.
 - **Two shared tokens, no accounts.** One for the people who administer Campuses and Devices, one flashed into every board. No logins to run.
 - **One command to run it.** A Docker Compose stack: MySQL, the backend, and nginx on a single port, the same on a laptop and on the district server.
@@ -48,6 +51,8 @@ The demo runs under its own Compose project, `temperature-alarms-demo`, with its
 All taken on the demo above.
 
 - [Dashboard, light theme](docs/screenshots/dashboard-light.png)
+- [Incidents](docs/screenshots/incidents.png): the last 7 days as a log on one shared ruler, each incident segmented by level
+- [Campuses](docs/screenshots/campuses.png): every Campus worst first, with its week of daily highs against the Hot warning line
 - [Dashboard filtered to one Campus](docs/screenshots/dashboard-campus.png), with the Gym closet in Hot critical
 - [History for one Device](docs/screenshots/history.png): the day's averages, the chart, and the Readings table, on the day it climbed into Hot
 - [Settings](docs/screenshots/settings.png) with the Admin token saved, on the Devices table
@@ -88,7 +93,7 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 .
 ├── arduino/       # ESP8266 sketch for the NodeMCU + DHT11 Device, its wiring diagram, and the bench watcher
 ├── backend/       # Express + TypeScript API, MySQL, the migration runner, the virtual Device
-├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui; e2e/ holds the browser walk
+├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui; src/pages/ holds Dashboard, Incidents, Campuses, History and Settings; e2e/ holds the browser walk
 ├── deploy/        # deploy.sh and deploy.ps1: install, upgrade, back up, and remove the stack, here or over ssh
 ├── docs/adr/      # Architecture decision records
 ├── .claude/skills/deploy/  # The skill that lets a Claude agent drive the deploy scripts
@@ -195,7 +200,7 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | --- | --- | --- |
 | `GET /api/health` | none | `{status, database}`; 503 when the database cannot be reached |
 | `GET /api/campuses` | none | `[{id, name, shortcode}]` by name |
-| `GET /api/campuses/overview?tz=America/Chicago` | none | `{timeZone, threshold, campuses}` for IT leadership: every Campus, worst first by its worst closet now (as the dashboard ranks Devices), then by name. Each is `{id, name, shortcode, closets, level, now, worst, days, lastIncident}`: `now.conditions` counts closets per Condition and level at warning or worse, and `now.headsUp` counts moderate Mold risk apart; `worst` is the worst closet with its `latestReading`, `level`, `offline`, and `conditions` (null with no Devices); `days` is the last seven local days in `tz` (the server's zone by default; an unknown one is 422), oldest first, each with its bounds, `maxTempF` (null with no Readings), and `incident`, true when an incident overlapped it; today is `partial`. `lastIncident` is `{ongoing: true, start}` while one is open, else `{ongoing: false, end}` for the latest to close within the retention window, else null. `threshold` is the Hot warning line the server uses, for the chart, and `retentionDays` how far back Readings (and so the last incident) reach. The completed days' highs are reused for up to five minutes; today's are read on every request. Example below |
+| `GET /api/campuses/overview?tz=America/Chicago` | none | `{timeZone, threshold, campuses}` for IT leadership: every Campus, worst first by its worst closet now (as the dashboard ranks Devices), then by name. Each is `{id, name, shortcode, closets, level, now, worst, days, lastIncident}`: `now.conditions` counts closets per Condition and level at warning or worse, and `now.headsUp` counts moderate Mold risk apart; `worst` is the worst closet with its `latestReading`, `level`, `offline`, and `conditions` (null with no Devices); `days` is the last seven local days in `tz` (the server's zone by default; an unknown one is 422), oldest first, each with its bounds, `maxTempF` (null with no Readings), `incident`, true when an incident overlapped it, and `incidentLevel`, the worst level an incident reached that day (null without one); today is `partial`. `lastIncident` is `{ongoing: true, start}` while one is open, else `{ongoing: false, end}` for the latest to close within the retention window, else null. `threshold` is the Hot warning line the server uses, for the chart, and `retentionDays` how far back Readings (and so the last incident) reach. The completed days' highs are reused for up to five minutes; today's are read on every request. Example below |
 | `POST /api/campuses` | Admin | `{name, shortcode}` → 201 Campus; 409 when the shortcode exists |
 | `DELETE /api/campuses/:id` | Admin | 204; 409 while the Campus still has Devices |
 | `GET /api/devices` | none | `[{id, hostname, closet, campus}]` by Campus name, then closet |
@@ -229,8 +234,8 @@ An overview with one Campus, trimmed to two of its seven days:
         "level": "critical", "offline": false, "conditions": [{ "name": "Hot", "level": "critical" }]
       },
       "days": [
-        { "date": "2026-10-03", "from": "2026-10-03T05:00:00Z", "to": "2026-10-04T05:00:00Z", "partial": false, "maxTempF": 83, "incident": true },
-        { "date": "2026-10-04", "from": "2026-10-04T05:00:00Z", "to": "2026-10-05T05:00:00Z", "partial": true, "maxTempF": 91, "incident": true }
+        { "date": "2026-10-03", "from": "2026-10-03T05:00:00Z", "to": "2026-10-04T05:00:00Z", "partial": false, "maxTempF": 83, "incident": true, "incidentLevel": "warning" },
+        { "date": "2026-10-04", "from": "2026-10-04T05:00:00Z", "to": "2026-10-05T05:00:00Z", "partial": true, "maxTempF": 91, "incident": true, "incidentLevel": "critical" }
       ],
       "lastIncident": { "ongoing": true, "start": "2026-10-05T03:17:30Z" }
     }

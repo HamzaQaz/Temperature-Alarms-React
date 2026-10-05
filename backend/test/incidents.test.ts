@@ -6,7 +6,7 @@ import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, asAdmin, errorOf, json, type Incident, type RecordedReading } from './helpers/api';
 import { subscribe, type SseClient } from './helpers/sse';
 import { createBroadcaster, type IncidentEvent } from '../src/sse';
-import { runOfflineSweep } from '../src/offlineSweep';
+import { runOfflineSweep, startOfflineSweep } from '../src/offlineSweep';
 import { insertIncident } from '../src/incidentStore';
 import { replayIncidents, type IncidentState } from '../src/incidents';
 import { DEFAULT_THRESHOLDS } from '../src/conditions';
@@ -188,6 +188,43 @@ describe('incidents', () => {
       const closed = await only();
       assert.equal(closed.end, back.reading.recordedAt);
       assert.deepEqual(closed.segments, [{ level: 'warning', start: offline.start, end: back.reading.recordedAt }]);
+    });
+
+    test('a Device back before the sweep caught its silence still gets the Offline stretch, already closed', async () => {
+      const device = await registerDevice();
+      // Offline began 9 seconds ago, inside the sweep's period, and no pass has run since.
+      const last = new Date(Math.floor((Date.now() - OFFLINE_AFTER_MS - 10_000) / 1000) * 1000);
+      await readingAt(device.id, last, 71, 44);
+
+      const back = await postReading(72);
+      const offline = await only();
+      assert.equal(offline.condition, 'Offline');
+      assert.equal(offline.start, new Date(last.getTime() + OFFLINE_AFTER_MS + 1000).toISOString());
+      assert.equal(offline.end, back.reading.recordedAt);
+      assert.deepEqual(offline.peak, { value: null, tempF: 71, humidity: 44, recordedAt: last.toISOString() });
+      assert.deepEqual(offline.segments, [{ level: 'warning', start: offline.start, end: back.reading.recordedAt }]);
+      assert.equal(await sweep(), 0, 'the sweep opens nothing more');
+    });
+
+    test('a silence older than the sweep\'s period with nothing open is the server\'s own outage, not an incident', async () => {
+      const device = await registerDevice();
+      await readingAt(device.id, new Date(Date.now() - 10 * MINUTE), 71, 44);
+      await postReading(72);
+      assert.deepEqual(await allIncidents(), []);
+    });
+
+    test('the scheduled sweep waits one interval before its first pass, so a restart does not judge Devices before they can report', async () => {
+      const device = await registerDevice();
+      await readingAt(device.id, new Date(Date.now() - 5 * MINUTE));
+      const job = startOfflineSweep({ pool, config: testConfig(), sse }, { intervalMs: 400 });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        assert.deepEqual(await allIncidents(), [], 'no pass at start');
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        assert.equal((await only()).condition, 'Offline', 'the first pass, one interval in');
+      } finally {
+        job.stop();
+      }
     });
 
     test('a Device that has never reported has no Offline incident', async () => {

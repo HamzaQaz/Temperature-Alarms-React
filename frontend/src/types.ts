@@ -156,6 +156,8 @@ export interface OverviewDay {
   maxTempF: number | null;
   /** True when an incident at the Campus overlapped the day. */
   incident: boolean;
+  /** The worst level an incident at the Campus reached that day; null without one. */
+  incidentLevel: ConditionLevel | null;
 }
 
 /** One Campus as IT leadership reads it: now, its worst closet, its week, and its last incident. */

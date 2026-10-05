@@ -14,6 +14,8 @@ interface LevelLook {
   trace: string;
   /** A stretch at this level on the incident ruler: the badge's hue as a fill with no text on it, solid for critical. */
   span: string;
+  /** A day an incident reached this level on the Campuses chart: a past day at the span's strength, and today, still going, solid. */
+  column: { past: string; today: string };
 }
 
 const LOOKS: Record<ConditionLevel, LevelLook> = {
@@ -22,24 +24,28 @@ const LOOKS: Record<ConditionLevel, LevelLook> = {
     border: 'border-destructive',
     trace: 'stroke-destructive',
     span: 'bg-destructive-solid',
+    column: { past: 'fill-destructive-solid', today: 'fill-destructive-solid' },
   },
   high: {
     badge: 'border-transparent bg-red-500/15 text-red-700 dark:bg-red-500/20 dark:text-red-300',
     border: 'border-red-500/70',
     trace: 'stroke-red-500',
     span: 'bg-red-500/70 dark:bg-red-500/55',
+    column: { past: 'fill-red-600/70 dark:fill-red-500/70', today: 'fill-red-600 dark:fill-red-500' },
   },
   warning: {
     badge: 'border-transparent bg-amber-500/15 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300',
     border: 'border-amber-500/70',
     trace: 'stroke-amber-500',
     span: 'bg-amber-500/70 dark:bg-amber-500/45',
+    column: { past: 'fill-amber-600/70 dark:fill-amber-500/70', today: 'fill-amber-600 dark:fill-amber-500' },
   },
   moderate: {
     badge: 'border-transparent bg-yellow-400/20 text-yellow-800 dark:bg-yellow-400/15 dark:text-yellow-200',
     border: 'border-yellow-500/60',
     trace: 'stroke-yellow-500',
     span: 'bg-yellow-400/60 dark:bg-yellow-400/35',
+    column: { past: 'fill-yellow-500/60 dark:fill-yellow-400/60', today: 'fill-yellow-500 dark:fill-yellow-400' },
   },
 };
 

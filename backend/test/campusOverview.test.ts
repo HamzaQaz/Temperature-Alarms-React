@@ -17,6 +17,8 @@ interface OverviewDay {
   partial: boolean;
   maxTempF: number | null;
   incident: boolean;
+  /** The worst level any incident reached on that day, or null. */
+  incidentLevel: Condition['level'] | null;
 }
 
 interface CampusOverview {
@@ -175,6 +177,35 @@ describe('GET /api/campuses/overview', () => {
       ['2026-10-05', false],
     ]);
     assert.deepEqual(recent.lastIncident, { ongoing: false, end: end.toISOString() });
+  });
+
+  test('each day carries the worst level an incident reached on that day, from its segments, so a critical stretch is never shown as warning', async () => {
+    const c = await campus('Swing High', 'SH');
+    const d = await device(c.id);
+    await readingAt(d.id, secondsAgo(10));
+    // Hot warning from 22:00 on 1 October in Chicago, critical from 01:00 to 02:00 on the 2nd, warning again until 03:00.
+    const t = (iso: string) => new Date(iso);
+    await insertIncident(pool, d.id, {
+      condition: 'Hot',
+      level: 'critical',
+      start: t('2026-10-02T03:00:00Z'),
+      end: t('2026-10-02T08:00:00Z'),
+      peak: { tempF: 91, humidity: 40, recordedAt: t('2026-10-02T06:30:00Z') },
+      segments: [
+        { level: 'warning', start: t('2026-10-02T03:00:00Z'), end: t('2026-10-02T06:00:00Z') },
+        { level: 'critical', start: t('2026-10-02T06:00:00Z'), end: t('2026-10-02T07:00:00Z') },
+        { level: 'warning', start: t('2026-10-02T07:00:00Z'), end: t('2026-10-02T08:00:00Z') },
+      ],
+      cleanReadings: 2,
+      firstCleanAt: t('2026-10-02T08:00:00Z'),
+    });
+
+    const [swing] = (await overview()).campuses;
+    assert.deepEqual(swing.days.filter((day) => day.incident).map((day) => [day.date, day.incidentLevel]), [
+      ['2026-10-01', 'warning'],
+      ['2026-10-02', 'critical'],
+    ]);
+    assert.ok(swing.days.filter((day) => !day.incident).every((day) => day.incidentLevel === null));
   });
 
   test('an ongoing incident marks every day since it began and is reported with its start', async () => {

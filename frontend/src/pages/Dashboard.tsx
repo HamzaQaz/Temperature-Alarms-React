@@ -71,7 +71,8 @@ export default function Dashboard() {
       </header>
 
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
+        {/* On a phone the strip takes the whole row, to the screen's edges, and the order sits under it rather than over its end. */}
+        <div className="min-w-0 flex-1 max-sm:basis-full">
           {/* The filter's own placeholder, so the cards below do not jump when the Campuses arrive. */}
           {campuses.state.status === 'loading' && <Skeleton className="h-9 w-80 max-w-full rounded-lg" />}
           {campusList.length > 0 && (
@@ -172,14 +173,26 @@ function DashboardContent({ campus, order, campusName, onShowAll }: DashboardCon
     if (state.status === 'ready') dashboardCache.set(cacheKey(state.data.campus, state.data.order), state.data);
   }, [state]);
 
+  // Hostnames a reload was already asked for without a card coming back (another Campus's under
+  // the filter), so each Device costs at most one request per view, however often it reports.
+  const askedAbout = useRef(new Set<string>());
+  useEffect(() => {
+    askedAbout.current = new Set();
+  }, [load]);
+
   // Each Reading lands on its card as it arrives; one that changes a card's worst level under worst
-  // first also asks the server for the new order, and the card glides there. Only a Reading starts
-  // this, never the answer, so it cannot loop. After a dropped stream, reload: anything sent meanwhile was missed.
+  // first also asks the server for the new order, and the card glides there. A Reading from a Device
+  // with no card (registered after this loaded) asks the server once, so a new closet never stays
+  // invisible. Only a Reading starts this, never the answer, so it cannot loop. After a dropped
+  // stream, reload: anything sent meanwhile was missed.
   const stream = useReadingStream({
     onReading: (event) => {
       const moves = shown.current !== undefined && movesCard(shown.current, event);
+      const unknown =
+        shown.current !== undefined && !shown.current.devices.some((d) => d.hostname === event.device) && !askedAbout.current.has(event.device);
+      if (unknown) askedAbout.current.add(event.device);
       update((dashboard) => applyReading(dashboard, event));
-      if (moves) void reload();
+      if (moves || unknown) void reload();
     },
     onReconnect: () => void reload(),
   });

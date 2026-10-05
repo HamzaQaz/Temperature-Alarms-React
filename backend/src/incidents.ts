@@ -174,6 +174,21 @@ export function offlineIncident(last: TimedReading | null, now: Date, rules: Con
 }
 
 /**
+ * The Offline stretch a Reading ends that the sweep never got to open: the Device went Offline
+ * after `previous` and is back before the next pass. Recorded already closed, from when the
+ * server would first have reported it Offline to this Reading. Only a stretch that began within
+ * the last `sweepSeconds` counts: an older one with nothing open means no sweep was running, so
+ * the silence was the server's own (a restart, an outage), not the Device's.
+ */
+export function missedOffline(previous: TimedReading | null, reading: TimedReading, rules: ConditionRules, sweepSeconds: number): IncidentStep | null {
+  if (previous === null) return null;
+  const start = offlineStartsAt(previous.recordedAt, rules);
+  const at = reading.recordedAt.getTime();
+  if (start.getTime() > at || start.getTime() < at - sweepSeconds * 1000) return null;
+  return close(opened('Offline', 'warning', start, previous).incident, reading.recordedAt);
+}
+
+/**
  * Run the rules over a Device's Readings, oldest first, as ingest and the Offline sweep would
  * have seen them live: every gap longer than the allowed missed reports opens an Offline
  * incident that the next Reading closes. A silence after the last Reading counts up to `until`.

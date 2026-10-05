@@ -62,7 +62,7 @@ export const dayName = (day: OverviewDay): string => (day.partial ? 'Today' : sh
 /** The chart in words: every day's high, the line, and the days an incident touched. */
 export function chartLabel(days: OverviewDay[], thresholdF: number): string {
   const highs = days.map((d) => `${dayName(d)} ${d.maxTempF === null ? 'no Readings' : `${figure(d.maxTempF)}°F${d.partial ? ' so far' : ''}`}`);
-  const flagged = days.filter((d) => d.incident).map(dayName);
+  const flagged = days.flatMap((d) => (d.incidentLevel === null ? [] : [`${dayName(d)} (${d.incidentLevel})`]));
   const incidents = flagged.length === 0 ? 'No incident in the 7 days.' : `An incident on ${flagged.join(', ')}.`;
   return `Daily high: ${highs.join(', ')}. Hot warning line at ${figure(thresholdF)}°F. ${incidents}`;
 }
@@ -109,12 +109,13 @@ export interface SinceLast {
 export function sinceLast(last: CampusOverview['lastIncident'], now: number, retentionDays: number): SinceLast {
   if (last === null) return { value: `None in ${retentionDays} days`, note: 'As far back as Readings go', ongoing: false, date: null };
   if (last.ongoing) return { value: 'Ongoing', note: `Since ${formatWhen(last.start, now)}`, ongoing: true, date: toDateString(new Date(now)) };
-  return { value: formatGap(now - new Date(last.end).getTime()), note: `Ended ${formatWhen(last.end, now)}`, ongoing: false, date: toDateString(new Date(last.end)) };
+  const gap = now - new Date(last.end).getTime();
+  return { value: gap < 60_000 ? 'Just now' : formatGap(gap), note: `Ended ${formatWhen(last.end, now)}`, ongoing: false, date: toDateString(new Date(last.end)) };
 }
 
 /** Everything a row shows that can change while the page is open; a change in it takes the Reading-landed wash. */
 export const rowSignature = (campus: CampusOverview): string =>
-  JSON.stringify([campus.now, campus.worst?.id, campus.worst?.latestReading, campus.worst?.level, campus.days.map((d) => [d.maxTempF, d.incident]), campus.lastIncident]);
+  JSON.stringify([campus.now, campus.worst?.id, campus.worst?.latestReading, campus.worst?.level, campus.days.map((d) => [d.maxTempF, d.incidentLevel]), campus.lastIncident]);
 
 /** "Oak Hollow", "Oak Hollow and Harbor View", "A, B, and C". */
 export function listNames(names: string[]): string {
