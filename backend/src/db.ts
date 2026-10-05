@@ -20,6 +20,8 @@ export function createPool(config: DatabaseConfig): Pool {
     ...config,
     waitForConnections: true,
     connectionLimit: 10,
+    // A vanished db host fails fast (a 500) instead of hanging each request for mysql2's default 10 s.
+    connectTimeout: 3000,
     timezone: 'Z',
   });
   // The event hands over the core, callback-style connection, whatever the promise typings say.

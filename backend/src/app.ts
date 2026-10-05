@@ -2,6 +2,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import rateLimit from 'express-rate-limit';
 import type { AppDeps, RouteDeps } from './deps';
 import { createBroadcaster } from './sse';
+import { createIngestHealth } from './ingestHealth';
 import { MonotonicStore } from './monotonicStore';
 import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
@@ -21,7 +22,12 @@ export const WRITE_LIMIT = 500;
 
 /** The Express app, without a listening socket, so tests can drive it directly. */
 export function createApp(appDeps: AppDeps): Express {
-  const deps: RouteDeps = { ...appDeps, sse: appDeps.sse ?? createBroadcaster() };
+  const deps: RouteDeps = {
+    ...appDeps,
+    sse: appDeps.sse ?? createBroadcaster(),
+    // Two Report intervals: long enough that a failure is seen by the next healthcheck, short enough to clear on its own.
+    ingest: appDeps.ingest ?? createIngestHealth(2 * appDeps.config.reportIntervalSeconds * 1000),
+  };
   const app = express();
   // Naming the framework only helps someone matching it to an advisory.
   app.disable('x-powered-by');
@@ -66,7 +72,7 @@ export function createApp(appDeps: AppDeps): Express {
     }),
   );
 
-  app.use('/api/health', healthRouter(deps.pool));
+  app.use('/api/health', healthRouter(deps));
   app.use('/api/campuses/overview', campusOverviewRouter(deps));
   app.use('/api/campuses', campusesRouter(deps));
   app.use('/api/devices/:id/history', historyRouter(deps));

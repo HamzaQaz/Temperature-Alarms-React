@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
-import type { RequestHandler } from 'express';
+import type { Request, RequestHandler } from 'express';
 import type { Config } from './config';
 
 function bearerToken(header: string | undefined): string | undefined {
@@ -30,3 +30,9 @@ export const requireAdminToken = (config: Config): RequestHandler => requireBear
 
 /** Guards the Reading ingest route. */
 export const requireDeviceToken = (config: Config): RequestHandler => requireBearerToken(config.deviceToken);
+
+/** Whether a request carries the Device token, for the ingest route's refusal limit. */
+export const hasDeviceToken =
+  (config: Config) =>
+  (req: Request): boolean =>
+    tokensMatch(bearerToken(req.header('authorization')), config.deviceToken);

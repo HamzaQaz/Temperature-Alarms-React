@@ -1,6 +1,6 @@
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Pool } from 'mysql2/promise';
+import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, TEST_ADMIN_TOKEN, type RunningServer } from './helpers/server';
 import { api, asAdmin, asDevice, json, type Campus, type Dashboard, type Device } from './helpers/api';
@@ -92,6 +92,56 @@ describe('security', () => {
       for (const hostname of hostnames) {
         const response = await client.readings.add({ device: hostname, temp: 70, humidity: 40 }, from('198.51.100.4', asDevice()));
         assert.equal(response.status, 201, hostname);
+        await response.arrayBuffer();
+      }
+    });
+
+    test('Readings a board gave up on while the database stalled are never counted as wrong tokens', async () => {
+      const campus = await client.campuses.create();
+      // One Device per stalled POST, so the per-Device write limit never answers in their place.
+      const hostnames = Array.from({ length: DEVICE_AUTH_FAILURE_LIMIT + 5 }, (_, i) => `ESP_${(0xb00000 + i).toString(16).toUpperCase()}`);
+      for (const hostname of hostnames) await client.devices.create(campus.id, hostname);
+      // The stall: every Device row locked by another connection, so ingest waits, as it does while the db is away or slow.
+      const holder = createTestPool();
+      const lock = await holder.getConnection();
+      try {
+        await lock.beginTransaction();
+        await lock.query('SELECT id FROM devices FOR UPDATE');
+        // Each board gives up before the answer, as the firmware does after its HTTP timeout.
+        await Promise.all(
+          hostnames.map((hostname) =>
+            client.readings
+              .add({ device: hostname, temp: 70, humidity: 40 }, from('198.51.100.77', { ...asDevice(), signal: AbortSignal.timeout(300) }))
+              .then(
+                (response: Response) => assert.fail(`${hostname} was answered ${response.status} during the stall`),
+                (error: Error) => assert.equal(error.name, 'TimeoutError'),
+              ),
+          ),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } finally {
+        await lock.rollback();
+        lock.release();
+        await holder.end();
+      }
+      const after = await client.readings.add({ device: hostnames[0], temp: 70, humidity: 40 }, from('198.51.100.77', asDevice()));
+      assert.equal(after.status, 201);
+      await after.arrayBuffer();
+      // The stalled Readings still commit once the lock goes (N5 in the resilience report); let them finish before the pool closes.
+      for (let waited = 0; waited < 10_000; waited += 50) {
+        const [[{ count }]] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS count FROM readings');
+        if (Number(count) >= hostnames.length + 1) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    });
+
+    test('a refusal other than a wrong token is never counted as one', async () => {
+      // No Device is registered, so every right-token Reading is a 404: neither a success nor a wrong token.
+      for (let i = 0; i <= DEVICE_AUTH_FAILURE_LIMIT; i++) {
+        const hostname = `ESP_${(0xc00000 + i).toString(16).toUpperCase()}`;
+        const response = await client.readings.add({ device: hostname, temp: 70, humidity: 40 }, from('198.51.100.78', asDevice()));
+        assert.equal(response.status, 404, `post ${i + 1}`);
         await response.arrayBuffer();
       }
     });

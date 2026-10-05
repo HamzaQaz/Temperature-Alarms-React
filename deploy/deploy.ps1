@@ -20,7 +20,7 @@ $ExamplePath = Join-Path $RepoDir '.env.example'
 $BackupDir = Join-Path $RepoDir 'backups'
 $DbName = 'temperature_alarms'
 $Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD')
-$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE')
+$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE')
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
 # repeated deploy leaves the running containers alone instead of recreating them.
 if (-not $env:BUILDX_NO_DEFAULT_ATTESTATIONS) { $env:BUILDX_NO_DEFAULT_ATTESTATIONS = '1' }
@@ -257,6 +257,8 @@ function Test-Setting([string]$Key, [string]$Value) {
         'WEB_PORT' { return $Value -match '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' }
         'TRUST_PROXY' { return Test-TrustProxy $Value }
         'LEGACY_TIME_ZONE' { return ($Value -eq '') -or ($Value -match '^[A-Za-z0-9_/+:-]+$') }
+        # MySQL's size syntax: bytes, or a whole number of K, M, or G.
+        'DB_BUFFER_POOL_SIZE' { return ($Value -eq '') -or ($Value -cmatch '^[1-9][0-9]*[KMG]?$') }
         default { return $Value -match '^[0-9]+$' }
     }
 }
@@ -305,7 +307,7 @@ function Read-Tunables {
                 if (Test-Setting $k $value) { break }
                 Warn "'$value' is not valid for $k"
             }
-            if ($k -eq 'LEGACY_TIME_ZONE' -and -not $value) { continue }
+            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE') -and -not $value) { continue }
             Set-EnvValue $k $value
         }
     }
@@ -557,11 +559,21 @@ function Invoke-Restore {
     if ($LASTEXITCODE -ne 0) { Fail 'could not copy the backup into the db container' }
     Invoke-Dc exec -T db gzip -t $tmp
     if ($LASTEXITCODE -ne 0) { Invoke-Dc exec -T db rm -f $tmp; Fail "$($O.File) is not a readable .sql.gz" }
-    try { Confirm-Typed "This replaces every table in the $(Get-ProjectName) database with $($O.File)." }
+    try { Confirm-Typed "This replaces the whole $(Get-ProjectName) database with $($O.File): every table, including any the backup does not have." }
     catch { Invoke-Dc exec -T db rm -f $tmp; throw }
     Invoke-Backup
     Ok "the current database is saved in $script:LastBackup"
     Invoke-Dc stop api
+    # Into an empty database, so a table the dump lacks (one a later version added) does not survive
+    # with rows from after the backup (.scratch/prodtest/resilience.md S5). The temperature user's
+    # grant is on the database name and survives the drop; the api's migrations recreate whatever
+    # newer tables the dump lacks, empty, when it starts.
+    Invoke-Dc exec -T db sh -c "MYSQL_PWD=`$MYSQL_ROOT_PASSWORD mysql -uroot -e 'DROP DATABASE IF EXISTS ``$DbName``; CREATE DATABASE ``$DbName``'"
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Dc exec -T db rm -f $tmp
+        Invoke-Dc up -d --wait api
+        Fail "could not empty the database before the restore; put the previous state back with: deploy.ps1 restore --file $script:LastBackup"
+    }
     Invoke-Dc exec -T db sh -c "gzip -dc $tmp | MYSQL_PWD=`$MYSQL_ROOT_PASSWORD mysql -uroot $DbName"
     $restored = $LASTEXITCODE
     Invoke-Dc exec -T db rm -f $tmp

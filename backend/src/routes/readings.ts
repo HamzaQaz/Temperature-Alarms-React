@@ -1,7 +1,7 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type RequestHandler } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import { requireAdminToken, requireDeviceToken } from '../auth';
+import { hasDeviceToken, requireAdminToken, requireDeviceToken } from '../auth';
 import type { RouteDeps } from '../deps';
 import { closetType } from '../closet';
 import { SELECT_DEVICES, toDevice, type DeviceRow } from './devices';
@@ -79,7 +79,7 @@ export const DEVICE_AUTH_FAILURE_LIMIT = 100;
  * Reading ingest (POST /api/readings): a Device posts `{device, temp, humidity}` with the
  * Device token. Each recorded Reading is broadcast to every open dashboard.
  */
-export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
+export function readingsRouter({ pool, config, sse, ingest, listening }: RouteDeps): Router {
   const router = Router();
   const rules = conditionRules(config);
 
@@ -102,22 +102,44 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
   });
 
   // The general /api/ limit skips this route, so refusals get their own: per address, since a guesser
-  // can claim any hostname. Every request is counted until the token is right, then none are, so a
-  // campus of boards with the right token behind one address never adds to it. Past the limit even
-  // the right token is refused from that address, or the 429 would tell a guesser which guess was right.
+  // can claim any hostname. Only a request with a missing or wrong token is counted, and it is
+  // answered at once with a 401. A request with the right token is never counted: not a campus of
+  // boards behind one address, and not the Readings boards gave up on while the database stalled
+  // (express-rate-limit counts on arrival and takes back on finish, so a hundred stalled right-token
+  // POSTs in flight at once would otherwise lock their own address out; resilience.md B1).
+  const isDevice = hasDeviceToken(config);
+  const addressKey = (req: Request): string => ipKeyGenerator(req.ip ?? '');
+  const authFailureMessage = { error: 'Too many requests with a wrong Device token from this address, please try again later.' };
   const authFailureLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: DEVICE_AUTH_FAILURE_LIMIT,
     store: new MonotonicStore(),
     standardHeaders: true,
     legacyHeaders: false,
-    requestWasSuccessful: (_req, res) => res.statusCode !== 401,
-    skipSuccessfulRequests: true,
-    message: { error: 'Too many requests with a wrong Device token from this address, please try again later.' },
+    keyGenerator: addressKey,
+    skip: isDevice,
+    message: authFailureMessage,
     validate: false,
   });
+  // Past the limit even the right token is refused from that address, or the 429 would tell a
+  // guesser which guess was right.
+  const refuseLockedOutAddress: RequestHandler = async (req, res, next) => {
+    try {
+      const counted = isDevice(req) ? await authFailureLimiter.getKey(addressKey(req)) : undefined;
+      if (counted !== undefined && counted.totalHits >= DEVICE_AUTH_FAILURE_LIMIT) {
+        if (counted.resetTime !== undefined) {
+          res.set('Retry-After', String(Math.max(0, Math.ceil((counted.resetTime.getTime() - Date.now()) / 1000))));
+        }
+        res.status(429).json(authFailureMessage);
+        return;
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 
-  router.post('/', authFailureLimiter, requireDeviceToken(config), writeLimiter, async (req, res, next) => {
+  router.post('/', refuseLockedOutAddress, authFailureLimiter, requireDeviceToken(config), writeLimiter, async (req, res, next) => {
     const parsed = parseReading(req.body);
     if ('error' in parsed) {
       res.status(422).json({ error: parsed.error });
@@ -141,11 +163,13 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
           return;
         }
         recordedAt = serverNow();
+        // The database answers again: a silence before this is the server's, not the Device's (listening.ts).
+        listening?.regained(recordedAt);
         await conn.query<ResultSetHeader>(
           'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
           [device.id, tempF, humidity, recordedAt],
         );
-        changed = await recordReadingIncidents(conn, device.id, { tempF, humidity, recordedAt }, rules);
+        changed = await recordReadingIncidents(conn, device.id, { tempF, humidity, recordedAt }, rules, listening?.since());
         await conn.commit();
       } catch (error) {
         await conn.rollback();
@@ -153,6 +177,7 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
       } finally {
         conn.release();
       }
+      ingest.succeeded();
       const reading: ReadingPayload = { tempF, humidity, recordedAt: recordedAt.toISOString() };
       res.status(201).json({ device: device.hostname, reading });
       // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
@@ -160,6 +185,11 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
       sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions });
       await broadcastIncidentChanges(pool, sse, changed);
     } catch (error) {
+      // Only before the 201: a failed broadcast afterwards is not a Reading lost.
+      if (!res.headersSent) {
+        ingest.failed();
+        listening?.lost();
+      }
       next(error);
     }
   });

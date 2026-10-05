@@ -23,6 +23,7 @@ import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useAnnouncer } from '@/hooks/use-announcer';
 import { LiveAnnouncement } from '@/components/LiveAnnouncement';
 import { deviceChanges, type Announcement } from '@/lib/announce';
+import { errorReloads } from '@/lib/reload';
 import { useResource } from '@/hooks/use-resource';
 import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, ReadingEvent } from '@/types';
 
@@ -199,7 +200,9 @@ function DashboardContent({ campus, order, campusName, onShowAll, announce }: Da
   // first also asks the server for the new order, and the card glides there. A Reading from a Device
   // with no card (registered after this loaded) asks the server once, so a new closet never stays
   // invisible. Only a Reading starts this, never the answer, so it cannot loop. After a dropped
-  // stream, reload: anything sent meanwhile was missed.
+  // stream, reload: anything sent meanwhile was missed. On the error screen, any event reloads: the
+  // stream working means the server is back (lib/reload.ts).
+  const [reloadOnError] = useState(() => errorReloads(monotonicNow));
   const stream = useReadingStream({
     onReading: (event) => {
       const moves = shown.current !== undefined && movesCard(shown.current, event);
@@ -207,7 +210,10 @@ function DashboardContent({ campus, order, campusName, onShowAll, announce }: Da
         shown.current !== undefined && !shown.current.devices.some((d) => d.hostname === event.device) && !askedAbout.current.has(event.device);
       if (unknown) askedAbout.current.add(event.device);
       update((dashboard) => applyReading(dashboard, event));
-      if (moves || unknown) void reload();
+      if (moves || unknown || reloadOnError(state.status)) void reload();
+    },
+    onIncident: () => {
+      if (reloadOnError(state.status)) void reload();
     },
     onReconnect: () => void reload(),
   });

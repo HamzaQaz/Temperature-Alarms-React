@@ -165,6 +165,9 @@ for (const name of BROWSERS) {
     for (const theme of state.theme ? ['dark', 'light'] : ['dark']) {
       const context = await browser.newContext({
         viewport: state.viewport ?? { width: 1280, height: 900 },
+        // The production nginx sends a CSP (script-src 'self') that rightly refuses the injected axe
+        // script, so the audit page ignores it. The CSP itself is checked by .scratch/ct/csp-probe.mjs.
+        bypassCSP: true,
         ...(process.env.SPREAD_ADDRESSES ? { extraHTTPHeaders: { 'x-forwarded-for': `10.9.${results.length >> 8}.${results.length & 255}` } } : {}),
       });
       if (theme === 'light') await context.addInitScript(() => localStorage.setItem('vite-ui-theme', 'light'));

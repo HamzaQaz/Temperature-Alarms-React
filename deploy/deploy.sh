@@ -16,7 +16,7 @@ ENV_FILE=".env"
 BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
 SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD"
-TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE"
+TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE"
 # The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
 DEMO_PROJECT="temperature-alarms-demo"
 DEMO_ENV=".env.demo"
@@ -266,6 +266,8 @@ valid_tunable() {
     WEB_PORT) printf '%s' "$2" | grep -Eq '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' ;;
     TRUST_PROXY) valid_trust_proxy "$2" ;;
     LEGACY_TIME_ZONE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[A-Za-z0-9_/+:-]+$' ;;
+    # MySQL's size syntax: bytes, or a whole number of K, M, or G.
+    DB_BUFFER_POOL_SIZE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[1-9][0-9]*[KMG]?$' ;;
     *) printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
   esac
 }
@@ -321,7 +323,7 @@ prompt_tunables() {
         valid_tunable "$k" "$value" && break
         warn "'$value' is not valid for $k"
       done
-      if [ "$k" = LEGACY_TIME_ZONE ] && [ -z "$value" ]; then continue; fi
+      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ]; } && [ -z "$value" ]; then continue; fi
       env_set "$k" "$value"
     done
   fi
@@ -597,10 +599,19 @@ do_restore() {
   [ -n "$FILE" ] || pick_backup
   [ -f "$FILE" ] || die "$FILE does not exist"
   gzip -t "$FILE" 2>/dev/null || die "$FILE is not a readable .sql.gz"
-  typed_confirm "This replaces every table in the $(project_name) database with $FILE."
+  typed_confirm "This replaces the whole $(project_name) database with $FILE: every table, including any the backup does not have."
   do_backup
   ok "the current database is saved in $LAST_BACKUP"
   dc stop api
+  # Into an empty database, so a table the dump lacks (one a later version added) does not survive
+  # with rows from after the backup (.scratch/prodtest/resilience.md S5). The temperature user's
+  # grant is on the database name and survives the drop; the api's migrations recreate whatever
+  # newer tables the dump lacks, empty, when it starts.
+  # shellcheck disable=SC2016 # $MYSQL_ROOT_PASSWORD expands inside the db container
+  if ! dc exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "DROP DATABASE IF EXISTS \`'"$DB_NAME"'\`; CREATE DATABASE \`'"$DB_NAME"'\`"'; then
+    dc up -d --wait api
+    die "could not empty the database before the restore; put the previous state back with: deploy.sh restore --file $LAST_BACKUP"
+  fi
   # shellcheck disable=SC2016 # $MYSQL_ROOT_PASSWORD expands inside the db container
   if ! gzip -dc "$FILE" | dc exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot '"$DB_NAME"; then
     dc up -d --wait api

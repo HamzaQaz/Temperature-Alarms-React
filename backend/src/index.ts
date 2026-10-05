@@ -6,6 +6,7 @@ import { migrationContext, runMigrations } from './migrations';
 import { startRetentionJob } from './retention';
 import { startOfflineSweep } from './offlineSweep';
 import { createBroadcaster } from './sse';
+import { createListening } from './listening';
 
 dotenv.config();
 
@@ -30,12 +31,14 @@ async function main(): Promise<void> {
 
   // One client set, shared by the routes and the Offline sweep, so both reach every dashboard.
   const sse = createBroadcaster();
-  const app = createApp({ config, pool, sse });
+  // The server hears Devices from now; their silence while it was down is not theirs (listening.ts).
+  const listening = createListening(new Date());
+  const app = createApp({ config, pool, sse, listening });
   app.listen(config.port, () => {
     console.log(`Server is running on port ${config.port}`);
   });
   startRetentionJob({ config, pool });
-  startOfflineSweep({ config, pool, sse });
+  startOfflineSweep({ config, pool, sse, listening });
 }
 
 main().catch((error) => {

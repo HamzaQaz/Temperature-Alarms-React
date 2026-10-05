@@ -34,8 +34,10 @@ import {
   type WindowKind,
 } from '@/lib/incidentWindow';
 import { addDays, formatDayLong, formatDayShort, formatTime, isDateString, toDateString } from '@/lib/localDate';
+import { monotonicNow } from '@/lib/elapsed';
 import { settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
+import { errorReloads } from '@/lib/reload';
 import type { Incident, IncidentEvent, Incidents as IncidentsPayload } from '@/types';
 
 /** A window's incidents as loaded, with the window they were asked for, so the page knows when what it shows is behind the controls. */
@@ -99,8 +101,14 @@ export default function Incidents() {
   }
 
   const loaded = state.status === 'ready' ? state.data : undefined;
+  const [reloadOnError] = useState(() => errorReloads(monotonicNow));
   const stream = useReadingStream({
+    // On the error screen, any event reloads: the stream working means the server is back (lib/reload.ts).
+    onReading: () => {
+      if (reloadOnError(state.status)) void reload();
+    },
     onIncident: ({ change, incident }: IncidentEvent) => {
+      if (reloadOnError(state.status)) void reload();
       if (loaded === undefined) return;
       const present = loaded.incidents.some((i) => i.id === incident.id);
       if (!present && !overlaps(incident, ms(loaded.from), ms(loaded.to), Date.now())) return;
