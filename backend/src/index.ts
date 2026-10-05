@@ -4,6 +4,8 @@ import { loadConfig, ConfigError } from './config';
 import { createPool } from './db';
 import { migrationContext, runMigrations } from './migrations';
 import { startRetentionJob } from './retention';
+import { startOfflineSweep } from './offlineSweep';
+import { createBroadcaster } from './sse';
 
 dotenv.config();
 
@@ -24,11 +26,14 @@ async function main(): Promise<void> {
   const applied = await runMigrations(pool, { context: migrationContext(config) });
   if (applied.length > 0) console.log(`Applied migrations: ${applied.join(', ')}`);
 
-  const app = createApp({ config, pool });
+  // One client set, shared by the routes and the Offline sweep, so both reach every dashboard.
+  const sse = createBroadcaster();
+  const app = createApp({ config, pool, sse });
   app.listen(config.port, () => {
     console.log(`Server is running on port ${config.port}`);
   });
   startRetentionJob({ config, pool });
+  startOfflineSweep({ config, pool, sse });
 }
 
 main().catch((error) => {

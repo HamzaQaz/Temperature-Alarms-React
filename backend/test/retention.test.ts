@@ -102,7 +102,7 @@ describe('retention job', () => {
 
     assert.equal(removed, 7);
     assert.deepEqual(await remaining(), [99]);
-    const deletes = statements.filter((sql) => /^DELETE/.test(sql));
+    const deletes = statements.filter((sql) => /^DELETE FROM readings/.test(sql));
     assert.equal(deletes.length, 3, 'seven Readings in batches of three take three statements: 3, 3, then 1');
     assert.ok(deletes.every((sql) => /LIMIT \?/.test(sql)), 'every DELETE is bounded');
   });

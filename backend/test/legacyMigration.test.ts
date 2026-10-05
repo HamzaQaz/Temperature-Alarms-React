@@ -122,6 +122,8 @@ describe('upgrading a production database', () => {
       'alarms',
       'campuses',
       'devices',
+      'incident_segments',
+      'incidents',
       'legacy_devices',
       'legacy_locations',
       'legacy_readings_progress',
@@ -209,14 +211,15 @@ describe('upgrading a production database', () => {
       '0002-legacy-campuses-and-devices',
       '0003-legacy-readings',
       '0004-readings-recorded-at-index',
+      '0005-incidents',
     ]);
   });
 });
 
 describe('a database that never had legacy tables', () => {
-  test('gets only the three tables and no progress bookkeeping', async () => {
+  test('gets only the new schema tables and no progress bookkeeping', async () => {
     await resetDatabase(pool);
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'readings', 'schema_migrations']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
   });
 
   test('a device table that appears later is still picked up by the guarded migration', async () => {

@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { History, Wifi, WifiOff } from 'lucide-react';
+import { ConditionBadge } from '@/components/ConditionBadge';
 import { EscalationTrace } from '@/components/EscalationTrace';
 import { ReportHairline, type ReportState } from '@/components/ReportHairline';
 import { Badge } from '@/components/ui/badge';
@@ -113,16 +114,6 @@ function OnlineBadge({ offline }: { offline: Condition | undefined }) {
         </motion.span>
       )}
     </AnimatePresence>
-  );
-}
-
-/** One badge per active Condition, sized to be read from across a room. */
-function ConditionBadge({ condition }: { condition: Condition }) {
-  return (
-    <Badge className={cn('px-2.5 py-1 text-sm font-semibold', levelLook(condition.level).badge)}>
-      {condition.name}
-      <span className="font-normal opacity-80">· {condition.level}</span>
-    </Badge>
   );
 }
 

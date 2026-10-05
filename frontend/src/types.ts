@@ -59,6 +59,9 @@ export interface ReadingEvent {
   conditions: Condition[];
 }
 
+/** How the dashboard lists its Devices; the server sorts, the browser shows the order it gets. */
+export type DashboardOrder = 'worst' | 'campus';
+
 export interface Dashboard {
   /** How often a healthy Device sends a Reading, so the UI never hardcodes it. */
   reportIntervalSeconds: number;
@@ -97,4 +100,101 @@ export interface History {
     tempF: DaySummary | null;
     humidity: DaySummary | null;
   };
+}
+
+/** One stretch of an incident at one level. ISO instants in UTC; `end` is null while it lasts. */
+export interface IncidentSegment {
+  level: ConditionLevel;
+  start: string;
+  end: string | null;
+}
+
+/** A stretch of time a Device spent in one Condition at warning or worse, as the server recorded it (ADR 0006). */
+export interface Incident {
+  id: number;
+  device: Device;
+  condition: ConditionName;
+  /** The worst level any segment reached. */
+  level: ConditionLevel;
+  start: string;
+  /** Null while the incident is ongoing. */
+  end: string | null;
+  /** The worst Reading during the incident; for Offline, the last Reading before it. `value` is °F for Hot and Cold, percent for Dry and Mold risk, null for Offline. */
+  peak: { value: number | null; tempF: number; humidity: number | null; recordedAt: string };
+  /** Oldest first; only the last can be open. */
+  segments: IncidentSegment[];
+}
+
+/** Every incident that overlaps a window, oldest first. */
+export interface Incidents {
+  from: string;
+  to: string;
+  incidents: Incident[];
+}
+
+/** What the live stream sends when an incident opens, changes level, or closes. */
+export interface IncidentEvent {
+  type: 'incident';
+  change: 'opened' | 'level' | 'closed';
+  incident: Incident;
+}
+
+/** How many closets at a Campus are in one Condition at one level. */
+export interface ConditionCount extends Condition {
+  count: number;
+}
+
+/** One local day of a Campus's last seven, as the server cut it in the zone asked for. */
+export interface OverviewDay {
+  /** YYYY-MM-DD in the overview's zone. */
+  date: string;
+  from: string;
+  to: string;
+  /** Today, still going: its high so far. */
+  partial: boolean;
+  /** The highest temperature any of the Campus's closets reported that day; null with no Readings. */
+  maxTempF: number | null;
+  /** True when an incident at the Campus overlapped the day. */
+  incident: boolean;
+  /** The worst level an incident at the Campus reached that day; null without one. */
+  incidentLevel: ConditionLevel | null;
+}
+
+/** One Campus as IT leadership reads it: now, its worst closet, its week, and its last incident. */
+export interface CampusOverview {
+  id: number;
+  name: string;
+  shortcode: string;
+  closets: number;
+  /** The level of its worst closet now; null when every closet is in range (or it has none). */
+  level: ConditionLevel | null;
+  now: {
+    /** Each Condition at warning or worse, with how many closets are in it, worst first. */
+    conditions: ConditionCount[];
+    /** Moderate Mold risk: worth knowing, never an incident. */
+    headsUp: ConditionCount[];
+  };
+  /** Its worst closet now; null when the Campus has no Devices. */
+  worst: {
+    id: number;
+    hostname: string;
+    closet: string;
+    closetType: ClosetType | null;
+    latestReading: Reading | null;
+    level: ConditionLevel | null;
+    offline: boolean;
+    conditions: Condition[];
+  } | null;
+  /** The last seven local days, oldest first; the last is today. */
+  days: OverviewDay[];
+  /** The open incident's start, or the end of the latest to close within the retention window. */
+  lastIncident: { ongoing: true; start: string } | { ongoing: false; end: string } | null;
+}
+
+/** Every Campus, worst first, with the line the chart draws and how far back Readings reach. */
+export interface Overview {
+  timeZone: string;
+  threshold: { name: ConditionName; level: ConditionLevel; tempF: number };
+  retentionDays: number;
+  campuses: CampusOverview[];
 }

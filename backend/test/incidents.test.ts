@@ -1,0 +1,442 @@
+import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import type { Pool, RowDataPacket } from 'mysql2/promise';
+import { createTestPool, resetDatabase } from './helpers/database';
+import { startServer, testConfig, type RunningServer } from './helpers/server';
+import { api, asAdmin, errorOf, json, type Incident, type RecordedReading } from './helpers/api';
+import { subscribe, type SseClient } from './helpers/sse';
+import { createBroadcaster, type IncidentEvent } from '../src/sse';
+import { runOfflineSweep, startOfflineSweep } from '../src/offlineSweep';
+import { insertIncident } from '../src/incidentStore';
+import { replayIncidents, type IncidentState } from '../src/incidents';
+import { DEFAULT_THRESHOLDS } from '../src/conditions';
+import { deleteReadingsPastWindow } from '../src/retention';
+
+const MINUTE = 60_000;
+const DAY_MS = 86_400_000;
+/** Three Report intervals of 30 seconds: Offline begins the second after. */
+const OFFLINE_AFTER_MS = 90_000;
+
+describe('incidents', () => {
+  let pool: Pool;
+  let server: RunningServer;
+  let client: ReturnType<typeof api>;
+  let sse: ReturnType<typeof createBroadcaster>;
+  const open: SseClient[] = [];
+
+  before(() => {
+    pool = createTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    sse = createBroadcaster({ heartbeatMs: 60_000 });
+    server = await startServer(pool, testConfig(), { sse });
+    client = api(server);
+  });
+  afterEach(async () => {
+    for (const c of open.splice(0)) c.close();
+    await server.close();
+  });
+  after(() => pool.end());
+
+  const registerDevice = async (hostname = 'ESP_A1B2C3') => {
+    const campus = await client.campuses.create();
+    return client.devices.create(campus.id, hostname, 'IDF 2');
+  };
+  const postReading = async (temp: number, humidity = 40, device = 'ESP_A1B2C3'): Promise<RecordedReading> => {
+    const response = await client.readings.add({ device, temp, humidity });
+    assert.equal(response.status, 201, await response.clone().text());
+    return json<RecordedReading>(response);
+  };
+  /** Every incident from a day ago to an hour ahead: everything a test makes. */
+  const allIncidents = async (): Promise<Incident[]> => (await client.incidents.list(new Date(Date.now() - DAY_MS), new Date(Date.now() + 60 * MINUTE))).incidents;
+  const only = async (): Promise<Incident> => {
+    const incidents = await allIncidents();
+    assert.equal(incidents.length, 1, JSON.stringify(incidents));
+    return incidents[0];
+  };
+  const countRows = async (table: string): Promise<number> => {
+    const [rows] = await pool.query<RowDataPacket[]>(`SELECT COUNT(*) AS n FROM ${table}`);
+    return Number(rows[0].n);
+  };
+  // Ingest stamps the server's time, so a Reading at a chosen instant can only be arranged by writing the row directly.
+  const readingAt = async (deviceId: number, recordedAt: Date, tempF = 72, humidity = 40) => {
+    await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)', [deviceId, tempF, humidity, recordedAt]);
+  };
+  const sweep = (now = new Date()) => runOfflineSweep({ pool, config: testConfig(), sse, now: () => now });
+
+  describe('the rules, through ingest', () => {
+    test('a warning Reading opens an incident with its Device, Condition, level, start, peak, and one open segment', async () => {
+      const device = await registerDevice();
+      await postReading(72);
+      assert.deepEqual(await allIncidents(), [], 'a calm Reading opens nothing');
+
+      const hot = await postReading(85);
+      const incident = await only();
+      assert.deepEqual(incident.device, { id: device.id, hostname: 'ESP_A1B2C3', closet: 'IDF 2', campus: device.campus });
+      assert.equal(incident.condition, 'Hot');
+      assert.equal(incident.level, 'warning');
+      assert.equal(incident.start, hot.reading.recordedAt);
+      assert.equal(incident.end, null);
+      assert.deepEqual(incident.peak, { value: 85, tempF: 85, humidity: 40, recordedAt: hot.reading.recordedAt });
+      assert.deepEqual(incident.segments, [{ level: 'warning', start: hot.reading.recordedAt, end: null }]);
+    });
+
+    test('a level change adds a segment and raises the worst level, which stays when the level falls back', async () => {
+      await registerDevice();
+      const warm = await postReading(85);
+      const critical = await postReading(91);
+      const back = await postReading(86);
+
+      const incident = await only();
+      assert.equal(incident.level, 'critical');
+      assert.deepEqual(incident.segments, [
+        { level: 'warning', start: warm.reading.recordedAt, end: critical.reading.recordedAt },
+        { level: 'critical', start: critical.reading.recordedAt, end: back.reading.recordedAt },
+        { level: 'warning', start: back.reading.recordedAt, end: null },
+      ]);
+      assert.equal(incident.peak.value, 91, 'the hottest Reading is the peak');
+    });
+
+    test('one clean Reading does not close it; two do, and it ends at the first of them', async () => {
+      await registerDevice();
+      await postReading(85);
+      const firstClean = await postReading(72);
+      assert.equal((await only()).end, null, 'one clean Reading is a blip');
+
+      await postReading(73);
+      const incident = await only();
+      assert.equal(incident.end, firstClean.reading.recordedAt);
+      assert.equal(incident.segments.at(-1)?.end, firstClean.reading.recordedAt);
+    });
+
+    test('a blip back into the Condition resets the count', async () => {
+      await registerDevice();
+      await postReading(85);
+      await postReading(72);
+      await postReading(84);
+      await postReading(72);
+      assert.equal((await only()).end, null, 'clean, hot, clean is not two clean Readings in a row');
+      await postReading(72);
+      assert.notEqual((await only()).end, null);
+    });
+
+    test('after it closes, the Condition returning opens a new incident', async () => {
+      await registerDevice();
+      await postReading(85);
+      await postReading(72);
+      await postReading(72);
+      await postReading(83);
+      const incidents = await allIncidents();
+      assert.equal(incidents.length, 2);
+      assert.notEqual(incidents[0].end, null);
+      assert.equal(incidents[1].end, null);
+    });
+
+    test('moderate Mold risk opens nothing; high Mold risk does, peaking at the highest humidity', async () => {
+      await registerDevice();
+      await postReading(72, 65);
+      await postReading(72, 68);
+      assert.deepEqual(await allIncidents(), [], 'moderate Mold risk is a heads-up, not an incident');
+
+      await postReading(80, 75);
+      await postReading(80, 78);
+      await postReading(80, 74);
+      const incident = await only();
+      assert.equal(incident.condition, 'Mold risk');
+      assert.equal(incident.level, 'high');
+      assert.equal(incident.peak.value, 78);
+      assert.equal(incident.peak.humidity, 78);
+
+      // Falling back to moderate counts as clean.
+      await postReading(72, 65);
+      await postReading(72, 65);
+      assert.notEqual((await only()).end, null);
+    });
+
+    test('Cold and Dry peak at the lowest value, and two Conditions at once are two incidents', async () => {
+      await registerDevice();
+      await postReading(48, 18);
+      await postReading(45, 19);
+      await postReading(47, 12);
+      const incidents = await allIncidents();
+      assert.deepEqual(incidents.map((i) => [i.condition, i.peak.value]).sort(), [
+        ['Cold', 45],
+        ['Dry', 12],
+      ]);
+    });
+  });
+
+  describe('Offline', () => {
+    test('opens through the sweep when the server would first report the Device Offline, and closes on the next Reading', async () => {
+      const device = await registerDevice();
+      const last = new Date(Math.floor((Date.now() - 5 * MINUTE) / 1000) * 1000);
+      await readingAt(device.id, last, 71, 44);
+
+      assert.equal(await sweep(new Date(last.getTime() + OFFLINE_AFTER_MS)), 0, 'exactly three intervals is still Online');
+      assert.equal(await sweep(), 1);
+      assert.equal(await sweep(), 0, 'a second pass opens no duplicate');
+
+      const offline = await only();
+      assert.equal(offline.condition, 'Offline');
+      assert.equal(offline.level, 'warning');
+      assert.equal(offline.start, new Date(last.getTime() + OFFLINE_AFTER_MS + 1000).toISOString());
+      assert.equal(offline.end, null);
+      assert.deepEqual(offline.peak, { value: null, tempF: 71, humidity: 44, recordedAt: last.toISOString() }, 'the peak is the last Reading before it');
+
+      const back = await postReading(72);
+      const closed = await only();
+      assert.equal(closed.end, back.reading.recordedAt);
+      assert.deepEqual(closed.segments, [{ level: 'warning', start: offline.start, end: back.reading.recordedAt }]);
+    });
+
+    test('a Device back before the sweep caught its silence still gets the Offline stretch, already closed', async () => {
+      const device = await registerDevice();
+      // Offline began 9 seconds ago, inside the sweep's period, and no pass has run since.
+      const last = new Date(Math.floor((Date.now() - OFFLINE_AFTER_MS - 10_000) / 1000) * 1000);
+      await readingAt(device.id, last, 71, 44);
+
+      const back = await postReading(72);
+      const offline = await only();
+      assert.equal(offline.condition, 'Offline');
+      assert.equal(offline.start, new Date(last.getTime() + OFFLINE_AFTER_MS + 1000).toISOString());
+      assert.equal(offline.end, back.reading.recordedAt);
+      assert.deepEqual(offline.peak, { value: null, tempF: 71, humidity: 44, recordedAt: last.toISOString() });
+      assert.deepEqual(offline.segments, [{ level: 'warning', start: offline.start, end: back.reading.recordedAt }]);
+      assert.equal(await sweep(), 0, 'the sweep opens nothing more');
+    });
+
+    test('a silence older than the sweep\'s period with nothing open is the server\'s own outage, not an incident', async () => {
+      const device = await registerDevice();
+      await readingAt(device.id, new Date(Date.now() - 10 * MINUTE), 71, 44);
+      await postReading(72);
+      assert.deepEqual(await allIncidents(), []);
+    });
+
+    test('the scheduled sweep waits one interval before its first pass, so a restart does not judge Devices before they can report', async () => {
+      const device = await registerDevice();
+      await readingAt(device.id, new Date(Date.now() - 5 * MINUTE));
+      const job = startOfflineSweep({ pool, config: testConfig(), sse }, { intervalMs: 400 });
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        assert.deepEqual(await allIncidents(), [], 'no pass at start');
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        assert.equal((await only()).condition, 'Offline', 'the first pass, one interval in');
+      } finally {
+        job.stop();
+      }
+    });
+
+    test('a Device that has never reported has no Offline incident', async () => {
+      await registerDevice();
+      assert.equal(await sweep(), 0);
+    });
+
+    test('a Device still Online opens nothing', async () => {
+      await registerDevice();
+      await postReading(72);
+      assert.equal(await sweep(), 0);
+    });
+  });
+
+  test('a restart (a new app instance on the same database) continues an open incident', async () => {
+    await registerDevice();
+    await postReading(85);
+    await server.close();
+
+    server = await startServer(pool, testConfig(), { sse });
+    client = api(server);
+    await postReading(91);
+    const incident = await only();
+    assert.deepEqual(incident.segments.map((s) => s.level), ['warning', 'critical'], 'the same incident, one level up');
+    await postReading(72);
+    await postReading(72);
+    assert.notEqual((await only()).end, null);
+  });
+
+  test('deleting a Device removes its incidents and their segments', async () => {
+    const device = await registerDevice();
+    await postReading(91);
+    await postReading(85);
+    assert.equal(await countRows('incident_segments'), 2);
+
+    assert.equal((await fetch(client.devices.url(`/${device.id}`), { ...asAdmin(), method: 'DELETE' })).status, 204);
+    assert.equal(await countRows('incidents'), 0);
+    assert.equal(await countRows('incident_segments'), 0);
+  });
+
+  test('resetting history removes the Device\'s incidents and leaves other Devices\' alone', async () => {
+    const device = await registerDevice('ESP_A1B2C3');
+    await client.devices.create(device.campus.id, 'ESP_D4E5F6', 'MDF');
+    await postReading(91, 40, 'ESP_A1B2C3');
+    await postReading(91, 40, 'ESP_D4E5F6');
+
+    assert.equal((await client.devices.resetHistory(device.id)).status, 204);
+    const left = await only();
+    assert.equal(left.device.hostname, 'ESP_D4E5F6');
+    assert.equal(await countRows('incident_segments'), 1);
+  });
+
+  test('retention prunes incidents that ended before the window, keeping ongoing ones however old', async () => {
+    const device = await registerDevice();
+    const now = new Date('2026-09-09T12:00:00Z');
+    const at = (daysAgo: number) => new Date(now.getTime() - daysAgo * DAY_MS);
+    const incident = (start: Date, end: Date | null, condition: IncidentState['condition'] = 'Hot'): IncidentState => ({
+      condition,
+      level: 'warning',
+      start,
+      end,
+      peak: { tempF: 85, humidity: 40, recordedAt: start },
+      segments: [{ level: 'warning', start, end }],
+      cleanReadings: 0,
+      firstCleanAt: null,
+    });
+    await insertIncident(pool, device.id, incident(at(100), at(95)));
+    await insertIncident(pool, device.id, incident(at(92), at(89)));
+    await insertIncident(pool, device.id, incident(at(120), null, 'Dry'));
+
+    await deleteReadingsPastWindow({ pool, config: testConfig({ retentionDays: 90 }), now: () => now }, { log: () => {} });
+
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT started_at AS start FROM incidents ORDER BY started_at');
+    assert.deepEqual(rows.map((r) => (r.start as Date).toISOString()), [at(120).toISOString(), at(92).toISOString()]);
+    assert.equal(await countRows('incident_segments'), 2, 'the pruned incident\'s segments went with it');
+  });
+
+  describe('GET /api/incidents', () => {
+    const window = (query: string) => client.incidents.fetch(query);
+
+    test('needs from and to as ISO instants, from before to, and at most eight days apart (422 otherwise), with no token', async () => {
+      const cases: [string, RegExp][] = [
+        ['', /from is required/],
+        ['?from=2026-10-01T00:00:00Z', /to is required/],
+        ['?from=yesterday&to=2026-10-02T00:00:00Z', /from must be an ISO instant/],
+        ['?from=2026-10-01T00:00:00&to=2026-10-02T00:00:00Z', /from must be an ISO instant with a zone/],
+        ['?from=2026-10-02T00:00:00Z&to=2026-10-02T00:00:00Z', /from must be before to/],
+        ['?from=2026-10-03T00:00:00Z&to=2026-10-02T00:00:00Z', /from must be before to/],
+        ['?from=2026-10-01T00:00:00Z&to=2026-10-09T00:00:01Z', /at most 8 days/],
+      ];
+      for (const [query, message] of cases) {
+        const response = await window(query);
+        assert.equal(response.status, 422, query);
+        assert.match(await errorOf(response), message, query);
+      }
+      const eightDays = await window('?from=2026-10-01T00:00:00Z&to=2026-10-09T00:00:00Z');
+      assert.equal(eightDays.status, 200);
+      assert.deepEqual(await eightDays.json(), { from: '2026-10-01T00:00:00.000Z', to: '2026-10-09T00:00:00.000Z', incidents: [] });
+      const offset = await window('?from=2026-10-01T00:00:00-05:00&to=2026-10-02T00:00:00%2B01:00');
+      assert.equal(offset.status, 200, 'any zone offset is an instant');
+    });
+
+    test('returns the incidents that overlap the window, ongoing ones included, oldest first', async () => {
+      const device = await registerDevice();
+      const t = (iso: string) => new Date(`2026-10-05T${iso}Z`);
+      const incident = (condition: IncidentState['condition'], start: Date, end: Date | null): IncidentState => ({
+        condition,
+        level: 'warning',
+        start,
+        end,
+        peak: { tempF: 85, humidity: 40, recordedAt: start },
+        segments: [{ level: 'warning', start, end }],
+        cleanReadings: 0,
+        firstCleanAt: null,
+      });
+      await insertIncident(pool, device.id, incident('Hot', t('01:00:00'), t('02:00:00'))); // ends at the window's start: out
+      await insertIncident(pool, device.id, incident('Cold', t('01:30:00'), t('03:00:00'))); // straddles the start: in
+      await insertIncident(pool, device.id, incident('Dry', t('00:30:00'), null)); // ongoing since before: in
+      await insertIncident(pool, device.id, incident('Hot', t('04:00:00'), t('05:00:00'))); // inside: in
+      await insertIncident(pool, device.id, incident('Mold risk', t('06:00:00'), t('07:00:00'))); // starts at the window's end: out
+
+      const log = await client.incidents.list(t('02:00:00'), t('06:00:00'));
+      assert.deepEqual(log.incidents.map((i) => [i.condition, i.start]), [
+        ['Dry', t('00:30:00').toISOString()],
+        ['Cold', t('01:30:00').toISOString()],
+        ['Hot', t('04:00:00').toISOString()],
+      ]);
+      assert.equal(log.incidents[0].end, null);
+    });
+  });
+
+  describe('the stream', () => {
+    const listen = async (): Promise<SseClient> => {
+      const c = await subscribe(client.dashboard.url('/stream'));
+      open.push(c);
+      await c.next(); // the opening comment
+      return c;
+    };
+    /** The next `incident` message, skipping Readings. */
+    const nextIncident = async (stream: SseClient): Promise<IncidentEvent> => {
+      for (;;) {
+        const event = await stream.nextMessage<{ type: string }>();
+        if (event.type === 'incident') return event as IncidentEvent;
+      }
+    };
+
+    test('carries an unnamed `incident` message when an incident opens, changes level, and closes', async () => {
+      await registerDevice();
+      const stream = await listen();
+
+      await postReading(85);
+      const opened = await nextIncident(stream);
+      assert.equal(opened.change, 'opened');
+      assert.deepEqual(opened.incident, await only());
+
+      await postReading(91);
+      const level = await nextIncident(stream);
+      assert.equal(level.change, 'level');
+      assert.equal(level.incident.level, 'critical');
+
+      await postReading(72);
+      await postReading(72);
+      const closed = await nextIncident(stream);
+      assert.equal(closed.change, 'closed');
+      assert.notEqual(closed.incident.end, null);
+
+      // A Reading that changes nothing sends no incident message: only the Reading itself.
+      await postReading(72);
+      const events = await stream.collect(300);
+      assert.deepEqual(events.map((e) => e.kind === 'message' && e.event), ['message']);
+      assert.ok(events.every((e) => e.kind === 'message' && JSON.parse(e.data).type === 'reading'));
+    });
+
+    test('carries the Offline sweep\'s opening', async () => {
+      const device = await registerDevice();
+      await readingAt(device.id, new Date(Date.now() - 5 * MINUTE));
+      const stream = await listen();
+      await sweep();
+      const opened = await nextIncident(stream);
+      assert.equal(opened.change, 'opened');
+      assert.equal(opened.incident.condition, 'Offline');
+    });
+  });
+});
+
+describe('replayIncidents (what the demo writes for its backfilled week)', () => {
+  const rules = { reportIntervalSeconds: 30, thresholds: DEFAULT_THRESHOLDS };
+  const start = new Date('2026-10-01T00:00:00Z').getTime();
+  const reading = (seconds: number, tempF: number, humidity = 40) => ({ tempF, humidity, recordedAt: new Date(start + seconds * 1000) });
+
+  test('opens, changes level, and closes as ingest would', () => {
+    const incidents = replayIncidents([reading(0, 72), reading(30, 85), reading(60, 91), reading(90, 72), reading(120, 72), reading(150, 72)], rules);
+    assert.equal(incidents.length, 1);
+    const [hot] = incidents;
+    assert.equal(hot.level, 'critical');
+    assert.deepEqual(hot.start, new Date(start + 30_000));
+    assert.deepEqual(hot.end, new Date(start + 90_000));
+    assert.deepEqual(hot.segments.map((s) => s.level), ['warning', 'critical']);
+    assert.equal(hot.peak.tempF, 91);
+  });
+
+  test('a gap longer than the allowed missed reports is an Offline incident the next Reading closes', () => {
+    const incidents = replayIncidents([reading(0, 72), reading(30, 72), reading(600, 72)], rules);
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].condition, 'Offline');
+    assert.deepEqual(incidents[0].start, new Date(start + 30_000 + 91_000));
+    assert.deepEqual(incidents[0].end, new Date(start + 600_000));
+  });
+
+  test('a silence after the last Reading counts up to `until`, and stays open', () => {
+    const incidents = replayIncidents([reading(0, 72)], rules, new Date(start + 600_000));
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].end, null);
+  });
+});

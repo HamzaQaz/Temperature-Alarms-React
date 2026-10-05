@@ -5,6 +5,8 @@ import { isMorphing } from '@/lib/card-morph';
 import { EASE_OUT_QUINT } from '@/lib/motion';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
+import Incidents from './pages/Incidents';
+import Campuses from './pages/Campuses';
 import { historyModule } from './pages/history-loader';
 import { Skeleton } from '@/components/ui/skeleton';
 
@@ -58,6 +60,8 @@ function AnimatedRoutes() {
   return (
     <Routes location={location}>
       <Route path="/" element={<Page><Dashboard /></Page>} />
+      <Route path="/campuses" element={<Page><Campuses /></Page>} />
+      <Route path="/incidents" element={<Page><Incidents /></Page>} />
       <Route path="/settings" element={<Page><Settings /></Page>} />
       <Route
         path="/history/:deviceId?"

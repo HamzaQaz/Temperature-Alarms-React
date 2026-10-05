@@ -5,8 +5,10 @@ import { createBroadcaster } from './sse';
 import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
 import { campusesRouter } from './routes/campuses';
+import { campusOverviewRouter } from './routes/campusOverview';
 import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
+import { incidentsRouter } from './routes/incidents';
 
 /** The Express app, without a listening socket, so tests can drive it directly. */
 export function createApp(appDeps: AppDeps): Express {
@@ -34,11 +36,13 @@ export function createApp(appDeps: AppDeps): Express {
   );
 
   app.use('/api/health', healthRouter(deps.pool));
+  app.use('/api/campuses/overview', campusOverviewRouter(deps));
   app.use('/api/campuses', campusesRouter(deps));
   app.use('/api/devices/:id/history', historyRouter(deps));
   app.use('/api/devices', devicesRouter(deps));
   app.use('/api/readings', readingsRouter(deps));
   app.use('/api/dashboard', dashboardRouter(deps));
+  app.use('/api/incidents', incidentsRouter(deps));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });

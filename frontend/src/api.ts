@@ -1,4 +1,4 @@
-import type { Device, Campus, Dashboard, History } from './types';
+import type { Device, Campus, Dashboard, DashboardOrder, History, Incidents, Overview } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -83,6 +83,10 @@ export const addCampus = (name: string, shortcode: string): Promise<Campus> =>
 export const deleteCampus = (id: number): Promise<void> =>
   request(`/api/campuses/${id}`, { method: 'DELETE' });
 
+/** Every Campus worst first, with its last seven days cut in this browser's zone. */
+export const getCampusOverview = (): Promise<Overview> =>
+  request(`/api/campuses/overview?${new URLSearchParams({ tz: browserTimeZone() })}`);
+
 // ==================== DEVICES ====================
 
 export const getDevices = (): Promise<Device[]> => request('/api/devices');
@@ -104,9 +108,17 @@ export const deleteDevice = (id: number): Promise<void> => request(`/api/devices
 
 // ==================== DASHBOARD ====================
 
-/** Every Device with its latest Reading, optionally only those at one Campus. */
-export const getDashboard = (campus?: string): Promise<Dashboard> =>
-  request(`/api/dashboard${campus ? `?campus=${encodeURIComponent(campus)}` : ''}`);
+/**
+ * Every Device with its latest Reading, optionally only those at one Campus, in the server's
+ * order: worst first unless `order` is 'campus' (by Campus name, then closet).
+ */
+export const getDashboard = (campus?: string, order: DashboardOrder = 'worst'): Promise<Dashboard> => {
+  const query = new URLSearchParams();
+  if (campus) query.set('campus', campus);
+  if (order !== 'worst') query.set('order', order);
+  const search = query.toString();
+  return request(`/api/dashboard${search ? `?${search}` : ''}`);
+};
 
 /**
  * The live stream of Readings (Server-Sent Events). The browser reconnects on its own after
@@ -129,3 +141,11 @@ export const getHistory = (deviceId: number, date?: string): Promise<History> =>
 /** Delete every Reading the Device has. Needs the Admin token. */
 export const resetHistory = (deviceId: number): Promise<void> =>
   request(`/api/devices/${deviceId}/history`, { method: 'DELETE' });
+
+// ==================== INCIDENTS ====================
+
+/** Every incident that overlaps the window, ongoing ones included, oldest first. At most eight days. */
+export const getIncidents = (from: Date, to: Date): Promise<Incidents> => {
+  const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
+  return request(`/api/incidents?${query}`);
+};

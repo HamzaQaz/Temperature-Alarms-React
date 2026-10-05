@@ -3,11 +3,14 @@
  * responses: the backend runs as a single process, so a Reading that arrives anywhere is
  * seen by every browser. A heartbeat comment keeps proxies from closing an idle stream;
  * reconnecting after a drop is the browser's EventSource doing what it does by default.
+ * Every message is unnamed, its `data` a JSON object whose `type` says what it is: a `reading`
+ * or an `incident`.
  *
  * The response carries only the headers SSE needs. CORS is the shared middleware's job.
  */
 import type { Request, RequestHandler, Response } from 'express';
-import type { Condition } from './conditions';
+import type { Condition, ConditionLevel, ConditionName } from './conditions';
+import type { IncidentChange } from './incidents';
 
 /** A Reading as the API sends it: the dashboard payload, the 201 on ingest, and the stream all use this shape. */
 export interface ReadingPayload {
@@ -28,11 +31,48 @@ export interface ReadingEvent {
   conditions: Condition[];
 }
 
+/** An incident as the API sends it: GET /api/incidents and the stream's `incident` message both use this shape. */
+export interface IncidentPayload {
+  id: number;
+  device: {
+    id: number;
+    hostname: string;
+    closet: string;
+    campus: { id: number; name: string; shortcode: string };
+  };
+  condition: ConditionName;
+  /** The worst level the incident reached. */
+  level: ConditionLevel;
+  /** ISO instants in UTC; `end` is null while the incident is ongoing. */
+  start: string;
+  end: string | null;
+  /** The worst Reading during the incident; for Offline, the last Reading before it. */
+  peak: {
+    /** °F for Hot and Cold, percent for Dry and Mold risk, null for Offline. */
+    value: number | null;
+    tempF: number;
+    humidity: number | null;
+    recordedAt: string;
+  };
+  /** Oldest first; only the last can be open. */
+  segments: { level: ConditionLevel; start: string; end: string | null }[];
+}
+
+/** What every open dashboard receives when an incident opens, changes level, or closes (docs/adr/0006). */
+export interface IncidentEvent {
+  type: 'incident';
+  change: IncidentChange;
+  incident: IncidentPayload;
+}
+
+/** Every message the stream carries, told apart by `type`. */
+export type StreamEvent = ReadingEvent | IncidentEvent;
+
 export interface Broadcaster {
   /** Express handler for GET /api/dashboard/stream. */
   readonly handler: RequestHandler;
   /** Send one event to every connected client. */
-  broadcast(event: ReadingEvent): void;
+  broadcast(event: StreamEvent): void;
   /** How many dashboards are connected right now. */
   readonly clientCount: number;
   readonly heartbeatMs: number;

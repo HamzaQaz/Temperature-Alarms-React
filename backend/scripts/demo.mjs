@@ -8,10 +8,15 @@
  *  2. Backfills seven days of history per Device. The API stamps every Reading with the server's
  *     own clock and has no backfill route (nor should it), so these rows go straight into the
  *     `readings` table (backend/src/migrations/0001-initial-schema.ts) over a MySQL connection.
+ *     The scripted closets had a bad hour or two during the week, and the silent one a power cut.
+ *     The incidents those Readings make are found by replaying the backend's own incident rules
+ *     over them (replayIncidents, docs/adr/0006) and written with the backend's own insert, so the
+ *     log can never disagree with the History.
  *  3. Posts a live Reading per Device every Report interval with the Device token, on a scripted
  *     loop of about ten minutes in which one closet heats up through Hot warning to Hot critical,
  *     one dries out, one sits in Mold risk moderate then high, one goes cold overnight, and one
- *     goes silent (late, then Offline) and comes back. The rest stay calm.
+ *     goes silent (late, then Offline) and comes back. The rest stay calm. The api opens and
+ *     closes the live incidents from these Readings itself, as it would for real boards.
  *
  * The thresholds and the Report interval are the api's own: this reads the same environment
  * through the backend's loadConfig, and every target value is found by asking the backend's
@@ -29,12 +34,17 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 let backend;
 try {
-  backend = { ...require('../dist/config.js'), ...require('../dist/conditions.js') };
+  backend = {
+    ...require('../dist/config.js'),
+    ...require('../dist/conditions.js'),
+    ...require('../dist/incidents.js'),
+    ...require('../dist/incidentStore.js'),
+  };
 } catch {
   console.error('demo: needs the built backend (dist/); run `npm run build` first, or use the demo service');
   process.exit(1);
 }
-const { loadConfig, conditionsFor } = backend;
+const { loadConfig, conditionsFor, replayIncidents, insertIncident } = backend;
 const mysql = require('mysql2/promise');
 
 const config = loadConfig(process.env);
@@ -344,14 +354,60 @@ async function earliestReadings(pool) {
 }
 
 /**
+ * The scripted closets' bad stretches during the week, as [days ago, hours before that moment,
+ * how many hours, target]. The value eases from calm to the target, holds, and eases back, so
+ * it crosses the warning line on the way up and down like a real closet would.
+ */
+const EPISODES = {
+  hot: [[1, 4, 2.5, 'hotWarning'], [3, 5, 1.5, 'hotCritical']],
+  dry: [[4, 14, 6, 'dry']],
+  mold: [[2, 10, 3, 'moldHigh']],
+  cold: [[5, 16, 8, 'cold']],
+};
+
+/** The closet's value at `ms`, pulled toward an episode's target while one is under way. */
+function backfillValue(device, ms, until) {
+  const value = calm(device, ms);
+  for (const [days, before, hours, key] of EPISODES[device.scenario] ?? []) {
+    const target = TARGETS[key];
+    const start = until - days * 86400000 - before * 3600000;
+    const f = (ms - start) / (hours * 3600000);
+    if (target === null || f < 0 || f > 1) continue;
+    // Steep enough that sensor noise crosses the line once or twice on the way, not for an hour.
+    const pull = Math.min(1, 10 * Math.sin(Math.PI * f));
+    return { tempF: value.tempF + (target.tempF - value.tempF) * pull, humidity: value.humidity + (target.humidity - value.humidity) * pull };
+  }
+  return value;
+}
+
+/**
+ * The incidents a Device's backfilled Readings make, by the backend's own rules, written with
+ * the backend's own insert. One still open at the end of the backfill is left out: the live
+ * Readings that follow are the api's to judge, and it never saw that one open.
+ */
+async function backfillIncidents(pool, device, rows) {
+  const readings = rows.map(([, tempF, humidity, recordedAt]) => ({ tempF, humidity, recordedAt }));
+  const incidents = replayIncidents(readings, { reportIntervalSeconds: interval, thresholds });
+  let written = 0;
+  for (const incident of incidents) {
+    if (incident.end === null) continue;
+    await insertIncident(pool, device.id, incident);
+    written += 1;
+  }
+  return written;
+}
+
+/**
  * Seven days of Readings for every Device that has none older than six days, up to its first
  * live one. One every Report interval, a second or two of jitter, the odd sample lost to the
- * sensor, and a lunchtime power cut two days ago for the closet that goes silent.
+ * sensor, a lunchtime power cut two days ago for the closet that goes silent, and the scripted
+ * closets' bad stretches (EPISODES). Then the incidents those Readings make.
  */
 async function backfill(pool, earliest, until) {
   const step = interval * 1000;
   const start = until - HISTORY_DAYS * 86400000;
   let total = 0;
+  let incidents = 0;
   const began = Date.now();
   for (const device of DISTRICT) {
     const first = earliest.get(device.id);
@@ -360,14 +416,24 @@ async function backfill(pool, earliest, until) {
     const random = sequence('history', device.index);
     const gap = device.scenario === 'silent' ? [until - 2 * 86400000 - 3 * 3600000, until - 2 * 86400000 - 20 * 60000] : null;
     let rows = [];
+    const all = [];
+    let dropped = false;
     for (let t = start; t < end; t += step) {
       const r = random();
       const jitter = Math.round((random() - 0.5) * 3000);
-      if (r < 0.01 || (gap !== null && t >= gap[0] && t < gap[1])) continue;
-      const v = calm(device, t);
+      if (gap !== null && t >= gap[0] && t < gap[1]) continue;
+      // Never two lost in a row: with jitter, that gap can pass three intervals and read as Offline.
+      if (r < 0.01 && !dropped) {
+        dropped = true;
+        continue;
+      }
+      dropped = false;
+      const v = backfillValue(device, t, until);
       const temp = Math.round(v.tempF + (random() - 0.5) * 0.5);
       const humidity = Math.round(Math.min(95, Math.max(5, v.humidity + (random() - 0.5) * 1.2)));
-      rows.push([device.id, temp, humidity, new Date(Math.floor((t + jitter) / 1000) * 1000)]);
+      const row = [device.id, temp, humidity, new Date(Math.floor((t + jitter) / 1000) * 1000)];
+      rows.push(row);
+      all.push(row);
       if (rows.length === 2000) {
         await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [rows]);
         total += rows.length;
@@ -378,9 +444,10 @@ async function backfill(pool, earliest, until) {
       await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [rows]);
       total += rows.length;
     }
+    incidents += await backfillIncidents(pool, device, all);
   }
   if (total === 0) log('history: every Device already has its week; nothing backfilled');
-  else log(`history: ${total} Readings over ${HISTORY_DAYS} days written straight to MySQL in ${Math.round((Date.now() - began) / 1000)} s`);
+  else log(`history: ${total} Readings and ${incidents} incidents over ${HISTORY_DAYS} days written straight to MySQL in ${Math.round((Date.now() - began) / 1000)} s`);
 }
 
 // --- live --------------------------------------------------------------------------------

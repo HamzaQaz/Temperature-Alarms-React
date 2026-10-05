@@ -82,6 +82,30 @@ export interface Dashboard {
   devices: DashboardDevice[];
 }
 
+export interface IncidentSegment {
+  level: Condition['level'];
+  start: string;
+  end: string | null;
+}
+
+/** One incident as GET /api/incidents and the stream send it. */
+export interface Incident {
+  id: number;
+  device: { id: number; hostname: string; closet: string; campus: Campus };
+  condition: Condition['name'];
+  level: Condition['level'];
+  start: string;
+  end: string | null;
+  peak: { value: number | null; tempF: number; humidity: number | null; recordedAt: string };
+  segments: IncidentSegment[];
+}
+
+export interface IncidentLog {
+  from: string;
+  to: string;
+  incidents: Incident[];
+}
+
 /** A JSON request carrying a bearer token, with any header overridable. */
 const asBearer =
   (token: string) =>
@@ -133,6 +157,16 @@ export function api(server: RunningServer) {
       url: (path = '') => `${server.url}/api/readings${path}`,
       /** Posts a reading as a Device would: with the Device token unless init says otherwise. */
       add: (body: unknown, init: RequestInit = asDevice()) => post('/api/readings', body, init),
+    },
+    incidents: {
+      /** The raw response for a window, `query` appended verbatim, e.g. `?from=...&to=...`. */
+      fetch: (query = '') => fetch(`${server.url}/api/incidents${query}`),
+      /** The incidents overlapping [from, to), expected to succeed. */
+      list: async (from: Date, to: Date) => {
+        const response = await fetch(`${server.url}/api/incidents?from=${from.toISOString()}&to=${to.toISOString()}`);
+        if (response.status !== 200) throw new Error(`GET /api/incidents: ${response.status} ${await response.text()}`);
+        return json<IncidentLog>(response);
+      },
     },
     dashboard: {
       url: (query = '') => `${server.url}/api/dashboard${query}`,
