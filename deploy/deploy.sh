@@ -17,6 +17,10 @@ BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
 SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD"
 TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE"
+# The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
+DEMO_PROJECT="temperature-alarms-demo"
+DEMO_ENV=".env.demo"
+DEMO_PORT="8080"
 
 # Git Bash would rewrite arguments that look like paths before docker sees them.
 export MSYS_NO_PATHCONV=1
@@ -42,6 +46,8 @@ SERVICE=""
 KEEP_DAYS=""
 AT="02:00"
 BOOTSTRAP=0
+DOWN=0
+DC_ARGS=()
 HOSTS=()
 SERVERS_FILE=""
 REMOTE_DIR="temperature-alarms"
@@ -90,6 +96,11 @@ With no action and a terminal, shows a menu. Actions:
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
                      (typed confirmation). .env and backups/ stay.
+  demo               See it without hardware: the stack plus sample Campuses, Devices, a week
+                     of history, and live Readings that loop through every Condition. Its own
+                     project (temperature-alarms-demo) and throwaway secrets in .env.demo, so
+                     it never touches a real install. --web-port (default 8080); --down
+                     removes it, volume and .env.demo included.
 
 Options:
   -y, --yes             Non-interactive: take flag values and defaults, never prompt
@@ -102,6 +113,7 @@ Options:
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
       --wipe            uninstall also deletes the database volume
+      --down            demo: remove the demo instead of starting it
       --file FILE       Backup file for restore
       --keep-days N     backup and schedule-backup: delete this project's backups older than N days
       --at HH:MM        schedule-backup: the time of day (default 02:00)
@@ -133,6 +145,7 @@ parse_args() {
       --reveal) REVEAL=1; PASS_ARGS+=("$1") ;;
       --confirm) need_value "$@"; CONFIRM=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --wipe) WIPE=1; PASS_ARGS+=("$1") ;;
+      --down) DOWN=1; PASS_ARGS+=("$1") ;;
       --file) need_value "$@"; FILE=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --follow|-f) FOLLOW=1; PASS_ARGS+=("$1") ;;
       --service) need_value "$@"; SERVICE=$2; PASS_ARGS+=("$1" "$2"); shift ;;
@@ -299,7 +312,7 @@ fill_missing_secrets() {
 # folder name. The database volume is named after it, so the default is never overridden.
 project_name() {
   local name
-  name=$(docker compose config 2>/dev/null | sed -n 's/^name: //p' | head -n 1 | tr -d '"\r')
+  name=$(dc config 2>/dev/null | sed -n 's/^name: //p' | head -n 1 | tr -d '"\r')
   if [ -z "$name" ]; then
     name=${COMPOSE_PROJECT_NAME:-}
     [ -n "$name" ] || name=$(env_get COMPOSE_PROJECT_NAME)
@@ -325,7 +338,7 @@ web_host() {
 }
 web_port_num() { local wp; wp=$(web_port_setting); printf '%s' "${wp##*:}"; }
 
-dc() { docker compose "$@"; }
+dc() { docker compose ${DC_ARGS[@]+"${DC_ARGS[@]}"} "$@"; }
 
 running() { [ -n "$(dc ps --status running -q "$1" 2>/dev/null)" ]; }
 
@@ -616,6 +629,59 @@ do_uninstall() {
   say "  .env and $BACKUP_DIR/ are left in $REPO_DIR."
 }
 
+# --- demo ----------------------------------------------------------------------------
+# Everything below runs against the demo's own project and .env.demo, never the real ones.
+use_demo() {
+  ENV_FILE=$DEMO_ENV
+  DC_ARGS=(-p "$DEMO_PROJECT" --env-file "$DEMO_ENV" -f compose.yaml -f compose.demo.yaml)
+}
+
+write_demo_env() {
+  local k
+  (umask 077; printf '%s
+'     "# Throwaway settings for deploy.sh demo (compose.demo.yaml). deploy.sh demo --down deletes this file."     "COMPOSE_PROJECT_NAME=$DEMO_PROJECT" "WEB_PORT=$DEMO_PORT" > "$ENV_FILE") || die "cannot write $ENV_FILE"
+  for k in $SECRETS; do env_set "$k" "$(gen_secret)"; done
+  lock_env
+  ok "created $ENV_FILE with fresh secrets"
+}
+
+do_demo() {
+  [ -f compose.demo.yaml ] || die "compose.demo.yaml is missing in $REPO_DIR"
+  use_demo
+  if [ "$DOWN" -eq 1 ]; then
+    step "Remove the demo ($DEMO_PROJECT)"
+    # down reads the files, and compose.yaml needs the secrets set, so a missing file is remade first.
+    [ -f "$ENV_FILE" ] || write_demo_env
+    dc down -v --rmi local --remove-orphans || die "docker compose down failed"
+    rm -f "$ENV_FILE"
+    if [ -n "$(docker volume ls -q --filter "label=com.docker.compose.project=$DEMO_PROJECT")" ]; then
+      bad "a $DEMO_PROJECT volume is still there: docker volume ls --filter label=com.docker.compose.project=$DEMO_PROJECT"
+      return 1
+    fi
+    ok "containers, images, the demo database volume, and $ENV_FILE removed"
+    return 0
+  fi
+  step "Demo settings ($ENV_FILE)"
+  if [ -f "$ENV_FILE" ]; then ok "$ENV_FILE exists; keeping its secrets"; else write_demo_env; fi
+  apply_flags_to_env
+  do_preflight || die "preflight failed; fix the [FAIL] lines above"
+  step "Build and start the demo (project $DEMO_PROJECT)"
+  if ! dc up -d --build --remove-orphans --wait --wait-timeout 600; then
+    dc ps
+    say "Last demo log lines:"; dc logs --tail 40 demo api
+    die "the demo did not come up"
+  fi
+  step "Health through web"
+  health 30 || die "the demo is up but /api/health through web failed; see: docker compose -p $DEMO_PROJECT logs"
+  say ""
+  say "${C_GREEN}Demo running.${C_OFF} Dashboard: $(site_url)"
+  say "  The first minute seeds 4 Campuses and 24 Devices and writes a week of history; then"
+  say "  the closets loop through Hot, Dry, Mold risk, Cold, late, and Offline every 10 minutes."
+  say "  Admin token for Settings (throwaway): $(env_get ADMIN_TOKEN)"
+  say "  Watch it:  docker compose -p $DEMO_PROJECT logs -f demo"
+  say "  Remove it: deploy/deploy.sh demo --down"
+}
+
 # --- bootstrap -------------------------------------------------------------------------
 # Docker Engine and the Compose plugin come from Docker's own repository, the way
 # https://docs.docker.com/engine/install/ describes "install using the repository".
@@ -855,6 +921,7 @@ run_action() {
     info) do_info ;;
     stop) do_stop ;;
     uninstall) do_uninstall ;;
+    demo) do_demo ;;
     *) die "unknown action '$1' (see --help)" ;;
   esac
 }
@@ -870,13 +937,13 @@ menu() {
     say "   5) Logs                     12) Bootstrap this server (Docker, git, cron)"
     say "   6) Back up the database     13) Schedule a nightly backup"
     say "   7) Restore the database     14) Unschedule the nightly backup"
-    say "                                q) Quit"
+    say "  15) Demo, no hardware needed  q) Quit"
     read -r -p "  Choose: " choice || exit 0
     case "$choice" in
       1) action=preflight ;; 2) action=install ;; 3) action=deploy ;; 4) action=status ;;
       5) action=logs ;; 6) action=backup ;; 7) action=restore ;; 8) action=migrate-legacy ;;
       9) action=info ;; 10) action=stop ;; 11) action=uninstall ;; 12) action=bootstrap ;;
-      13) action=schedule-backup ;; 14) action=unschedule-backup ;;
+      13) action=schedule-backup ;; 14) action=unschedule-backup ;; 15) action=demo ;;
       q|Q|quit|exit) exit 0 ;;
       *) warn "no such choice"; continue ;;
     esac
