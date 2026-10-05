@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Facilities view · Temperature Alarms comp</title>
+<link rel="stylesheet" href="comps.css">
+<style>
+  .summary { font-size: 1.125rem; max-width: 72ch; }
+  .summary b { font-weight: 600; }
+
+  .group { display: grid; gap: 12px; }
+  .group > h2 { font-size: 1.125rem; font-weight: 600; line-height: 1.3; }
+  .group > h2 span { color: var(--dimmed-grey); font-weight: 400; font-size: 0.875rem; margin-left: 8px; }
+  .items { display: grid; gap: 16px; }
+
+  .item { padding: 20px 24px; display: grid; gap: 20px; grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.8fr) minmax(0, 1.25fr); }
+  .where p:first-child { color: var(--dimmed-grey); }
+  .where h3 { font-size: 1.125rem; font-weight: 600; line-height: 1.3; margin-top: 2px; }
+  .where .room { margin-top: 2px; color: var(--dimmed-grey); }
+  .where .badge-condition { margin-top: 12px; }
+
+  .now { display: grid; gap: 14px; align-content: start; }
+  .label { font-size: 0.75rem; font-weight: 500; color: var(--dimmed-grey); }
+  .readout { font-size: 3rem; font-weight: 600; letter-spacing: -0.025em; line-height: 1; }
+  .readout span { font-size: 1.875rem; font-weight: 500; color: var(--dimmed-grey); letter-spacing: 0; }
+  .readout-note { margin-top: 4px; color: var(--dimmed-grey); }
+  .out b { display: block; font-size: 1.125rem; font-weight: 600; line-height: 1.3; }
+  .out span { color: var(--dimmed-grey); }
+
+  .trend { display: grid; gap: 4px; align-content: start; }
+  .trend__head { display: flex; justify-content: space-between; gap: 8px; }
+  .trend svg { width: 100%; height: 96px; display: block; overflow: visible; }
+  .trend .grid { stroke: oklch(1 0 0 / 5%); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .trend .limit { stroke: var(--dimmed-grey); stroke-width: 1; stroke-dasharray: 4 4; vector-effect: non-scaling-stroke; }
+  .trend .line-temp { stroke: var(--signal-blue); stroke-width: 2; fill: none; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+  .trend .line-hum { stroke: var(--humidity-green); stroke-width: 2; fill: none; vector-effect: non-scaling-stroke; stroke-dasharray: 6 3; stroke-linejoin: round; }
+  .trend__axis { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--dimmed-grey); font-variant-numeric: tabular-nums; }
+
+  .check { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 24px; padding-top: 16px; border-top: 1px solid var(--hairline); }
+  .check h4 { font-size: 0.875rem; font-weight: 600; grid-column: 1 / -1; }
+  .check ol { display: grid; gap: 6px; counter-reset: step; max-width: 75ch; }
+  .check li { counter-increment: step; display: grid; grid-template-columns: 1.5rem minmax(0, 1fr); line-height: 1.5; }
+  .check li::before { content: counter(step); color: var(--dimmed-grey); font-variant-numeric: tabular-nums; }
+  .check .btn { align-self: end; }
+
+  .quiet { color: var(--dimmed-grey); max-width: 75ch; }
+  .quiet b { color: var(--readout-white); font-weight: 500; }
+
+  .copied { color: var(--dimmed-grey); font-size: 0.875rem; }
+
+  @media (max-width: 1100px) {
+    .item { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .trend { grid-column: 1 / -1; }
+  }
+  @media (max-width: 767px) {
+    .summary { font-size: 1.125rem; }
+    .item { grid-template-columns: 1fr; padding: 16px; gap: 16px; }
+    .now { grid-template-columns: auto 1fr; align-items: end; gap: 16px; }
+    .readout { font-size: 3rem; }
+    .check { grid-template-columns: 1fr; }
+    .check .btn { justify-self: start; }
+  }
+</style>
+</head>
+<body>
+<header class="comp-bar">
+  <a class="btn btn-ghost btn-sm" href="index.html"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>Comps</a>
+  <div class="comp-bar__title"><strong>Facilities view</strong><span>Comp 4 of 4</span></div>
+  <div class="comp-bar__actions">
+    <button class="btn btn-outline btn-sm" type="button" data-reading><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Send a Reading</button>
+    <button class="btn btn-outline btn-sm" type="button" data-rm-toggle aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-motion"/></svg>Reduced motion</button>
+    <button class="btn btn-outline btn-sm" type="button" data-notes-toggle aria-expanded="false" aria-controls="notes"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>Notes</button>
+  </div>
+</header>
+
+<aside class="notes" id="notes" data-open="false" aria-labelledby="notes-title">
+  <div class="notes__head">
+    <h2 id="notes-title" tabindex="-1">About this comp</h2>
+    <button class="btn btn-ghost btn-icon" type="button" data-notes-close aria-label="Close notes"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <dl>
+    <div><dt>Audience</dt><dd>HVAC and facilities staff, on a phone in a corridor or at a desk, who fix rooms, not networks.</dd></div>
+    <div><dt>Job</dt><dd>Find the room, see how long it has been wrong and which way it is heading, and know what to look at first when they get there.</dd></div>
+    <div><dt>Key decision</dt><dd>The closet is addressed the way facilities finds it: Campus, building, floor, room, with the network name second. Each item answers four questions in reading order (where, how bad and how long, which way, what to check), and the "what to check" list is plain language per Condition. Hostnames, Online badges and the Offline Condition are hidden; an offline sensor is one quiet line handed back to the technicians.</dd></div>
+    <div><dt>Relies on</dt><dd><ul>
+      <li>Worst Wins on each item's border; badges keep the level in words.</li>
+      <li>Display type for the one number that matters, 48px, tabular.</li>
+      <li>Chart colours: Signal Blue for temperature, Humidity Green dashed for humidity, the threshold dashed grey.</li>
+      <li>Grey primary-less page: the only button per item is an outline "Copy for a work order".</li>
+    </ul></dd></div>
+    <div><dt>Would change</dt><dd><ul>
+      <li>CONTEXT.md has no building or room: a Closet would need a location the facilities team recognises, entered in Settings.</li>
+      <li>"What to check" is copy owned by facilities, per Condition; it should come from the server with the Condition so it is the same everywhere.</li>
+      <li>A role or view without the technician pages, which the product does not have today (one shared Admin token, no login).</li>
+    </ul></dd></div>
+    <div><dt>Server needs</dt><dd>Condition start time per Device (for "out of range for"), the last 6 hours of Readings, the threshold that was crossed, and the location fields above.</dd></div>
+  </dl>
+</aside>
+
+<div class="shell">
+  <nav class="sidebar" aria-label="Main">
+    <div class="sidebar__brand"><span class="mark"><svg class="icon" aria-hidden="true"><use href="#i-thermometer"/></svg></span><div><b>Riverbend Unified</b><small>Temperature Alarms</small></div></div>
+    <ul class="nav">
+      <li><a href="#" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-wrench"/></svg>Closets to check</a></li>
+      <li><a href="campuses.html"><svg class="icon" aria-hidden="true"><use href="#i-building"/></svg>Campuses</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="mobile-header">
+      <button class="btn btn-ghost btn-icon" type="button" aria-label="Open navigation"><svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg></button>
+      <b>Closets to check</b>
+    </div>
+    <main class="page">
+      <div class="page-head">
+        <div>
+          <h1>Closets to check</h1>
+          <p>Network closets that are too hot, too cold, too dry or too damp, longest first. Updated live.</p>
+        </div>
+        <span class="live">Live</span>
+      </div>
+
+      <p class="summary"><b class="num">3 closets</b> are out of range and <b class="num">2</b> are getting damp. The other <span class="num">23</span> are fine. <span class="dim num">Sunday 4 October, 14:20.</span></p>
+
+      <section class="group" aria-labelledby="g-out">
+        <h2 id="g-out">Out of range<span>Needs a visit</span></h2>
+        <ul class="items" id="out"></ul>
+      </section>
+
+      <section class="group" aria-labelledby="g-damp">
+        <h2 id="g-damp">Getting damp<span>Worth a look this week</span></h2>
+        <ul class="items" id="damp"></ul>
+      </section>
+
+      <p class="quiet">One sensor at <b>Harbor View Middle School</b> has stopped reporting. That is a network fault, not a room problem; the network team has it.</p>
+    </main>
+  </div>
+</div>
+
+<script src="comps.js"></script>
+<script>
+  // Each item as a facilities endpoint would send it. Hours run 08:20 to 14:20; readings every 20 min.
+  const ITEMS = [
+    { group: 'out', campus: 'Cedar Point Elementary', place: 'Gym building, ground floor', room: 'Network closet IDF 3, behind the stage',
+      condition: { name: 'Cold', level: 'warning' }, metric: 'temp', value: 48, unit: '°F', other: 'Humidity 52%',
+      threshold: 'Cold at 50°F or below', limit: 50, since: '08:30', out: '5 h 50 min',
+      series: [55, 54, 53, 52, 51, 50, 49, 49, 48, 48, 48, 48, 47, 48, 48, 48, 48, 48, 48],
+      check: ['Is the gym wing on its weekend heating setback? This room may need a schedule exception.', 'Is an exterior door, roof hatch or louvre open near the stage?', 'Is the unit heater in the room (if any) switched on?'] },
+    { group: 'out', campus: 'Oak Hollow Middle School', place: 'Building B, 2nd floor', room: 'Network closet IDF 2, room B214',
+      condition: { name: 'Hot', level: 'warning' }, metric: 'temp', value: 84, unit: '°F', other: 'Humidity 38%',
+      threshold: 'Hot at 82°F or above', limit: 82, since: '12:10', out: '2 h 10 min', note: 'Third time this week. It reached 93°F overnight.',
+      series: [76, 76, 77, 77, 77, 78, 78, 79, 79, 80, 80, 81, 82, 82, 83, 83, 83, 84, 84],
+      check: ['Is the cooling unit for this room running? Feel for cold air at the vent.', 'Is anything blocking the vent or the return grille: boxes, a ceiling tile, a closed damper?', 'Is the door being propped open to a warm corridor?'] },
+    { group: 'out', campus: 'Lakeside Elementary', place: 'Main building, 1st floor', room: 'Network closet MDF, in the library workroom',
+      condition: { name: 'Dry', level: 'warning' }, metric: 'hum', value: 19, unit: '%', other: 'Temperature 72°F',
+      threshold: 'Dry at 20% humidity or below', limit: 20, since: '13:40', out: '40 min', note: 'Also dry from 03:45 to 05:30 this morning.',
+      series: [27, 27, 26, 26, 25, 25, 24, 24, 24, 23, 23, 22, 22, 21, 21, 20, 20, 19, 19],
+      check: ['Is the building humidifier on for the season, and is its reservoir filled?', 'Dry air builds static that can damage equipment: is the room on the same air handler as the rest of the wing?'] },
+    { group: 'damp', campus: 'Mill Creek Elementary', place: 'Main building, ground floor', room: 'Network closet IDF 2, room 112 (custodial)',
+      condition: { name: 'Mold risk', level: 'moderate' }, metric: 'hum', value: 64, unit: '%', other: 'Temperature 71°F',
+      threshold: 'Damp above 60% humidity', limit: 60, since: 'Sat 10:15', out: '1 day 4 h',
+      series: [62, 62, 63, 63, 63, 64, 64, 63, 63, 64, 64, 64, 65, 64, 64, 64, 64, 64, 64],
+      check: ['Look for a leak: stained ceiling tiles, water on the floor, a sweating pipe.', 'Is a dehumidifier in the area full or switched off?', 'Is the custodial sink or floor drain backing up?'] },
+    { group: 'damp', campus: 'Mill Creek Elementary', place: 'Portable 6', room: 'Network closet IDF 3, wall cabinet',
+      condition: { name: 'Mold risk', level: 'moderate' }, metric: 'hum', value: 62, unit: '%', other: 'Temperature 69°F',
+      threshold: 'Damp above 60% humidity', limit: 60, since: '10:55', out: '3 h 25 min',
+      series: [56, 57, 57, 58, 58, 59, 59, 60, 60, 61, 61, 61, 62, 62, 61, 62, 62, 62, 62],
+      check: ['Is the portable’s wall unit set to cool or dry, not fan only?', 'Check under the portable and along the skirting for standing water after Friday’s rain.'] },
+  ];
+
+  function chart(x) {
+    const s = x.series, w = 300, h = 96;
+    const lo = Math.min(...s, x.limit) - 3, hi = Math.max(...s, x.limit) + 3;
+    const y = (v) => (h - ((v - lo) / (hi - lo)) * h).toFixed(1);
+    const pts = s.map((v, i) => `${((i / (s.length - 1)) * w).toFixed(1)},${y(v)}`).join(' ');
+    const grid = [0.25, 0.5, 0.75].map((f) => `<line class="grid" x1="0" x2="${w}" y1="${h * f}" y2="${h * f}"/>`).join('');
+    const kind = x.metric === 'temp' ? 'Temperature' : 'Humidity';
+    return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${kind} over the last 6 hours, from ${s[0]}${x.unit} to ${s[s.length - 1]}${x.unit}. ${x.threshold}.">
+      ${grid}<line class="limit" x1="0" x2="${w}" y1="${y(x.limit)}" y2="${y(x.limit)}"/>
+      <polyline class="${x.metric === 'temp' ? 'line-temp' : 'line-hum'}" points="${pts}"/></svg>`;
+  }
+
+  function item(x, i) {
+    const kind = x.metric === 'temp' ? 'Temperature' : 'Humidity';
+    return `<li class="card item landing bd-${x.condition.level}" data-item="${i}">
+      <div class="where">
+        <p>${x.campus}</p>
+        <h3>${x.place}</h3>
+        <p class="room">${x.room}</p>
+        <span class="badge badge-condition lv-${x.condition.level}">${x.condition.name}<span class="lvl">· ${x.condition.level}</span></span>
+      </div>
+      <div class="now">
+        <div>
+          <p class="label">${kind} now</p>
+          <p class="readout num" data-value>${x.value}<span>${x.unit}</span></p>
+          <p class="readout-note num">${x.other}</p>
+        </div>
+        <p class="out num"><span class="label">Out of range for</span><b>${x.out}</b><span>since ${x.since}</span></p>
+      </div>
+      <div class="trend">
+        <div class="trend__head"><span class="label">Last 6 hours</span><span class="label num">${x.threshold}</span></div>
+        ${chart(x)}
+        <div class="trend__axis"><span>08:20</span><span>10:20</span><span>12:20</span><span>14:20</span></div>
+        ${x.note ? `<p class="dim num" style="margin-top:6px">${x.note}</p>` : ''}
+      </div>
+      <div class="check">
+        <h4>What to check</h4>
+        <ol>${x.check.map((c) => `<li>${c}</li>`).join('')}</ol>
+        <button class="btn btn-outline btn-sm" type="button" data-copy>Copy for a work order</button>
+      </div>
+    </li>`;
+  }
+
+  document.getElementById('out').innerHTML = ITEMS.map((x, i) => (x.group === 'out' ? item(x, i) : '')).join('');
+  document.getElementById('damp').innerHTML = ITEMS.map((x, i) => (x.group === 'damp' ? item(x, i) : '')).join('');
+
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-copy]');
+    if (!b) return;
+    const x = ITEMS[Number(b.closest('[data-item]').dataset.item)];
+    const text = `${x.campus}, ${x.place}. ${x.room}. ${x.condition.name}: ${x.value}${x.unit} now, out of range for ${x.out} (since ${x.since}). ${x.threshold}.`;
+    navigator.clipboard?.writeText(text).catch(() => {});
+    b.textContent = 'Copied';
+    setTimeout(() => { b.textContent = 'Copy for a work order'; }, 2000);
+  });
+
+  // Demo: Oak Hollow posts a new Reading; the item washes Raised Grey and settles.
+  document.querySelector('[data-reading]').addEventListener('click', () => {
+    const el = document.querySelector('[data-item="1"]');
+    const v = el.querySelector('[data-value]');
+    v.firstChild.nodeValue = v.firstChild.nodeValue === '84' ? '85' : '84';
+    if (!reducedMotion()) replayClass(el, 'is-landed');
+  });
+</script>
+</body>
+</html>

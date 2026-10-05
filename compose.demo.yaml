@@ -1,0 +1,47 @@
+# Demo mode, opt-in: the whole stack plus a `demo` service that seeds four fictional Campuses
+# and 24 Devices, backfills a week of history, and keeps posting live Readings on a scripted
+# ten-minute loop that walks through every Condition (backend/scripts/demo.mjs).
+#
+#   deploy/deploy.sh demo            # or: deploy\deploy.ps1 demo
+#   deploy/deploy.sh demo --down     # removes it, volume and all
+#
+# The script runs it under its own project (temperature-alarms-demo) with throwaway secrets in
+# .env.demo, so it never shares a database volume with a real install. By hand, the same is
+#   docker compose --env-file .env.demo -f compose.yaml -f compose.demo.yaml up -d --build
+# with .env.demo holding ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD, and WEB_PORT.
+
+name: temperature-alarms-demo
+
+services:
+  demo:
+    build: ./backend
+    command: ["node", "scripts/demo.mjs"]
+    # A crash restarts it; a clean exit (it refuses a database holding Campuses it did not make) does not.
+    restart: on-failure
+    # The api's own settings, so the demo reads the same thresholds and Report interval.
+    environment:
+      API_URL: http://api:3001
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_USER: temperature
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env.demo}
+      DB_NAME: temperature_alarms
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env.demo}
+      DEVICE_TOKEN: ${DEVICE_TOKEN:?Set DEVICE_TOKEN in .env.demo}
+      REPORT_INTERVAL_SECONDS: ${REPORT_INTERVAL_SECONDS:-30}
+      HOT_WARNING_F: ${HOT_WARNING_F:-82}
+      HOT_CRITICAL_F: ${HOT_CRITICAL_F:-90}
+      COLD_WARNING_F: ${COLD_WARNING_F:-50}
+      DRY_WARNING_PERCENT: ${DRY_WARNING_PERCENT:-20}
+      MISSED_REPORTS_BEFORE_OFFLINE: ${MISSED_REPORTS_BEFORE_OFFLINE:-3}
+      # Whose afternoons the closets warm up in, and the same seed gives the same demo.
+      DEMO_TIME_ZONE: ${DEMO_TIME_ZONE:-America/Chicago}
+      DEMO_SEED: ${DEMO_SEED:-closets}
+    depends_on:
+      api:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,4 +1,5 @@
 import * as React from "react"
+import { flushSync } from "react-dom"
 import { Slot } from "@radix-ui/react-slot"
 import { cva, type VariantProps } from "class-variance-authority"
 import { PanelLeftIcon } from "lucide-react"
@@ -31,7 +32,12 @@ const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
 type SidebarContextProps = {
+  /** What the sidebar shows: labels, or icons only. */
   state: "expanded" | "collapsed"
+  /** How much room the page leaves it. During a collapse or expand this lags or leads `state`; see `useSidebarMotion`. */
+  layoutState: "expanded" | "collapsed"
+  /** The page panel beside the sidebar, which carries the collapse and expand as one transform. */
+  insetRef: React.RefObject<HTMLElement | null>
   open: boolean
   setOpen: (open: boolean) => void
   openMobile: boolean
@@ -49,6 +55,91 @@ function useSidebar() {
   }
 
   return context
+}
+
+/** A CSS length in rem or px, in pixels. */
+function toPx(length: string): number {
+  const value = parseFloat(length)
+  if (length.trim().endsWith("rem")) return value * parseFloat(getComputedStyle(document.documentElement).fontSize)
+  return value
+}
+
+const SIDEBAR_EASE = "cubic-bezier(0.16, 1, 0.3, 1)"
+const SIDEBAR_MS = 300
+
+/**
+ * Collapse and expand without animating a width. The page panel slides as one transform
+ * (FLIP) and its contents reflow once, at the end that is hidden: on a collapse the room
+ * is given back at once and the panel, wider now, slides left over the sidebar's labels,
+ * which fold to icons once covered; on an expand the labels unfold under the panel, the
+ * panel slides right to uncover them, and the room is taken back as it lands. The panel
+ * is wider than the window for the length of the slide, clipped by the wrapper.
+ * Under reduced motion, on a phone, or before the panel has mounted, the change is immediate.
+ */
+function useSidebarMotion(open: boolean, isMobile: boolean) {
+  const insetRef = React.useRef<HTMLElement | null>(null)
+  const [railOpen, setRailOpen] = React.useState(open)
+  const [layoutOpen, setLayoutOpen] = React.useState(open)
+  const running = React.useRef<{ settle: () => void } | null>(null)
+
+  const moveTo = React.useCallback(
+    (next: boolean) => {
+      running.current?.settle()
+      const main = insetRef.current
+      const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      if (!main || isMobile || reduced || typeof main.animate !== "function") {
+        setRailOpen(next)
+        setLayoutOpen(next)
+        return
+      }
+      const before = main.getBoundingClientRect().left
+      let animation: Animation
+      let settled = false
+      const settle = () => {
+        if (settled) return
+        settled = true
+        running.current = null
+        flushSync(() => {
+          setRailOpen(next)
+          setLayoutOpen(next)
+        })
+        animation.cancel()
+        main.style.zIndex = ""
+      }
+      // Above the sidebar only while it slides; at rest the sidebar's edge rail stays clickable.
+      main.style.zIndex = "20"
+      if (!next) {
+        // Give the room back now; slide the wider panel from where it was to where it now is.
+        flushSync(() => setLayoutOpen(false))
+        const after = main.getBoundingClientRect().left
+        animation = main.animate([{ transform: `translateX(${before - after}px)` }, { transform: "translateX(0)" }], {
+          duration: SIDEBAR_MS,
+          easing: SIDEBAR_EASE,
+        })
+      } else {
+        // Unfold the labels under the panel, slide the panel off them, then take the room.
+        flushSync(() => setRailOpen(true))
+        const wrapper = main.parentElement
+        const width = wrapper ? getComputedStyle(wrapper).getPropertyValue("--sidebar-width") : SIDEBAR_WIDTH
+        const after = (wrapper?.getBoundingClientRect().left ?? 0) + toPx(width || SIDEBAR_WIDTH)
+        animation = main.animate([{ transform: "translateX(0)" }, { transform: `translateX(${after - before}px)` }], {
+          duration: SIDEBAR_MS,
+          easing: SIDEBAR_EASE,
+          fill: "forwards",
+        })
+      }
+      running.current = { settle }
+      animation.finished.then(settle, () => {})
+    },
+    [isMobile]
+  )
+
+  return {
+    insetRef,
+    railState: (railOpen ? "expanded" : "collapsed") as "expanded" | "collapsed",
+    layoutState: (layoutOpen ? "expanded" : "collapsed") as "expanded" | "collapsed",
+    moveTo,
+  }
 }
 
 function SidebarProvider({
@@ -71,6 +162,8 @@ function SidebarProvider({
   // We use openProp and setOpenProp for control from outside the component.
   const [_open, _setOpen] = React.useState(defaultOpen)
   const open = openProp ?? _open
+  const motion = useSidebarMotion(open, isMobile)
+  const { moveTo } = motion
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value
@@ -79,11 +172,12 @@ function SidebarProvider({
       } else {
         _setOpen(openState)
       }
+      if (openState !== open) moveTo(openState)
 
       // This sets the cookie to keep the sidebar state.
       document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
     },
-    [setOpenProp, open]
+    [setOpenProp, open, moveTo]
   )
 
   // Helper to toggle the sidebar.
@@ -109,11 +203,13 @@ function SidebarProvider({
 
   // We add a state so that we can do data-state="expanded" or "collapsed".
   // This makes it easier to style the sidebar with Tailwind classes.
-  const state = open ? "expanded" : "collapsed"
+  const { railState: state, layoutState, insetRef } = motion
 
   const contextValue = React.useMemo<SidebarContextProps>(
     () => ({
       state,
+      layoutState,
+      insetRef,
       open,
       setOpen,
       isMobile,
@@ -121,7 +217,7 @@ function SidebarProvider({
       setOpenMobile,
       toggleSidebar,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
+    [state, layoutState, insetRef, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
   )
 
   return (
@@ -137,7 +233,8 @@ function SidebarProvider({
             } as React.CSSProperties
           }
           className={cn(
-            "group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full",
+            // Clipped across, so the page panel can be wider than the window while it slides.
+            "group/sidebar-wrapper has-data-[variant=inset]:bg-sidebar flex min-h-svh w-full overflow-x-clip",
             className
           )}
           {...props}
@@ -161,7 +258,7 @@ function Sidebar({
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
 }) {
-  const { isMobile, state, openMobile, setOpenMobile } = useSidebar()
+  const { isMobile, state, layoutState, openMobile, setOpenMobile } = useSidebar()
 
   if (collapsible === "none") {
     return (
@@ -211,23 +308,26 @@ function Sidebar({
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      data-layout={layoutState}
+      data-layout-collapsible={layoutState === "collapsed" ? collapsible : ""}
     >
-      {/* This is what handles the sidebar gap on desktop */}
+      {/* This is what handles the sidebar gap on desktop. It follows the layout state and never
+          animates its width: the page panel's slide carries the change (useSidebarMotion). */}
       <div
         data-slot="sidebar-gap"
         className={cn(
-          "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
-          "group-data-[collapsible=offcanvas]:w-0",
+          "relative w-(--sidebar-width) bg-transparent",
+          "group-data-[layout-collapsible=offcanvas]:w-0",
           "group-data-[side=right]:rotate-180",
           variant === "floating" || variant === "inset"
-            ? "group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
-            : "group-data-[collapsible=icon]:w-(--sidebar-width-icon)"
+            ? "group-data-[layout-collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
+            : "group-data-[layout-collapsible=icon]:w-(--sidebar-width-icon)"
         )}
       />
       <div
         data-slot="sidebar-container"
         className={cn(
-          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear md:flex",
+          "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) md:flex",
           side === "left"
             ? "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]"
             : "right-0 group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)]",
@@ -303,12 +403,14 @@ function SidebarRail({ className, ...props }: React.ComponentProps<"button">) {
 }
 
 function SidebarInset({ className, ...props }: React.ComponentProps<"main">) {
+  const { insetRef } = useSidebar()
   return (
     <main
+      ref={insetRef}
       data-slot="sidebar-inset"
       className={cn(
         "bg-background relative flex w-full flex-1 flex-col",
-        "md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[state=collapsed]:ml-2",
+        "md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm md:peer-data-[variant=inset]:peer-data-[layout=collapsed]:ml-2",
         className
       )}
       {...props}
@@ -472,7 +574,7 @@ function SidebarMenuItem({ className, ...props }: React.ComponentProps<"li">) {
 }
 
 const sidebarMenuButtonVariants = cva(
-  "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-hidden ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
+  "peer/menu-button flex w-full items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-hidden ring-sidebar-ring transition-[color,background-color] duration-100 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 group-has-data-[sidebar=menu-action]/menu-item:pr-8 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[active=true]:bg-sidebar-accent data-[active=true]:font-medium data-[active=true]:text-sidebar-accent-foreground data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:size-8! group-data-[collapsible=icon]:p-2! [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0",
   {
     variants: {
       variant: {

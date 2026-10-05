@@ -4,7 +4,7 @@
 
 Live temperature and humidity monitoring for the network closets across a school district. A NodeMCU board with a DHT11 sensor sits in each closet and posts a Reading every 30 seconds. The backend works out which Conditions a closet is in (Hot, Cold, Dry, Mold risk, Offline) and pushes every Reading to every open dashboard the moment it arrives.
 
-![The dashboard: five closets across two campuses, one Offline, two Hot, the rest Online and counting down to their next Reading](docs/images/dashboard.png)
+![The dashboard on the demo: 24 closets across four campuses, four needing attention (Mold risk, Offline, Hot, Dry), the first row led by a closet in Mold risk high](docs/screenshots/dashboard-dark.png)
 
 - **Live, not polled.** Cards update over Server-Sent Events. A Device that goes quiet reads as late, then Offline, with no reload.
 - **Decided once, on the server.** Thresholds, Conditions, and Online or Offline are computed in one place, so every browser shows the same truth.
@@ -30,6 +30,29 @@ docker compose exec api node scripts/mock-device.mjs --hostname ESP_000001
 ```
 
 The database lives on a named volume, so it survives `docker compose down`; `docker compose down -v` wipes it. The volume is named after the folder you cloned into (`temperature-alarms-react_db-data` here), so run the stack from the same folder, or pin the name with `COMPOSE_PROJECT_NAME` in `.env` as DEPLOYMENT.md explains. [`DEPLOYMENT.md`](DEPLOYMENT.md) covers upgrades, backups, migrating an old database in, TLS, and the manual install for a server that cannot run Docker.
+
+## See it without hardware
+
+One command brings up a living dashboard with no boards attached:
+
+```bash
+deploy/deploy.sh demo          # Windows: powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1 demo
+```
+
+Open `http://localhost:8080/` (`--web-port` picks another port). Four fictional schools and 24 closets appear, each with a week of history, and they keep reporting every 30 seconds. On a ten-minute loop one closet heats up through Hot warning to Hot critical and recovers, one dries out, one sits in Mold risk moderate then high, one goes cold, and one goes silent (late, then Offline) and comes back; the rest stay calm. The script prints the throwaway Admin token for Settings.
+
+The demo runs under its own Compose project, `temperature-alarms-demo`, with its own database volume and generated secrets in `.env.demo`, so it never touches a real install's data. `deploy/deploy.sh demo --down` removes it, volume and `.env.demo` included. The pieces are `compose.demo.yaml` and `backend/scripts/demo.mjs`.
+
+## Screenshots
+
+All taken on the demo above.
+
+- [Dashboard, light theme](docs/screenshots/dashboard-light.png)
+- [Dashboard filtered to one Campus](docs/screenshots/dashboard-campus.png), with the Gym closet in Hot critical
+- [History for one Device](docs/screenshots/history.png): the day's averages, the chart, and the Readings table, on the day it climbed into Hot
+- [Settings](docs/screenshots/settings.png) with the Admin token saved, on the Devices table
+- On a phone: [Dashboard](docs/screenshots/phone-dashboard.png) and [History](docs/screenshots/phone-history.png)
+- [A card escalating](docs/screenshots/escalation.gif) from Hot warning to Hot critical: the new border is traced from the badge around the card
 
 ## How it works
 

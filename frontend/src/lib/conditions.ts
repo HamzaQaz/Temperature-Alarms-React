@@ -10,28 +10,39 @@ interface LevelLook {
   badge: string;
   /** Card border colour when this is the worst level present. */
   border: string;
+  /** The same hue at full strength, for the stroke that draws the new border when a card escalates. */
+  trace: string;
 }
 
 const LOOKS: Record<ConditionLevel, LevelLook> = {
   critical: {
     badge: 'border-transparent bg-destructive-solid text-destructive-solid-foreground',
     border: 'border-destructive',
+    trace: 'stroke-destructive',
   },
   high: {
     badge: 'border-transparent bg-red-500/15 text-red-700 dark:bg-red-500/20 dark:text-red-300',
     border: 'border-red-500/70',
+    trace: 'stroke-red-500',
   },
   warning: {
     badge: 'border-transparent bg-amber-500/15 text-amber-800 dark:bg-amber-500/20 dark:text-amber-300',
     border: 'border-amber-500/70',
+    trace: 'stroke-amber-500',
   },
   moderate: {
     badge: 'border-transparent bg-yellow-400/20 text-yellow-800 dark:bg-yellow-400/15 dark:text-yellow-200',
     border: 'border-yellow-500/60',
+    trace: 'stroke-yellow-500',
   },
 };
 
 export const levelLook = (level: ConditionLevel): LevelLook => LOOKS[level];
+
+/** How loud a level is, for telling an escalation from a de-escalation. No Condition is 0. */
+const RANK: Record<ConditionLevel, number> = { moderate: 1, warning: 2, high: 3, critical: 4 };
+
+export const levelRank = (level: ConditionLevel | undefined): number => (level === undefined ? 0 : RANK[level]);
 
 /** The most severe Condition, relying on the server's worst-first order. */
 export const worstCondition = (conditions: Condition[]): Condition | undefined => conditions[0];

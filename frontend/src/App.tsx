@@ -1,13 +1,16 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useLayoutEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
-import { AnimatePresence, motion, MotionConfig } from 'framer-motion';
+import { motion, MotionConfig } from 'framer-motion';
+import { isMorphing } from '@/lib/card-morph';
 import { EASE_OUT_QUINT } from '@/lib/motion';
 import Dashboard from './pages/Dashboard';
 import Settings from './pages/Settings';
+import { historyModule } from './pages/history-loader';
 import { Skeleton } from '@/components/ui/skeleton';
 
-// History carries the charting library, which is a third of the bundle and unused elsewhere, so it loads on first visit.
-const History = lazy(() => import('./pages/History'));
+// History carries the charting library, which is a third of the bundle and unused elsewhere, so it loads on first visit
+// (or while the dashboard idles; see history-loader).
+const History = lazy(historyModule);
 
 /** The shape of a page while its code arrives: a heading and a block, so nothing jumps when it lands. */
 function PageLoading() {
@@ -30,59 +33,43 @@ import {
 import { Separator } from "@/components/ui/separator"
 
 
-// A page settles in with a short rise and leaves with a quicker fade, so a route change reads
-// as one motion rather than two. Reduced motion (MotionConfig below) drops the rise and keeps the fade.
-const pageVariants = {
-  initial: { opacity: 0, y: 8 },
-  in: { opacity: 1, y: 0 },
-  out: { opacity: 0, transition: { duration: 0.12, ease: EASE_OUT_QUINT } },
-};
-
+// A page settles in with a short rise and a fade. There is no exit: the old page goes at once,
+// so a click is answered on the next frame instead of after a fade-out. Reduced motion
+// (MotionConfig below) drops the rise and keeps the fade. During the card-to-History move the
+// rise is skipped too, since the header the move lands on must already be in its place.
 const pageTransition = { duration: 0.22, ease: EASE_OUT_QUINT };
+
+function Page({ children }: { children: React.ReactNode }) {
+  const [rise] = useState(() => (isMorphing() ? 0 : 8));
+  return (
+    <motion.div initial={{ opacity: 0, y: rise }} animate={{ opacity: 1, y: 0 }} transition={pageTransition}>
+      {children}
+    </motion.div>
+  );
+}
 
 function AnimatedRoutes() {
   const location = useLocation();
-  
+  // A new page starts at its top; a day or filter change (same path) keeps the scroll.
+  useLayoutEffect(() => {
+    window.scrollTo(0, 0);
+  }, [location.pathname]);
+
   return (
-    <AnimatePresence mode="wait">
-      <Routes location={location} key={location.pathname}>
-        <Route path="/" element={
-          <motion.div
-            initial="initial"
-            animate="in"
-            exit="out"
-            variants={pageVariants}
-            transition={pageTransition}
-          >
-            <Dashboard />
-          </motion.div>
-        } />
-        <Route path="/settings" element={
-          <motion.div
-            initial="initial"
-            animate="in"
-            exit="out"
-            variants={pageVariants}
-            transition={pageTransition}
-          >
-            <Settings />
-          </motion.div>
-        } />
-        <Route path="/history/:deviceId?" element={
-          <motion.div
-            initial="initial"
-            animate="in"
-            exit="out"
-            variants={pageVariants}
-            transition={pageTransition}
-          >
+    <Routes location={location}>
+      <Route path="/" element={<Page><Dashboard /></Page>} />
+      <Route path="/settings" element={<Page><Settings /></Page>} />
+      <Route
+        path="/history/:deviceId?"
+        element={
+          <Page>
             <Suspense fallback={<PageLoading />}>
               <History />
             </Suspense>
-          </motion.div>
-        } />
-      </Routes>
-    </AnimatePresence>
+          </Page>
+        }
+      />
+    </Routes>
   );
 }
 
@@ -93,7 +80,7 @@ function App() {
       <SidebarProvider>
         <AppSidebar />
         <SidebarInset>
-          <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">
+          <header className="flex h-16 shrink-0 items-center gap-2">
             <div className="flex items-center gap-2 px-4">
               <SidebarTrigger className="-ml-1" />
               <Separator orientation="vertical" className="mr-2 h-4" />

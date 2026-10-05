@@ -1,0 +1,18 @@
+Target: a demo mode for the whole stack. Add backend/scripts/demo.mjs (alongside the existing backend/scripts/mock-device.mjs), a compose.demo.yaml overlay at the repo root, a `demo` action in deploy/deploy.sh and deploy/deploy.ps1, and a short README section.
+
+Change: let the district (or anyone showing the product) open a realistic, living dashboard with no boards attached.
+- `docker compose -f compose.yaml -f compose.demo.yaml up -d --build` (and `deploy/deploy.sh demo` / `deploy.ps1 demo`, which also generate throwaway secrets in a separate `.env.demo` and use project name `temperature-alarms-demo` so a demo can never touch a real install's volume) brings up the stack plus a `demo` service.
+- The demo service seeds itself through the public API, with the Admin token, exactly as an operator would: three or four Campuses with believable school names and shortcodes (fictional, not real district names), and 18 to 30 Devices with realistic Closet names, both IDF and MDF, across the campuses.
+- It backfills about seven days of history per Device, so History by day has real curves. Readings are stored server-side with server timestamps, so first check whether the API allows a backfill. If it does not, insert the history directly into MySQL from the demo container, using the documented schema in backend/src/migrations, and say so. Do NOT add a backfill endpoint to the production API.
+- Then it posts live Readings every Report interval, with scripted scenarios that exercise every state over a loop of about 10 minutes: most closets are calm, with gentle diurnal drift and sensor noise. One heats up through Hot warning to Hot critical and recovers. One dries out to Dry. One sits in Mold risk moderate and then high. One goes cold overnight. One goes silent, turning late then Offline, and comes back. The loop repeats indefinitely and is deterministic from a seed.
+- Values come from the real Condition thresholds. Read them from the API or the config defaults, and do not duplicate the rules in the demo.
+- `deploy.sh demo --down` tears it down with its volume.
+- The README gets a "See it without hardware" section with the one command, and a line saying the demo uses its own project and volume.
+
+Constraints: the production compose.yaml, backend/src, and the API behaviour stay unchanged; the demo is purely additive and opt-in. Keep the deploy scripts' existing style and bash 3.2 compatibility. Run shellcheck. Other workers are running at the same time: one in frontend/src and DESIGN.md, and one writing HTML comps under .scratch/design/. Stay out of their files. Never commit, push, stash, reset, or checkout: the coordinator commits. Watch memory: the machine ran low earlier, so run only one stack at a time.
+
+Test for real: run `deploy/deploy.sh demo` in Git Bash and `deploy.ps1 demo` in pwsh, each in turn (WEB_PORT 8084). Open the dashboard and confirm every scenario appears within one loop, and that History shows seven days. Run the existing `node frontend/e2e/walk.mjs` against it if it applies. Run the backend tests (`npm test` in backend) to prove nothing regressed. Tear down with `--down` and confirm no volume is left.
+
+Ownership: backend/scripts/demo.mjs (plus any helper under backend/scripts/), compose.demo.yaml, deploy/deploy.sh, deploy/deploy.ps1, .gitignore (.env.demo), and the README section.
+
+Observable acceptance: worker_done naming the scenarios and how long each takes to appear, how the history was backfilled, the test results, and --files-modified. Use --outcome succeeded only if the demo came up from one command on both scripts and every scenario was seen.

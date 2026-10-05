@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident timeline · Temperature Alarms comp</title>
+<link rel="stylesheet" href="comps.css">
+<style>
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--raised-grey); border-radius: var(--radius-lg); }
+  .seg button { height: 30px; padding: 0 12px; border: 0; border-radius: var(--radius-md); background: transparent; color: var(--dimmed-grey); font: 500 0.875rem/1 var(--sans); cursor: pointer; }
+  .seg button[aria-selected="true"] { background: var(--console-black); color: var(--readout-white); }
+  .daynav { display: inline-flex; gap: 6px; align-items: center; }
+  .date-field { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px; border: 1px solid var(--input-hairline); border-radius: var(--radius-md); background: oklch(0.269 0 0 / 30%); font-variant-numeric: tabular-nums; }
+
+  .summary { font-size: 1.125rem; max-width: 72ch; }
+  .summary b { font-weight: 600; }
+
+  /* The log: details on the left, a shared overnight ruler on the right. */
+  .log { padding: 8px 4px; overflow: hidden; }
+  .row { display: grid; grid-template-columns: minmax(0, 27rem) minmax(0, 1fr); border-bottom: 1px solid var(--hairline); }
+  .row:last-child { border-bottom: 0; }
+  .row > * { padding: 16px 20px; }
+  .head { color: var(--dimmed-grey); font-size: 0.875rem; }
+  .head > * { padding-top: 12px; padding-bottom: 12px; }
+
+  .ruler { position: relative; height: 20px; }
+  .ruler span { position: absolute; top: 0; transform: translateX(-50%); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
+  .ruler span:first-child { transform: none; }
+
+  .track { position: relative; min-height: 100%; }
+  .track__lines { position: absolute; inset: 0 20px; }
+  .track__lines i { position: absolute; top: 0; bottom: 0; width: 1px; background: oklch(1 0 0 / 5%); }
+  .track__lines .now { background: none; border-left: 1px dashed var(--focus-grey); }
+  .track__area { position: absolute; inset: 0 20px; display: flex; align-items: center; }
+  .span { position: absolute; height: 14px; display: flex; border-radius: var(--radius-sm); overflow: hidden; }
+  .span i { height: 100%; }
+  .seg-warning { background: oklch(0.769 0.188 70.08 / 45%); }
+  .seg-critical { background: var(--critical-fill); }
+  .seg-high { background: oklch(0.637 0.237 25.331 / 55%); }
+  .seg-moderate { background: oklch(0.852 0.199 91.936 / 35%); }
+  .span.ongoing { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .span.ongoing::after { content: ""; width: 2px; height: 100%; background: var(--readout-white); }
+
+  .detail { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: 4px 16px; }
+  .when b { display: block; font-size: 1.125rem; font-weight: 600; line-height: 1.25; }
+  .when span { color: var(--dimmed-grey); }
+  .what { display: grid; gap: 6px; min-width: 0; }
+  .what__top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .what__where { font-weight: 600; font-size: 1.125rem; }
+  .what__where span { color: var(--dimmed-grey); font-weight: 400; }
+  .what__facts { color: var(--dimmed-grey); }
+  .what__facts b { color: var(--readout-white); font-weight: 500; }
+  .what__foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .what__foot .mono { color: var(--dimmed-grey); }
+  .ongoing-note { color: var(--amber-note); font-weight: 500; }
+
+  .row.landing::after { border-radius: 0; }
+
+  @media (max-width: 1023px) {
+    .row { grid-template-columns: 1fr; }
+    .head .ruler-cell { padding: 10px 20px; }
+    .ruler .minor { display: none; }
+    .head > :first-child { display: none; }
+    .row > .track { padding-top: 0; min-height: 34px; }
+    .track__lines, .track__area { inset: 0 20px 12px; }
+  }
+  @media (max-width: 767px) {
+    .summary { font-size: 1.125rem; }
+    .controls { width: 100%; }
+    .daynav { width: 100%; }
+    .date-field { flex: 1; }
+    .row > * { padding: 14px 16px; }
+    .detail { grid-template-columns: 1fr; }
+    .when { display: flex; gap: 8px; align-items: baseline; }
+    .when b { font-size: 1.125rem; }
+    .track__lines, .track__area { inset: 0 16px 12px; }
+    .head .ruler-cell { padding: 10px 16px; }
+  }
+</style>
+</head>
+<body>
+<header class="comp-bar">
+  <a class="btn btn-ghost btn-sm" href="index.html"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>Comps</a>
+  <div class="comp-bar__title"><strong>Incident timeline</strong><span>Comp 3 of 4</span></div>
+  <div class="comp-bar__actions">
+    <button class="btn btn-outline btn-sm" type="button" data-new><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>New incident arrives</button>
+    <button class="btn btn-outline btn-sm" type="button" data-rm-toggle aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-motion"/></svg>Reduced motion</button>
+    <button class="btn btn-outline btn-sm" type="button" data-notes-toggle aria-expanded="false" aria-controls="notes"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>Notes</button>
+  </div>
+</header>
+
+<aside class="notes" id="notes" data-open="false" aria-labelledby="notes-title">
+  <div class="notes__head">
+    <h2 id="notes-title" tabindex="-1">About this comp</h2>
+    <button class="btn btn-ghost btn-icon" type="button" data-notes-close aria-label="Close notes"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <dl>
+    <div><dt>Audience</dt><dd>The technicians first thing in the morning, and anyone who has to answer "what happened overnight?" for a supervisor.</dd></div>
+    <div><dt>Job</dt><dd>Read the night in order: which Device went into which Condition, how bad it got, when it started and ended, and jump to that day's History to see the curve.</dd></div>
+    <div><dt>Key decision</dt><dd>Two readings of one log. On the left, each incident as a sentence with its numbers; on the right, the same incident as a span on a shared 18:00 to 08:00 ruler, segmented by level, so overlaps and the worst stretch of the night are visible without reading. Chronological, oldest first, so a new incident arrives at the bottom like the next line in a log.</dd></div>
+    <div><dt>Relies on</dt><dd><ul>
+      <li>Say what happened, with the numbers: peak, start, end, duration on every row.</li>
+      <li>Two Reds: the critical stretch is Critical Fill, with no text on it.</li>
+      <li>Signature motion: a new row rises 6px and takes the Reading-landed wash; reduced motion keeps only the fade.</li>
+      <li>History links by Device and day, so the chart stays the place for curves.</li>
+    </ul></dd></div>
+    <div><dt>Would change</dt><dd><ul>
+      <li>A new page and nav item (Incidents). The span bars are a new chart form for DESIGN.md.</li>
+      <li>Level segments use the signal tints as fills without text, an extension of the badge tints.</li>
+    </ul></dd></div>
+    <div><dt>Server needs</dt><dd>An incident log the backend writes when a Condition starts, changes level, and ends, with the peak Reading. Today Conditions are computed for the latest Reading only, so this is the comp with the largest backend cost.</dd></div>
+  </dl>
+</aside>
+
+<div class="shell">
+  <nav class="sidebar" aria-label="Main">
+    <div class="sidebar__brand"><span class="mark"><svg class="icon" aria-hidden="true"><use href="#i-thermometer"/></svg></span><div><b>Riverbend Unified</b><small>Temperature Alarms</small></div></div>
+    <ul class="nav">
+      <li><a href="#"><svg class="icon" aria-hidden="true"><use href="#i-dashboard"/></svg>Dashboard</a></li>
+      <li><a href="campuses.html"><svg class="icon" aria-hidden="true"><use href="#i-building"/></svg>Campuses</a></li>
+      <li><a href="#" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>Incidents</a></li>
+      <li><a href="#"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>History</a></li>
+      <li><a href="#"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>Settings</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="mobile-header">
+      <button class="btn btn-ghost btn-icon" type="button" aria-label="Open navigation"><svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg></button>
+      <b>Incidents</b>
+    </div>
+    <main class="page">
+      <div class="page-head">
+        <div>
+          <h1>Incidents</h1>
+          <p>Every Condition at warning or worse, from start to end, across the district.</p>
+        </div>
+        <div class="controls">
+          <div class="seg" role="tablist" aria-label="Window">
+            <button role="tab" aria-selected="true" type="button">Overnight</button>
+            <button role="tab" aria-selected="false" type="button">Today</button>
+            <button role="tab" aria-selected="false" type="button">7 days</button>
+          </div>
+          <div class="daynav">
+            <button class="btn btn-outline btn-icon" type="button" aria-label="Previous night"><svg class="icon" aria-hidden="true"><use href="#i-left"/></svg></button>
+            <span class="date-field"><svg class="icon dim" aria-hidden="true"><use href="#i-calendar"/></svg>Sat 3 to Sun 4 Oct</span>
+            <button class="btn btn-outline btn-icon" type="button" aria-label="Next night" disabled style="opacity:.5;pointer-events:none"><svg class="icon" aria-hidden="true"><use href="#i-right"/></svg></button>
+          </div>
+        </div>
+      </div>
+
+      <p class="summary" id="summary"></p>
+
+      <section class="card log" aria-label="Incidents, oldest first">
+        <div class="row head" aria-hidden="true">
+          <div>Incident</div>
+          <div class="ruler-cell"><div class="ruler" id="ruler"></div></div>
+        </div>
+        <ol id="log"></ol>
+      </section>
+    </main>
+  </div>
+</div>
+
+<script src="comps.js"></script>
+<script>
+  // The night runs 18:00 Saturday to 08:00 Sunday; it is now 07:12.
+  const START = 18 * 60, LENGTH = 14 * 60, NOW = '07:12';
+  const m = (hhmm) => { const [h, mm] = hhmm.split(':').map(Number); let v = h * 60 + mm - START; if (v < 0) v += 1440; return v; };
+  const pct = (hhmm) => (m(hhmm) / LENGTH) * 100;
+  const dur = (a, b) => { const d = m(b) - m(a); const h = Math.floor(d / 60), mm = d % 60; return h ? `${h} h ${mm} min` : `${mm} min`; };
+
+  // As an incident log endpoint would send them. Segments are the level the Condition was at.
+  const INCIDENTS = [
+    { campus: 'Cedar Point Elementary', closet: 'IDF 1', host: 'ESP_3F9A21', name: 'Offline', level: 'warning', start: '18:42', end: '19:05', day: '3 Oct',
+      facts: '<b>No Readings for 23 min</b>, then back on its own.', segs: [['18:42', '19:05', 'warning']] },
+    { campus: 'Riverbend High School', closet: 'IDF 3', host: 'ESP_A1B2C3', name: 'Hot', level: 'warning', start: '21:15', end: '22:40', day: '3 Oct',
+      facts: 'Peak <b>86.2°F</b> at 22:02.', segs: [['21:15', '22:40', 'warning']] },
+    { campus: 'Mill Creek Elementary', closet: 'IDF 2', host: 'ESP_7C10E4', name: 'Mold risk', level: 'high', start: '23:30', end: '03:10', day: '3 Oct',
+      facts: 'Peak <b>74%</b> at 78°F, 01:20. Moderate until 00:05, high to 02:30.', segs: [['23:30', '00:05', 'moderate'], ['00:05', '02:30', 'high'], ['02:30', '03:10', 'moderate']] },
+    { campus: 'Oak Hollow Middle School', closet: 'IDF 2', host: 'ESP_D45B08', name: 'Hot', level: 'critical', start: '01:58', end: '04:21', day: '4 Oct',
+      facts: 'Peak <b>93.4°F</b> at 02:41. Critical from 02:11 to 03:35.', segs: [['01:58', '02:11', 'warning'], ['02:11', '03:35', 'critical'], ['03:35', '04:21', 'warning']] },
+    { campus: 'Lakeside Elementary', closet: 'MDF', host: 'ESP_0E6612', name: 'Dry', level: 'warning', start: '03:45', end: '05:30', day: '4 Oct',
+      facts: 'Lowest <b>17%</b> humidity at 04:50.', segs: [['03:45', '05:30', 'warning']] },
+    { campus: 'Harbor View Middle School', closet: 'IDF 4', host: 'ESP_91F2AA', name: 'Offline', level: 'warning', start: '05:52', end: null, day: '4 Oct',
+      facts: '<b>No Readings since 05:52.</b> Last Reading 71.8°F, 50%.', segs: [['05:52', NOW, 'warning']] },
+  ];
+  const ARRIVING = { campus: 'Oak Hollow Middle School', closet: 'IDF 2', host: 'ESP_D45B08', name: 'Hot', level: 'warning', start: '07:08', end: null, day: '4 Oct',
+    facts: 'At <b>83.1°F</b> and rising. Second time tonight.', segs: [['07:08', NOW, 'warning']] };
+
+  const TICKS = ['18:00', '20:00', '22:00', '00:00', '02:00', '04:00', '06:00'];
+  document.getElementById('ruler').innerHTML = TICKS.map((t, i) => `<span class="${i % 3 || i === 6 ? 'minor' : ''}" style="left:${pct(t)}%">${t}</span>`).join('') +
+    `<span style="left:${pct(NOW)}%;color:var(--readout-white)">Now</span>`;
+
+  const lines = TICKS.map((t) => `<i style="left:${pct(t)}%"></i>`).join('') + `<i class="now" style="left:${pct(NOW)}%"></i>`;
+
+  function row(x) {
+    const span = x.segs.map(([a, b, lv]) => `<i class="seg-${lv}" style="width:${((m(b) - m(a)) / (m(x.end || NOW) - m(x.start))) * 100}%"></i>`).join('');
+    const end = x.end ? `${x.end}` : 'now';
+    return `<li class="row landing">
+      <div class="detail">
+        <p class="when num"><b>${x.start}</b><span>${x.end ? `to ${x.end}` : 'ongoing'}</span></p>
+        <div class="what">
+          <div class="what__top">
+            <span class="badge badge-condition lv-${x.level}">${x.name}<span class="lvl">· ${x.level}</span></span>
+            <span class="num ${x.end ? 'dim' : 'ongoing-note'}">${x.end ? dur(x.start, x.end) : `${dur(x.start, NOW)} so far`}</span>
+          </div>
+          <p class="what__where">${x.campus} <span>· ${x.closet}</span></p>
+          <p class="what__facts num">${x.facts}</p>
+          <div class="what__foot">
+            <span class="mono">${x.host}</span>
+            <a class="btn btn-outline btn-sm" href="#history-${x.host}-${x.day.replace(' ', '')}" aria-label="History for ${x.closet}, ${x.campus}, ${x.day}"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>History, ${x.day}</a>
+          </div>
+        </div>
+      </div>
+      <div class="track" aria-hidden="true">
+        <div class="track__lines">${lines}</div>
+        <div class="track__area"><span class="span ${x.end ? '' : 'ongoing'}" style="left:${pct(x.start)}%;width:${((m(end === 'now' ? NOW : end) - m(x.start)) / LENGTH) * 100}%">${span}</span></div>
+      </div>
+    </li>`;
+  }
+
+  function summary(list) {
+    const going = list.filter((x) => !x.end);
+    const campuses = new Set(list.map((x) => x.campus)).size;
+    document.getElementById('summary').innerHTML =
+      `<b class="num">${list.length} incidents</b> overnight on ${campuses} Campuses. The worst: Oak Hollow Middle IDF 2 reached Hot critical, <span class="num">93.4°F</span> at 02:41. ` +
+      `<b class="num">${going.length} still going</b>: ${going.map((x) => `${x.campus.replace(' School', '')} ${x.closet}, ${x.name} since ${x.start}`).join('; ')}.`;
+  }
+
+  const log = document.getElementById('log');
+  log.innerHTML = INCIDENTS.map(row).join('');
+  summary(INCIDENTS);
+
+  // Demo: a new Condition starts; its row arrives at the end of the log and takes the Reading-landed wash.
+  document.querySelector('[data-new]').addEventListener('click', () => {
+    log.querySelector('[data-arrived]')?.remove();
+    log.insertAdjacentHTML('beforeend', row(ARRIVING));
+    const el = log.lastElementChild;
+    el.dataset.arrived = '';
+    el.classList.add('is-arriving');
+    if (!reducedMotion()) replayClass(el, 'is-landed');
+    summary([...INCIDENTS, ARRIVING]);
+    el.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+  });
+</script>
+</body>
+</html>

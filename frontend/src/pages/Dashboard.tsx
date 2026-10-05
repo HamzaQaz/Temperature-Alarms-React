@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AnimatePresence, motion } from 'framer-motion';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { getCampuses, getDashboard } from '@/api';
+import { loadHistory } from './history-loader';
 import { LiveStatus } from '@/components/LiveStatus';
 import { DeviceCard } from '@/components/DeviceCard';
+import { Regroup } from '@/components/Regroup';
 import { Placeholder } from '@/components/Placeholder';
 import { NoValue, Tile } from '@/components/Tile';
 import { Button } from '@/components/ui/button';
@@ -14,19 +16,37 @@ import { hasWarningOrWorse, isWarningOrWorse } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useNow } from '@/hooks/use-now';
-import { arrive, settle } from '@/lib/motion';
+import { arrive, regroup, settle } from '@/lib/motion';
+import { cn } from '@/lib/utils';
 import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
-import type { Dashboard as DashboardPayload, DashboardDevice, ReadingEvent } from '@/types';
+import type { Campus, Dashboard as DashboardPayload, DashboardDevice, ReadingEvent } from '@/types';
 
 const ALL = 'all';
+
+/**
+ * What the dashboard last showed, kept for this tab's lifetime so coming back from History
+ * (or Settings) shows the cards at once, then refreshes them. Without it the way back would
+ * be a skeleton, and the card a technician came from could not be the end of the move back.
+ */
+const dashboardCache = new Map<string, LoadedDashboard>();
+let campusCache: Campus[] | undefined;
 
 /** The dashboard: every Device's latest Reading, filtered by Campus from the URL. */
 export default function Dashboard() {
   usePageTitle('Dashboard');
   const [searchParams, setSearchParams] = useSearchParams();
   const campusParam = searchParams.get('campus') ?? '';
-  const campuses = useResource(getCampuses);
+  const campuses = useResource(getCampuses, campusCache);
+  useEffect(() => {
+    if (campuses.state.status === 'ready') campusCache = campuses.state.data;
+  }, [campuses.state]);
+
+  // History is its own chunk; fetch it while the dashboard idles so a card's History opens in one step.
+  useEffect(() => {
+    const timer = setTimeout(() => void loadHistory(), 1500);
+    return () => clearTimeout(timer);
+  }, []);
 
   const campusList = campuses.state.status === 'ready' ? campuses.state.data : [];
   const selected = campusList.find((c) => c.shortcode.toLowerCase() === campusParam.toLowerCase());
@@ -43,9 +63,12 @@ export default function Dashboard() {
         </div>
       </header>
 
+      {/* The filter's own placeholder, so the cards below do not jump when the Campuses arrive. */}
+      {campuses.state.status === 'loading' && <Skeleton className="h-9 w-80 max-w-full rounded-lg" />}
       {campusList.length > 0 && (
         <Tabs value={tabValue} onValueChange={showCampus}>
-          <div className="overflow-x-auto pb-1">
+          {/* A strip that scrolls sideways; on a phone it runs to the screen's edges, so a Campus cut off there reads as more to scroll. */}
+          <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
             <TabsList aria-label="Filter by campus">
               <TabsTrigger value={ALL}>All campuses</TabsTrigger>
               {campusList.map((campus) => (
@@ -58,8 +81,9 @@ export default function Dashboard() {
         </Tabs>
       )}
 
-      {/* Keyed by campus so switching shows placeholders instead of the previous campus's cards. */}
-      <DashboardContent key={campusParam} campus={campusParam} campusName={selected?.name} onShowAll={() => showCampus(ALL)} />
+      {/* Not keyed by campus: on a switch the cards on screen stay until the new Campus's arrive,
+          then the ones that stay glide to their new places and the rest fade. */}
+      <DashboardContent campus={campusParam} campusName={selected?.name} onShowAll={() => showCampus(ALL)} />
     </div>
   );
 }
@@ -70,13 +94,15 @@ interface LiveDevice extends DashboardDevice {
 }
 
 interface LoadedDashboard extends Omit<DashboardPayload, 'devices'> {
+  /** The Campus filter these Devices answer, '' for all. */
+  campus: string;
   devices: LiveDevice[];
 }
 
 async function loadDashboard(campus: string): Promise<LoadedDashboard> {
   const payload = await getDashboard(campus || undefined);
   const asOf = Date.now();
-  return { ...payload, devices: payload.devices.map((device) => ({ ...device, asOf })) };
+  return { ...payload, campus, devices: payload.devices.map((device) => ({ ...device, asOf })) };
 }
 
 /**
@@ -102,8 +128,13 @@ interface DashboardContentProps {
 
 function DashboardContent({ campus, campusName, onShowAll }: DashboardContentProps) {
   const load = useCallback(() => loadDashboard(campus), [campus]);
-  const { state, reload, update } = useResource(load);
+  // Read once, at mount: whether this visit starts from what the last one showed.
+  const [cached] = useState(() => dashboardCache.get(campus));
+  const { state, reload, update } = useResource(load, cached);
   const [refreshing, setRefreshing] = useState(false);
+  useEffect(() => {
+    if (state.status === 'ready') dashboardCache.set(state.data.campus, state.data);
+  }, [state]);
 
   // Each Reading lands on its card as it arrives. After a dropped stream, reload: anything sent meanwhile was missed.
   const stream = useReadingStream({
@@ -137,9 +168,11 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
   }
 
   const { devices, reportIntervalSeconds, offlineAfterSeconds } = state.data;
+  // A Campus switch in flight: the cards on screen belong to the last one until the new answer lands.
+  const pending = state.data.campus !== campus;
 
   return (
-    <motion.div className="space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
+    <motion.div className="space-y-6" initial={cached ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
           Devices report every {reportIntervalSeconds} seconds. Offline means nothing has arrived for {offlineAfterSeconds} seconds.
@@ -158,7 +191,14 @@ function DashboardContent({ campus, campusName, onShowAll }: DashboardContentPro
       {devices.length === 0 ? (
         <EmptyState campus={campus} campusName={campusName} onShowAll={onShowAll} />
       ) : (
-        <DeviceGrid devices={devices} reportIntervalSeconds={reportIntervalSeconds} offlineAfterSeconds={offlineAfterSeconds} onPastOffline={reload} />
+        <DeviceGrid
+          devices={devices}
+          reportIntervalSeconds={reportIntervalSeconds}
+          offlineAfterSeconds={offlineAfterSeconds}
+          onPastOffline={reload}
+          arriveOnMount={cached === undefined}
+          pending={pending}
+        />
       )}
     </motion.div>
   );
@@ -170,10 +210,22 @@ interface DeviceGridProps {
   offlineAfterSeconds: number;
   /** Called when a card still shown Online has aged past the Offline threshold; must be stable. */
   onPastOffline: () => void;
+  /** Cards rise in one after the next on a first visit; a return visit starts settled. */
+  arriveOnMount: boolean;
+  /** A Campus switch is in flight and these cards are the previous Campus's. */
+  pending: boolean;
 }
 
-function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPastOffline }: DeviceGridProps) {
+function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPastOffline, arriveOnMount, pending }: DeviceGridProps) {
   const now = useNow();
+  // After the first render, a card joining or leaving is the filter at work, not the page arriving.
+  const [settled, setSettled] = useState(false);
+  useEffect(() => setSettled(true), []);
+  // Cards measure their place only when the set or order of cards changes, never on the
+  // once-a-second tick, so sixty cards cost nothing to keep FLIP-ready.
+  const order = devices.map((device) => device.id).join();
+  const list = useRef<HTMLUListElement>(null);
+  const reduced = useReducedMotion() ?? false;
   // Each card ages from the moment its own data was true, so a live Reading resets only that card's age.
   const age = (device: LiveDevice): number | null =>
     device.secondsSinceReading === null ? null : device.secondsSinceReading + Math.max(0, Math.floor((now - device.asOf) / 1000));
@@ -188,14 +240,29 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
     if (pastOfflineKey !== '') onPastOffline();
   }, [pastOfflineKey, onPastOffline]);
   return (
-    <ul className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-4" aria-label="Devices">
-      <AnimatePresence>
-        {devices.map((device, index) => (
-          <motion.li key={device.id} className="flex" {...arrive(index)}>
-            <DeviceCard device={device} secondsSinceReading={age(device)} reportIntervalSeconds={reportIntervalSeconds} />
-          </motion.li>
-        ))}
-      </AnimatePresence>
+    <ul
+      ref={list}
+      className={cn(
+        'relative grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4 transition-opacity duration-200 ease-out-quint',
+        pending && 'opacity-60 delay-150',
+      )}
+      aria-label="Devices"
+      aria-busy={pending || undefined}
+    >
+      <Regroup list={list} order={order} still={reduced}>
+        <AnimatePresence initial={arriveOnMount} mode="popLayout">
+          {devices.map((device, index) => (
+            <motion.li key={device.id} data-regroup={device.id} className="flex" {...(settled ? regroup : arrive(index))}>
+              <DeviceCard
+                device={device}
+                secondsSinceReading={age(device)}
+                anchorMs={device.secondsSinceReading === null ? null : device.asOf - device.secondsSinceReading * 1000}
+                reportIntervalSeconds={reportIntervalSeconds}
+              />
+            </motion.li>
+          ))}
+        </AnimatePresence>
+      </Regroup>
     </ul>
   );
 }
@@ -223,7 +290,7 @@ function Summary({ devices }: { devices: DashboardDevice[] }) {
   const reportingNote = reporting === 0 ? 'No readings yet' : `Across ${reporting} with a Reading`;
 
   return (
-    <dl className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+    <dl className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
       <Tile
         label="Devices"
         value={<NumberFlow value={devices.length} />}
@@ -280,12 +347,12 @@ function DashboardSkeleton() {
         <Skeleton className="h-4 w-72" />
         <Skeleton className="h-8 w-24" />
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         {Array.from({ length: 4 }, (_, i) => (
           <Skeleton key={i} className="h-[6.5rem] rounded-xl" />
         ))}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4">
         {Array.from({ length: 6 }, (_, i) => (
           <Skeleton key={i} className="h-60 rounded-xl" />
         ))}
