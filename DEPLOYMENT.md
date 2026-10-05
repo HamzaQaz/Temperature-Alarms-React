@@ -149,7 +149,7 @@ Set the three secrets; `docker compose up` refuses to start and names any that i
 | `DEVICE_TOKEN` | The secret every Device sends with every Reading. Generate another one; it goes into each board's `config.h`, so rotating it means reflashing every Device (ADR 0003) |
 | `DB_PASSWORD` | The password of the database user, and of MySQL root inside the stack. Generate a third one; nothing outside the stack can reach the database |
 
-`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). `.env` is gitignored.
+`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. `TRUST_PROXY` stays empty unless a TLS proxy sits in front of the stack ([TLS in front of the stack](#tls-in-front-of-the-stack)). Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). `.env` is gitignored.
 
 ### First run
 
@@ -319,12 +319,24 @@ With nginx and certbot instead, follow steps 5 and 6 of the [manual install](#5-
 
 No Device needs to change at certificate renewal: one with an `https://` server URL sends over TLS without checking the certificate (see the firmware section of the README). One with `http://YOUR_DOMAIN`, or `http://` and the server's address, keeps posting over plain HTTP through the blocks above; with the stack on `127.0.0.1:8080`, the proxy is now the only way in.
 
-Behind this proxy there are two hops, the proxy and the stack's own nginx, and the backend trusts one (`trust proxy` is 1). It sees every request as coming from the host proxy, so two per-address limits are shared by every browser together:
+#### Client addresses behind the proxy: `TRUST_PROXY`
 
-- the general limit of 500 API requests per 15 minutes (Readings have their own per-Device limit and are not counted). A handful of open dashboards stays far below it.
-- the cap of 20 open live streams, one per open dashboard tab, which both the stack's nginx and the backend apply. The 21st tab open at the same time gets a 429 for its stream, shows Reconnecting, and tries again every 5 seconds until one of the others closes.
+Behind the proxy, every browser and every Device reaches the stack's nginx from the proxy's one address. Per-address limits then count the whole district as one client:
 
-If browsers start getting 429s, that shared allowance is the cause. Counting each browser separately needs the backend to trust two hops (`app.set('trust proxy', 2)` in `backend/src/app.ts`) and the stack's nginx to take the client address from the proxy's `X-Forwarded-For`; neither is configurable from `.env` yet.
+- the cap of 20 open live streams, one per open dashboard tab, which both nginx and the backend apply. The 21st tab open anywhere gets a 429 for its stream, shows Reconnecting, and tries again every 5 seconds until another tab closes.
+- the general limits per 15 minutes: 6,000 reads (GET), which about 30 open tabs stay well under (a Campuses tab, the busiest, makes about 90), and 500 changes (everything else; Readings have their own per-Device limit and are not counted). An office of browsers behind one NAT address shares these too, with or without the proxy.
+- the cap of 100 wrong Device tokens per 15 minutes. Past it, every Reading from that address is refused, even with the right token. A few boards still flashed with an old token would then stop every Device behind the proxy from recording.
+
+Set `TRUST_PROXY` in `.env` to the proxy's address, then run `docker compose up -d`, which recreates only `web`. nginx then takes the client from the proxy's `X-Forwarded-For`, and each browser and Device counts on its own:
+
+| Where the proxy runs | `TRUST_PROXY` |
+| --- | --- |
+| On this host, as above (Caddy or nginx proxying to `127.0.0.1:8080`) | `gateway`. A host proxy reaches the container through the Docker network's gateway; nginx looks that address up when it starts |
+| On another machine, or in a container on the stack's network | Its IP address, or several, comma-separated: `10.20.0.5,10.20.0.6`. CIDR ranges work too: `10.20.0.0/29` |
+
+Leave it empty with no proxy in front. That is the default, and nginx then counts the address it sees, as without the setting. `deploy/deploy.sh install` asks for the value only when you say a proxy is in front; non-interactively, use `--set TRUST_PROXY=gateway` (with `--reconfigure` on an existing `.env`). `docker compose logs web` shows what nginx trusts, as a line starting `real-ip:`.
+
+nginx believes `X-Forwarded-For` only on connections from the addresses you list. It reads the header from the right and stops at the first address it does not trust, so a value a browser wrote itself is ignored, and so is any request that skips the proxy. The backend trusts one hop, the stack's nginx, so it sees the address nginx settled on. Never list an address that ordinary clients connect from, such as the LAN's whole range when `WEB_PORT` is open to the LAN. Anyone at a listed address can claim to be any client. `0.0.0.0/0` is refused for that reason, and so is any value that is not an address: `web` does not start and its log says why.
 
 ### Security
 

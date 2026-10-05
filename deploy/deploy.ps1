@@ -84,7 +84,8 @@ Options:
   -p, --project NAME    Compose project name; default is Compose's own (the folder name), which
                         names the database volume, so keep it for an existing install
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
-      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy)
+      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
+                        TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
       --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
@@ -237,9 +238,24 @@ function Protect-EnvFile {
     else { & chmod 600 $EnvPath }
 }
 
+# TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
+# Never /0: trusting every address would let any client write its own X-Forwarded-For.
+# frontend/real-ip.sh checks the same at container start.
+function Test-TrustProxy([string]$Value) {
+    if (-not $Value) { return $true }
+    if ($Value -notmatch '^[0-9A-Za-z.:/, ]*$') { return $false }
+    foreach ($entry in ($Value -split '[, ]+' | Where-Object { $_ })) {
+        if ($entry -match '/0$') { return $false }
+        if ($entry -eq 'gateway') { continue }
+        if ($entry -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$') { return $false }
+    }
+    return $true
+}
+
 function Test-Setting([string]$Key, [string]$Value) {
     switch ($Key) {
         'WEB_PORT' { return $Value -match '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' }
+        'TRUST_PROXY' { return Test-TrustProxy $Value }
         'LEGACY_TIME_ZONE' { return ($Value -eq '') -or ($Value -match '^[A-Za-z0-9_/+:-]+$') }
         default { return $Value -match '^[0-9]+$' }
     }
@@ -253,7 +269,7 @@ function Set-FlagsInEnv {
     foreach ($kv in $O.Sets) {
         $key = $kv.Split('=', 2)[0]
         $value = if ($kv.Contains('=')) { $kv.Split('=', 2)[1] } else { '' }
-        if ($key -notin (@('WEB_PORT') + $Tunables)) { Fail "--set: $key is not a setting this script manages (WEB_PORT $($Tunables -join ' '))" }
+        if ($key -notin (@('WEB_PORT', 'TRUST_PROXY') + $Tunables)) { Fail "--set: $key is not a setting this script manages (WEB_PORT TRUST_PROXY $($Tunables -join ' '))" }
         if (-not (Test-Setting $key $value)) { Fail "--set: '$value' is not valid for $key" }
         Set-EnvValue $key $value; Ok "$key=$value"
     }
@@ -268,6 +284,19 @@ function Read-Tunables {
         Warn "'$value' is not PORT or ADDR:PORT"
     }
     Set-EnvValue 'WEB_PORT' $value
+    # Behind a TLS proxy every browser arrives from the proxy's address, so the per-address
+    # limits would count them all as one unless nginx is told to trust the proxy.
+    $current = Get-EnvValue 'TRUST_PROXY'
+    if (Confirm-Choice 'Is a TLS proxy (Caddy, nginx) in front of this stack?' ([bool]$current)) {
+        if (-not $current) { $current = 'gateway' }
+        while ($true) {
+            $value = Ask 'Proxy address(es) to trust: IP or CIDR, comma-separated; gateway = a proxy on this host' $current
+            if ($value -and (Test-Setting 'TRUST_PROXY' $value)) { break }
+            Warn "'$value' is not a list of IP addresses or CIDR ranges (or gateway)"
+        }
+        Set-EnvValue 'TRUST_PROXY' $value
+    }
+    elseif ($current) { Set-EnvValue 'TRUST_PROXY' '' }
     if (Confirm-Choice 'Change the alarm thresholds and retention from their defaults?' $false) {
         foreach ($k in $Tunables) {
             $current = Get-EnvValue $k

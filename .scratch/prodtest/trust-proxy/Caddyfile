@@ -1,0 +1,9 @@
+# DEPLOYMENT.md's Caddyfile, for a closed test: no public name, so plain HTTP on :80, and the
+# upstream is the stack's web service on the shared Docker network instead of 127.0.0.1:8080.
+# Caddy's default: it ignores an X-Forwarded-For from an untrusted client and sends only the
+# address it saw.
+:80 {
+	reverse_proxy web:8080 {
+		flush_interval -1
+	}
+}

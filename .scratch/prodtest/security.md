@@ -360,3 +360,73 @@ Repro: the 25-stream test above shows the cut at 20 for one address. Behind a ho
 ### Files modified
 
 frontend/nginx.conf, frontend/security-headers.conf (new), frontend/Dockerfile, compose.yaml, compose.demo.yaml, deploy/deploy.sh, deploy/deploy.ps1, DEPLOYMENT.md, README.md, .scratch/ct/csp-probe.mjs (new), .scratch/prodtest/security.md (this section).
+
+## TRUST_PROXY
+
+Fixes should-fix I1 (behind the documented TLS proxy, every browser and Device shares the proxy's address), plus the coordinator's addition: a read limit that an office of tabs behind one address stays under. Evidence: `.scratch/prodtest/runs/trust-proxy/` (logs, gitignored). Scripts: `.scratch/prodtest/trust-proxy/` (streams.mjs, devicefail.mjs, clients.sh, tab-requests.mjs, both Caddyfiles). Stack `ta-tp` on 127.0.0.1:8099, with `caddy:2-alpine` on the same Docker network (published on 127.0.0.1:8100 for the walk). All torn down at the end, images included.
+
+### Pass/fail
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| TRUST_PROXY empty: two clients behind Caddy share one cap of 20 (today's behaviour) | pass: A 13 + B 7 = 20, rest 429 from nginx | runs/trust-proxy/01-default-empty.log |
+| TRUST_PROXY = both Caddy addresses: two clients, 25 streams each at once | pass: each gets 20 ok + 5 × 429 | 02-per-client.log |
+| Spoof through default Caddy (fixed XFF, or a new XFF per stream) | pass: still 20 each | 03-spoof-caddy.log |
+| Spoof through a misconfigured Caddy that passes the client's XFF on (`trusted_proxies private_ranges`) | pass: still 20 each; nginx stops at the rightmost untrusted entry | 04-spoof-lax.log |
+| Spoof straight to nginx, skipping Caddy (rotating XFF, or claiming Caddy's own address) | pass: still 20 each | 05-spoof-direct.log |
+| The api keys on the real client too (Device-token failure cap of 100, which nginx does not duplicate) | pass: client A, over the cap and rotating XFF through the lax Caddy, stays 429; clients B and C still get 401 (own allowance), via Caddy and direct | 06-device-fail-cap.log |
+| nginx access log shows the clients (172.22.0.7/.8/.9) and the host browser via the gateway (.1), never Caddy (.5/.6) | pass | log tally in this session |
+| `TRUST_PROXY=gateway` resolves the container's default gateway (172.22.0.1); host curl via the gateway is trusted, a container client's XFF is not | pass | 08-gateway-and-validation.log |
+| Invalid values (`0.0.0.0/0`, `::/0`, `1.2.3.4; evil`, `caddy`) stop the container with a `real-ip:` line; a list with stray commas and spaces, and IPv6 CIDR, work and pass `nginx -t` | pass: the real entrypoint exits 1 | 08-gateway-and-validation.log |
+| Still non-root (uid 101), read-only root filesystem, only /tmp tmpfs | pass: the file renders to /tmp, no new mount needed | `docker inspect` in this session |
+| `node frontend/e2e/walk.mjs` through Caddy (WEB=http://127.0.0.1:8100) | pass: 38 of 38 | 07-walk-via-caddy.log |
+| deploy.sh / deploy.ps1: `--set TRUST_PROXY=...` (valid, /0 refused, empty clears, unknown key named); the install prompt asks only after "Is a TLS proxy in front?" is answered yes, defaults to `gateway`, re-asks on a bad value, and clears on no | pass, both scripts, same results | this session (scratch copies; prompt driven with mocked input) |
+| shellcheck 0.9 (deploy.sh, frontend/real-ip.sh, clients.sh) | pass: clean | koalaman/shellcheck:v0.9.0 |
+| compose.yaml + compose.demo.yaml `config` | pass | |
+| Read limit: per-tab measurement, then test-first split limiter | pass | 09-tab-requests.log, backend/test/rateLimit.test.ts |
+| backend `npm test` / `typecheck` | pass: 228/228, clean | backend-test-final.log |
+| frontend `lint` / `typecheck` / `test` / `build` | pass, all exit 0 (worktree incl. the accessibility agent's uncommitted src) | frontend-*.log |
+
+### Findings, by production impact
+
+**Should fix (now fixed): I1. Behind the TLS proxy every client was one address.** That meant 20 live tabs district-wide and one shared 500-request allowance. It also meant one shared Device-token failure cap. That last one is worse than the report first said. Past 100 wrong-token posts in 15 minutes, *every* Reading from that address is refused, even with the right token. So about four boards left on an old token (posting every 30 s) would stop every Device behind the proxy from recording. Repro: 01-default-empty.log for the streams. For the Device cap, the arithmetic is from `routes/readings.ts`.
+
+**Should fix (now fixed): the general /api/ allowance blanked pages behind one NAT.** Measured on the demo stack (24 Devices live, 5 minutes, scaled to 15), one open tab makes:
+
+| Page | /api requests per 15 min | What |
+| --- | --- | --- |
+| Campuses | 93 | `GET /api/campuses/overview`, at most every 10 s while the stream is busy, plus the stream |
+| History | 36 | the Device's history, 2 s after each of its Readings |
+| Dashboard | 30 | `GET /api/dashboard` refetches (8 in 5 min), campuses once, the stream |
+| Incidents | 6 | once, then in place from the stream |
+
+So 30 tabs behind one address make about 1,200 to 2,800 reads: more than twice the old 500 even at the low end. Reads now have their own allowance of 6,000 per address per 15 minutes, which leaves more than 2× headroom for a wall of 30 Campuses tabs. Everything that is not a GET or HEAD keeps today's 500, counted separately. Readings stay exempt, with the per-Device write limit and the Device-token failure cap unchanged.
+
+**Note: T1. 30 tabs behind one NAT still meet the 20-stream cap.** TRUST_PROXY fixes the proxy case, but an office NAT is genuinely one address. Tab 21 there shows Reconnecting. Raising the cap (nginx `limit_conn` and `sse.ts`, both 20) is a capacity decision: each stream holds two nginx worker connections of 1024. If it matters, 40 in both still leaves nginx headroom at 1024 workers for about 12 such offices. I did not change it.
+
+**Note: T2. With TRUST_PROXY empty, nginx and the api keep working exactly as before.** The include renders a comment-only file.
+
+**Note: T3. Caddy (2.5 and later) drops an untrusted client's X-Forwarded-For.** It sends only the address it saw. So the brief's "distinct X-Forwarded-For values sent to Caddy, which appends them" does not happen with the documented Caddyfile. The two simulated clients are two containers with their own addresses instead. A deliberately lax Caddy covers the "proxy passes the header on" case.
+
+**Note: T4. I could not read or edit `.env.example`.** This session's permission settings deny every path matching `.env*`. Functionally nothing is missing: compose defaults `TRUST_PROXY` to empty, and `deploy.sh`/`.ps1` append the key when it is set. For the coordinator to add, after `WEB_PORT`:
+
+```
+# Behind a TLS proxy (DEPLOYMENT.md, TLS in front of the stack): the proxy's address(es),
+# comma-separated, or `gateway` for a proxy on this host. Empty: no proxy in front.
+TRUST_PROXY=
+```
+
+### Changes applied
+
+- `frontend/real-ip.sh` (new) is copied to `/docker-entrypoint.d/15-real-ip.sh` with mode 0755. From `TRUST_PROXY` it writes `/tmp/real-ip.conf`: `set_real_ip_from` for each entry, plus `real_ip_header X-Forwarded-For` and `real_ip_recursive on`. Entries are comma- or space-separated IPs and CIDRs. `gateway` means the default route's gateway from /proc/net/route, which is where a proxy on the Docker host arrives from. When `TRUST_PROXY` is empty, the file holds only a comment. The script refuses `/0` and anything that is not an address, so nginx config cannot be injected and the container fails loudly. It writes to /tmp because envsubst templates cannot loop over a list, and conf.d is read-only. The existing tmpfs covers /tmp.
+- `frontend/nginx.conf` includes `/tmp/real-ip.conf` in the server block, so `$remote_addr`, `limit_conn`, the access log, and the forwarded X-Forwarded-For all carry the browser's address.
+- `frontend/Dockerfile` copies the script.
+- `compose.yaml`: `web` gets `TRUST_PROXY: ${TRUST_PROXY:-}`. The demo overlay inherits it.
+- The backend keeps `trust proxy` at 1. nginx forwards `$proxy_add_x_forwarded_for`, whose last entry is now the real client, and the api believes only that entry (06-device-fail-cap.log).
+- `backend/src/app.ts`: two `/api/` limiters. `READ_LIMIT` is 6000 for GET and HEAD. `WRITE_LIMIT` is 500 for the rest, with POST /readings skipped as before. `backend/test/rateLimit.test.ts` was written first and seen red, then green. It covers: rotating XFF still capped for changes, reads allowed past 500 and capped at 6000 per address, another address keeping its own allowance, and reads and changes counted apart.
+- `deploy/deploy.sh` and `deploy/deploy.ps1`: `TRUST_PROXY` is a managed key with validation, accepted by `--set` and listed in the help. The interactive install asks "Is a TLS proxy (Caddy, nginx) in front of this stack?" and only then asks for the addresses (default `gateway`).
+- `DEPLOYMENT.md` adds "Client addresses behind the proxy: `TRUST_PROXY`" under TLS in front: what is shared without it, which value to use where, the deploy flags, the `real-ip:` log line, why spoofing fails, and what never to list. It also mentions TRUST_PROXY in the settings paragraph and the split limits. `README.md` covers the rate-limit paragraph.
+
+### Files modified
+
+frontend/real-ip.sh (new), frontend/nginx.conf, frontend/Dockerfile, compose.yaml, deploy/deploy.sh, deploy/deploy.ps1, DEPLOYMENT.md, README.md, backend/src/app.ts, backend/test/rateLimit.test.ts, .scratch/prodtest/trust-proxy/ (new: test scripts and Caddyfiles), .scratch/prodtest/security.md (this section). Not changed: compose.demo.yaml (inherits from compose.yaml), frontend/security-headers.conf, and .env.example (T4).

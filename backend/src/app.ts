@@ -10,6 +10,14 @@ import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
 import { incidentsRouter } from './routes/incidents';
 
+/**
+ * Per address per 15 minutes on /api/. Reads: 30 Campuses tabs, the busiest page, make about
+ * 2,800 (.scratch/prodtest/security.md, TRUST_PROXY), so 6,000 leaves room for a wall of them.
+ * Changes: everything that is not a GET or HEAD, apart from Readings.
+ */
+export const READ_LIMIT = 6000;
+export const WRITE_LIMIT = 500;
+
 /** The Express app, without a listening socket, so tests can drive it directly. */
 export function createApp(appDeps: AppDeps): Express {
   const deps: RouteDeps = { ...appDeps, sse: appDeps.sse ?? createBroadcaster() };
@@ -22,18 +30,35 @@ export function createApp(appDeps: AppDeps): Express {
   app.use(corsMiddleware(deps.config));
   app.use(express.json());
 
+  // Two allowances per address. Reads are what open tabs make on their own: a Campuses tab reloads
+  // up to every 10 s, about 90 requests per 15 minutes, so an office behind one NAT, or every
+  // browser behind a TLS proxy without TRUST_PROXY, would exhaust a shared 500 with a handful of
+  // tabs and see blank pages. Changes come from people at Settings and stay tight.
+  const isRead = (req: Request) => req.method === 'GET' || req.method === 'HEAD';
   app.use(
     '/api/',
     rateLimit({
       windowMs: 15 * 60 * 1000,
-      max: 500,
+      max: READ_LIMIT,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: 'Too many requests from this IP, please try again later.' },
+      validate: false,
+      skip: (req) => !isRead(req),
+    }),
+  );
+  app.use(
+    '/api/',
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      max: WRITE_LIMIT,
       standardHeaders: true,
       legacyHeaders: false,
       message: { error: 'Too many requests from this IP, please try again later.' },
       validate: false,
       // Readings have their own limit per Device (routes/readings.ts). Sixteen boards behind one
       // campus address would exhaust a per-address allowance at one Reading each per 30 seconds.
-      skip: (req) => req.method === 'POST' && req.path === '/readings',
+      skip: (req) => isRead(req) || (req.method === 'POST' && req.path === '/readings'),
     }),
   );
 

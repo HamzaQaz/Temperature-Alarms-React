@@ -247,7 +247,7 @@ Tokens are sent as `Authorization: Bearer <token>`. The Admin token is the one t
 
 Browsers are accepted from the API's own origin, which is how the stack serves them, and from one more origin named in `CORS_ORIGIN` for a dev server on another port.
 
-Apart from Readings, which have the per-Device limit above, `/api/` allows 500 requests per 15 minutes per client address. The address is the one the stack's nginx saw: the backend trusts exactly one proxy hop. With another proxy in front, such as the TLS proxy in DEPLOYMENT.md, that address is the proxy's, so every browser shares one allowance.
+Apart from Readings, which have the per-Device limit above, `/api/` allows each client address 6,000 reads (GET and HEAD) and 500 other requests per 15 minutes. The reads are sized for about 30 open tabs behind one address: a Campuses tab, the busiest page, reloads at most every 10 seconds. The address is the one the stack's nginx saw: the backend trusts exactly one proxy hop. With another proxy in front, such as the TLS proxy in DEPLOYMENT.md, that address is the proxy's, so every browser shares one allowance, unless `TRUST_PROXY` in `.env` names the proxy. nginx then takes the browser's address from the proxy's `X-Forwarded-For` ([TLS in front of the stack](DEPLOYMENT.md#tls-in-front-of-the-stack)).
 
 ## Hardware
 

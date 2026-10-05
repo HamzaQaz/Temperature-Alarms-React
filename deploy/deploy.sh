@@ -107,7 +107,8 @@ Options:
   -p, --project NAME    Compose project name; default is Compose's own (the folder name), which
                         names the database volume, so keep it for an existing install
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
-      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy)
+      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
+                        TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
       --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
@@ -246,9 +247,24 @@ lock_env() {
   is_windows_shell || chmod 600 "$ENV_FILE"
 }
 
+# TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
+# Never /0: trusting every address would let any client write its own X-Forwarded-For.
+# frontend/real-ip.sh checks the same at container start.
+valid_trust_proxy() {
+  local entry
+  [ -n "$1" ] || return 0
+  # Only address characters, so the unquoted split below cannot glob.
+  printf '%s' "$1" | grep -Eq '^[0-9A-Za-z.:/, ]*$' || return 1
+  for entry in $(printf '%s' "$1" | tr ',' ' '); do
+    case "$entry" in */0) return 1 ;; gateway) continue ;; esac
+    printf '%s' "$entry" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$' || return 1
+  done
+}
+
 valid_tunable() {
   case "$1" in
     WEB_PORT) printf '%s' "$2" | grep -Eq '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' ;;
+    TRUST_PROXY) valid_trust_proxy "$2" ;;
     LEGACY_TIME_ZONE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[A-Za-z0-9_/+:-]+$' ;;
     *) printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
   esac
@@ -256,7 +272,7 @@ valid_tunable() {
 
 known_key() {
   local k
-  for k in WEB_PORT $TUNABLES; do [ "$k" = "$1" ] && return 0; done
+  for k in WEB_PORT TRUST_PROXY $TUNABLES; do [ "$k" = "$1" ] && return 0; done
   return 1
 }
 
@@ -268,7 +284,7 @@ apply_flags_to_env() {
   fi
   for kv in ${SETS[@]+"${SETS[@]}"}; do
     key=${kv%%=*}; value=${kv#*=}
-    known_key "$key" || die "--set: $key is not a setting this script manages (WEB_PORT $TUNABLES)"
+    known_key "$key" || die "--set: $key is not a setting this script manages (WEB_PORT TRUST_PROXY $TUNABLES)"
     valid_tunable "$key" "$value" || die "--set: '$value' is not valid for $key"
     env_set "$key" "$value"; ok "$key=$value"
   done
@@ -283,6 +299,20 @@ prompt_tunables() {
     warn "'$value' is not PORT or ADDR:PORT"
   done
   env_set WEB_PORT "$value"
+  # Behind a TLS proxy every browser arrives from the proxy's address, so the per-address
+  # limits would count them all as one unless nginx is told to trust the proxy.
+  current=$(env_get TRUST_PROXY)
+  if confirm "Is a TLS proxy (Caddy, nginx) in front of this stack?" "$( [ -n "$current" ] && echo y || echo n)"; then
+    [ -n "$current" ] || current=gateway
+    while :; do
+      value=$(ask "Proxy address(es) to trust: IP or CIDR, comma-separated; gateway = a proxy on this host" "$current")
+      [ -n "$value" ] && valid_tunable TRUST_PROXY "$value" && break
+      warn "'$value' is not a list of IP addresses or CIDR ranges (or gateway)"
+    done
+    env_set TRUST_PROXY "$value"
+  elif [ -n "$current" ]; then
+    env_set TRUST_PROXY ""
+  fi
   if confirm "Change the alarm thresholds and retention from their defaults?" n; then
     for k in $TUNABLES; do
       current=$(env_get "$k")

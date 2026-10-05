@@ -1,0 +1,12 @@
+# A misconfigured front proxy: it trusts every private address as a proxy, so it passes on the
+# X-Forwarded-For a client wrote and appends the client's address. nginx must still refuse it.
+{
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+:80 {
+	reverse_proxy web:8080 {
+		flush_interval -1
+	}
+}

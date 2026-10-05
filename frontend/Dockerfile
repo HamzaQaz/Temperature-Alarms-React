@@ -12,5 +12,7 @@ RUN npm run build
 FROM nginxinc/nginx-unprivileged:1.28-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY security-headers.conf /etc/nginx/snippets/security-headers.conf
+# Turns TRUST_PROXY into /tmp/real-ip.conf before nginx starts; the entrypoint runs it.
+COPY --chmod=0755 real-ip.sh /docker-entrypoint.d/15-real-ip.sh
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 8080
