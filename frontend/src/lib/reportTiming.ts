@@ -22,6 +22,7 @@ export type NextReport = { status: 'due'; seconds: number } | { status: 'late'; 
 
 export function nextReport(secondsSinceReading: number, reportIntervalSeconds: number): NextReport {
   const remaining = reportIntervalSeconds - secondsSinceReading;
-  // Math.abs, not negation: -0 at the boundary would render as "-0s".
-  return remaining > 0 ? { status: 'due', seconds: remaining } : { status: 'late', seconds: Math.abs(remaining) };
+  // Exactly due is still on time ("Next in 0s"): that second is when a punctual board's Reading
+  // lands, and calling it late would flash every on-time card amber. Late starts a second after.
+  return remaining >= 0 ? { status: 'due', seconds: remaining } : { status: 'late', seconds: -remaining };
 }

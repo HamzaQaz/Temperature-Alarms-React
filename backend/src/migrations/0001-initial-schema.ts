@@ -1,11 +1,11 @@
 import type { Migration } from './index';
 
-/** Three tables per docs/adr/0002: campuses, devices, readings. */
+/** Three tables per docs/adr/0002: campuses, devices, readings. IF NOT EXISTS, so a run that died before being recorded can repeat. */
 export const initialSchema: Migration = {
   id: '0001-initial-schema',
   async up(conn) {
     await conn.query(`
-      CREATE TABLE campuses (
+      CREATE TABLE IF NOT EXISTS campuses (
         id        INT UNSIGNED NOT NULL AUTO_INCREMENT,
         name      VARCHAR(100) NOT NULL,
         shortcode VARCHAR(20)  NOT NULL,
@@ -14,7 +14,7 @@ export const initialSchema: Migration = {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
     await conn.query(`
-      CREATE TABLE devices (
+      CREATE TABLE IF NOT EXISTS devices (
         id         INT UNSIGNED NOT NULL AUTO_INCREMENT,
         hostname   VARCHAR(20)  NOT NULL,
         campus_id  INT UNSIGNED NOT NULL,
@@ -26,7 +26,7 @@ export const initialSchema: Migration = {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
     await conn.query(`
-      CREATE TABLE readings (
+      CREATE TABLE IF NOT EXISTS readings (
         id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         device_id   INT UNSIGNED    NOT NULL,
         temp_f      INT             NOT NULL,

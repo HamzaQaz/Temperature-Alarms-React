@@ -42,7 +42,7 @@ A named state a Device's latest Reading is in, computed on the server from globa
 _Avoid_: Alert, alarm, risk, status
 
 **Bench**:
-The holding Campus (shortcode `BENCH`) a Device is registered under between flashing and installation. A Device on the Bench has passed its first Reading and is expected to be Offline until it is moved to its real Campus and Closet.
+The holding Campus (shortcode `BENCH`) a Device is registered under between flashing and installation, whatever its bench verdict: a board that failed its check stays registered there too, and the inventory sheet's `TESTED` column says which passed. A Device on the Bench is expected to be Offline until it is moved to its real Campus and Closet.
 _Avoid_: Staging, spare, inventory (that is the spreadsheet of boards, not a place)
 
 **Operator**:

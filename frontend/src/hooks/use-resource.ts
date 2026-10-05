@@ -23,6 +23,8 @@ export function useResource<T>(load: () => Promise<T>): {
   const [state, setState] = useState<ResourceState<T>>({ status: 'loading' });
   /** Changes made since the current load began; null when no load is in flight. */
   const inFlight = useRef<Array<(data: T) => T> | null>(null);
+  /** The latest load; an earlier one that settles after it has nothing newer to say and is dropped. */
+  const latest = useRef(0);
 
   const update = useCallback((change: (data: T) => T) => {
     inFlight.current?.push(change);
@@ -30,13 +32,16 @@ export function useResource<T>(load: () => Promise<T>): {
   }, []);
 
   const reload = useCallback(async () => {
+    const id = ++latest.current;
     const changes: Array<(data: T) => T> = [];
     inFlight.current = changes;
     setState((current) => (current.status === 'ready' ? current : { status: 'loading' }));
     try {
       const loaded = await load();
+      if (id !== latest.current) return;
       setState({ status: 'ready', data: changes.reduce<T>((data, change) => change(data), loaded) });
     } catch (error) {
+      if (id !== latest.current) return;
       setState({ status: 'error', message: describeError(error) });
     } finally {
       if (inFlight.current === changes) inFlight.current = null;

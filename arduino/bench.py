@@ -97,6 +97,8 @@ class Inventory:
     def __init__(self, rows: list[SheetRow], path: str | None = None):
         self.rows = [row for row in rows if row.mac]
         self._by_mac = {row.mac: row for row in self.rows}
+        # The boards as read, before write-back appends any: what the stop summary reconciles against.
+        self.rows_at_start = tuple(self.rows)
         self.path = path
         self._write_lock = threading.Lock()
 
@@ -191,13 +193,17 @@ class Inventory:
 
 
 def reconcile(inventory: Inventory, seen: list[Seen]) -> tuple[list[SheetRow], list[Seen]]:
-    """The sheet rows no board answered for, and the boards (one per MAC) the sheet lacks."""
+    """The sheet rows no board answered for, and the boards (one per MAC) the sheet lacked at start.
+
+    Both are against the sheet as read: a board that write-back gave a row still lacked one.
+    """
     seen_macs = {board.mac for board in seen}
-    never_seen = [row for row in inventory.rows if row.mac not in seen_macs]
+    never_seen = [row for row in inventory.rows_at_start if row.mac not in seen_macs]
+    on_sheet_at_start = {row.mac for row in inventory.rows_at_start}
     not_on_list = []
     listed = set()
     for board in seen:
-        if inventory.find(board.mac) is None and board.mac not in listed:
+        if normalise_mac(board.mac) not in on_sheet_at_start and board.mac not in listed:
             listed.add(board.mac)
             not_on_list.append(board)
     return never_seen, not_on_list
@@ -704,7 +710,7 @@ def refuse_unless_ready(args: argparse.Namespace, admin_token: str) -> tuple[Ser
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Flash and bench-check a batch of Devices; see the docstring in bench.py.")
     parser.add_argument("--server", required=True, help="where the stack is served, e.g. http://alarms.local")
-    parser.add_argument("--inventory", required=True, help="the inventory sheet (CSV with a MAC column); never modified")
+    parser.add_argument("--inventory", required=True, help="the inventory sheet (CSV with a MAC column); each board's outcome is written back to it")
     parser.add_argument("--bin", help="the exported firmware binary (default: the newest TemperatureAlarms.ino.bin under the sketch's build/)")
     args = parser.parse_args(argv)
     try:

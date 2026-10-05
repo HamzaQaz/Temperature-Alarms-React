@@ -370,12 +370,17 @@ class LogFile(unittest.TestCase):
 
 
 class ScriptedPorts:
-    """What list_ports answers on each poll; Ctrl-C arrives as a KeyboardInterrupt from a poll."""
+    """What list_ports answers on each poll; Ctrl-C arrives as a KeyboardInterrupt from a poll.
+
+    A callable in the script runs before the next poll is answered, e.g. to let the boards in progress finish.
+    """
 
     def __init__(self, polls):
         self.polls = list(polls)
 
     def __call__(self):
+        while self.polls and callable(self.polls[0]):
+            self.polls.pop(0)()
         answer = self.polls.pop(0) if self.polls else KeyboardInterrupt
         if answer is KeyboardInterrupt:
             raise KeyboardInterrupt
@@ -456,13 +461,14 @@ class WatcherRun(unittest.TestCase):
             "COM7": {"mac": "EC:FA:BC:7A:ED:5B", "lines": boot_log()},
             "COM9": {"mac": "5C:CF:7F:12:34:AB", "lines": boot_log(hostname="ESP_1234AB", wifi=False)},
         })
-        watcher = self.watcher(tools, polls=[[], ["COM7"], ["COM7"], ["COM7", "COM9"], ["COM7", "COM9"]])
+        def com7_finishes():
+            for thread in watcher._threads:
+                thread.join()
+
+        watcher = self.watcher(tools, polls=[[], ["COM7"], ["COM7"], com7_finishes, ["COM7", "COM9"], ["COM7", "COM9"]])
         self.assertEqual(watcher.run(), 0)
         self.assertIsNone(watcher.stop_reason)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class SheetWriteBack(unittest.TestCase):
@@ -502,6 +508,13 @@ class SheetWriteBack(unittest.TestCase):
         self.assertEqual(lines[6], self.NOTE.rstrip("\r\n"))
         self.assertEqual(self.inventory.find("5C:CF:7F:12:34:AB").row, 6)  # a replug finds the new row
 
+    def test_a_board_appended_to_the_sheet_still_counts_as_one_the_sheet_lacked_at_start(self):
+        self.inventory.record("5C:CF:7F:12:34:AB", "ESP_1234AB", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-10")
+        seen = [bench.Seen(hostname="ESP_1234AB", mac="5C:CF:7F:12:34:AB"), bench.Seen(hostname="ESP_21A8EB", mac="EC:FA:BC:21:A8:EB")]
+        never_seen, not_on_list = bench.reconcile(self.inventory, seen)
+        self.assertEqual([board.hostname for board in not_on_list], ["ESP_1234AB"])
+        self.assertEqual([row.row for row in never_seen], [3, 5])  # the appended row is not a sheet row never seen
+
     def test_the_second_write_updates_the_same_row_and_a_sheet_edited_meanwhile_is_kept(self):
         self.inventory.record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("FAIL", "bad sensor"), when="2026-09-10")
         with open(self.path, "r+", newline="") as handle:
@@ -516,3 +529,7 @@ class SheetWriteBack(unittest.TestCase):
     def test_a_sheet_from_text_cannot_be_written(self):
         with self.assertRaises(bench.BenchError):
             bench.Inventory.from_text(SHEET).record("EC:FA:BC:21:A8:EB", "ESP_21A8EB", flashed=True, verdict=bench.Verdict("PASS", ""), when="2026-09-10")
+
+
+if __name__ == "__main__":
+    unittest.main()

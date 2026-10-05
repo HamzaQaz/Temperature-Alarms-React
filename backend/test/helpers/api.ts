@@ -67,6 +67,8 @@ export interface History {
   from: string;
   to: string;
   readings: Reading[];
+  /** True when the day held more Readings than the row limit and only the first ones are here. */
+  truncated: boolean;
   summary: {
     tempF: DaySummary | null;
     humidity: DaySummary | null;

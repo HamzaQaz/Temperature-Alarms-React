@@ -1,0 +1,6 @@
+# Servers for `deploy/deploy.sh <action> --servers deploy/servers.txt` (or deploy.ps1).
+# Copy this file to deploy/servers.txt (gitignored) and list one USER@HOST per line.
+# Each server keeps its own .env, secrets, and backups/; see DEPLOYMENT.md.
+#
+# admin@closet-mon-hs.district.local
+# admin@10.20.0.15

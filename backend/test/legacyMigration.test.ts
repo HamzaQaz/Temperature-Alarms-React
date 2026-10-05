@@ -2,9 +2,7 @@ import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, dropAllTables, resetDatabase, tableNames } from './helpers/database';
-import { runMigrations, type MigrationContext } from '../src/migrations';
-import { legacyCampusesAndDevices } from '../src/migrations/0002-legacy-campuses-and-devices';
-import { legacyReadings } from '../src/migrations/0003-legacy-readings';
+import { MigrationLockError, runLegacyMigrations, runMigrations, withMigrationLock, type MigrationContext } from '../src/migrations';
 
 let pool: Pool;
 let log: string[];
@@ -107,15 +105,8 @@ async function count(table: string): Promise<number> {
   return rows[0].n as number;
 }
 
-async function rerunLegacyMigrations(): Promise<void> {
-  const conn = await pool.getConnection();
-  try {
-    await legacyCampusesAndDevices.up(conn, context);
-    await legacyReadings.up(conn, context);
-  } finally {
-    conn.release();
-  }
-}
+/** What `npm run migrate:legacy` does. */
+const rerunLegacyMigrations = (): Promise<void> => runLegacyMigrations(pool, { context });
 
 describe('upgrading a production database', () => {
   beforeEach(async () => {
@@ -181,6 +172,25 @@ describe('upgrading a production database', () => {
     assert.equal((await readings()).length, 5);
     assert.equal(await count('campuses'), 2);
     assert.equal(await count('devices'), 2);
+  });
+
+  test('two runs at once copy each new row once', async () => {
+    await pool.query("INSERT INTO `ESP_2EB804` (CAMPUS, LOCATION, DATE, TIME, TEMP) VALUES ('CHS', 'IDF 2', '7/5/2024', '1:00:00 AM', 66)");
+    await Promise.all([rerunLegacyMigrations(), rerunLegacyMigrations()]);
+    assert.equal((await readings()).length, 6);
+  });
+
+  test('a run by hand while another runner holds the lock gives up and copies nothing', async () => {
+    await pool.query("INSERT INTO `ESP_2EB804` (CAMPUS, LOCATION, DATE, TIME, TEMP) VALUES ('CHS', 'IDF 2', '7/5/2024', '1:00:00 AM', 66)");
+    const conn = await pool.getConnection();
+    try {
+      await withMigrationLock(conn, async () => {
+        await assert.rejects(runLegacyMigrations(pool, { context, lockWaitSeconds: 1 }), MigrationLockError);
+      });
+    } finally {
+      conn.release();
+    }
+    assert.equal((await readings()).length, 5);
   });
 
   test('a later run picks up only rows added to a legacy table since', async () => {

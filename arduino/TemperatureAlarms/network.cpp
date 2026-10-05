@@ -77,6 +77,9 @@ bool networkEnsureConnected() {
   }
   if (wasConnected) {
     wasConnected = false;
+    // The core's auto reconnect starts on its own at the drop; give it a full interval
+    // before re-issuing a connect, rather than restarting it at once.
+    lastReconnectAt = millis();
     Serial.println(F("wifi: connection lost, reconnecting"));
   }
   if (millis() - lastReconnectAt >= RECONNECT_EVERY_MS) startConnecting();

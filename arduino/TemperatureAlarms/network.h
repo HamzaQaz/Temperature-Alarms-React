@@ -5,8 +5,9 @@
 // connection so the serial log shows the address, but never blocks forever.
 void networkBegin();
 
-// True when WiFi is up. When it is down, starts a reconnect (at most once every
-// few seconds) and returns false so the caller skips this loop.
+// True when WiFi is up. When it is down, re-issues a connect at most once every 30 seconds
+// (the first one 30 seconds after a drop, leaving the core's own auto reconnect to try
+// first) and returns false so the caller skips this loop.
 bool networkEnsureConnected();
 
 // The hostname the backend knows this Device by: `ESP_` plus the last six hex

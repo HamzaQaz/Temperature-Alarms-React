@@ -16,8 +16,11 @@ export interface DeviceEdit {
 const HOSTNAME_PATTERN = /^ESP_[0-9A-F]{6}$/;
 const CLOSET_MAX = 50;
 
+/** The largest INT UNSIGNED, the campus id column's range. A larger id cannot name a Campus. */
+const CAMPUS_ID_MAX = 4_294_967_295;
+
 function isCampusId(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= CAMPUS_ID_MAX;
 }
 
 /** The trimmed closet name, or the message explaining why it is not one. */

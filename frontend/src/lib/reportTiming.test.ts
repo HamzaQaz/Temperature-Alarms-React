@@ -7,10 +7,12 @@ describe('nextReport', () => {
     assert.deepEqual(nextReport(0, 30), { status: 'due', seconds: 30 });
     assert.deepEqual(nextReport(12, 30), { status: 'due', seconds: 18 });
     assert.deepEqual(nextReport(29, 30), { status: 'due', seconds: 1 });
+    // Exactly due is on time, so a late card never reads "Expected 0s ago".
+    assert.deepEqual(nextReport(30, 30), { status: 'due', seconds: 0 });
   });
 
   it('says how long ago the Reading was expected once the interval has passed, and never wraps', () => {
-    assert.deepEqual(nextReport(30, 30), { status: 'late', seconds: 0 });
+    assert.deepEqual(nextReport(31, 30), { status: 'late', seconds: 1 });
     assert.deepEqual(nextReport(45, 30), { status: 'late', seconds: 15 });
     // The bug: at 75 s the old countdown wrapped back to "Next in 15s" as if nothing were wrong.
     assert.deepEqual(nextReport(75, 30), { status: 'late', seconds: 45 });

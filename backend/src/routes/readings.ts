@@ -33,13 +33,26 @@ function isNumeric(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+/**
+ * What a working sensor can report. Wider than the DHT11's own range (32 to 122 °F, 20 to 90
+ * percent) so another sensor still fits; anything outside is a fault, not a Reading.
+ */
+const TEMP_F_RANGE = { min: -40, max: 200 } as const;
+const HUMIDITY_RANGE = { min: 0, max: 100 } as const;
+
+const within = (value: number, { min, max }: { min: number; max: number }): boolean => value >= min && value <= max;
+
 /** Normalised reading input, or the message explaining why the body is not one. */
 function parseReading(body: unknown): ReadingInput | { error: string } {
   const { device, temp, humidity } = (body ?? {}) as Record<string, unknown>;
   const hostname = typeof device === 'string' ? normaliseHostname(device) : '';
   if (hostname === '') return { error: 'A reading needs the device hostname' };
   if (!isNumeric(temp)) return { error: 'temp must be a number' };
+  if (!within(temp, TEMP_F_RANGE)) return { error: `temp must be between ${TEMP_F_RANGE.min} and ${TEMP_F_RANGE.max} °F` };
   if (!isNumeric(humidity)) return { error: 'humidity must be a number' };
+  if (!within(humidity, HUMIDITY_RANGE)) {
+    return { error: `humidity must be between ${HUMIDITY_RANGE.min} and ${HUMIDITY_RANGE.max} percent` };
+  }
   // DHT11 resolution is a whole degree and a whole percent; the table stores integers.
   return { hostname, tempF: Math.round(temp), humidity: Math.round(humidity) };
 }
@@ -208,6 +221,14 @@ function summarise(values: number[]): DaySummary | null {
   return { min: Math.min(...values), max: Math.max(...values), avg: Math.round((sum / values.length) * 10) / 10 };
 }
 
+/**
+ * Most Readings one History response carries (docs/adr/0004: a date range and a row limit).
+ * A 25-hour day at the ingest limit of 20 a minute is 30,000, so only rows the ingest route
+ * never wrote (a legacy import, a test board) can pass it. Past it the day's first Readings
+ * are sent and `truncated` says so; the summary covers what was sent.
+ */
+export const HISTORY_ROW_LIMIT = 30_000;
+
 /** The day asked for by `?date=` and `?tz=`, or the message explaining why there is none. */
 function parseDay(query: Request['query'], now: Date): LocalDay | { error: string } {
   const tz = typeof query.tz === 'string' && query.tz.trim() !== '' ? query.tz.trim() : serverTimeZone();
@@ -220,8 +241,8 @@ function parseDay(query: Request['query'], now: Date): LocalDay | { error: strin
 
 /**
  * One Device's history (mounted at /api/devices/:id/history).
- * GET returns one local day of Readings with the day's numbers; never more than a day,
- * so the page stays fast however long the Device has been reporting.
+ * GET returns one local day of Readings with the day's numbers; never more than a day or
+ * HISTORY_ROW_LIMIT rows, so the page stays fast however long the Device has been reporting.
  * DELETE resets the Device's whole history, with the Admin token.
  */
 export function historyRouter({ pool, config, now = () => new Date() }: RouteDeps): Router {
@@ -252,10 +273,13 @@ export function historyRouter({ pool, config, now = () => new Date() }: RouteDep
         `SELECT temp_f AS tempF, humidity, recorded_at AS recordedAt
          FROM readings
          WHERE device_id = ? AND recorded_at >= ? AND recorded_at < ?
-         ORDER BY recorded_at, id`,
-        [device.id, day.from, day.to],
+         ORDER BY recorded_at, id
+         LIMIT ?`,
+        // One past the limit, to tell a day that fits from one that does not.
+        [device.id, day.from, day.to, HISTORY_ROW_LIMIT + 1],
       );
-      const readings: ReadingPayload[] = rows.map(({ tempF, humidity, recordedAt }) => ({ tempF, humidity, recordedAt: recordedAt.toISOString() }));
+      const truncated = rows.length > HISTORY_ROW_LIMIT;
+      const readings: ReadingPayload[] = rows.slice(0, HISTORY_ROW_LIMIT).map(({ tempF, humidity, recordedAt }) => ({ tempF, humidity, recordedAt: recordedAt.toISOString() }));
       res.json({
         device: { ...toDevice(device), closetType: closetType(device.closet) },
         date: day.date,
@@ -263,6 +287,7 @@ export function historyRouter({ pool, config, now = () => new Date() }: RouteDep
         from: day.from.toISOString(),
         to: day.to.toISOString(),
         readings,
+        truncated,
         summary: {
           tempF: summarise(readings.map((r) => r.tempF)),
           humidity: summarise(readings.flatMap((r) => (r.humidity === null ? [] : [r.humidity]))),

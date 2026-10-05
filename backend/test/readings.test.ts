@@ -108,9 +108,14 @@ describe('POST /api/readings', () => {
     assert.deepEqual(await stored(), []);
   });
 
-  test('rejects a missing or non-numeric temp or humidity with 422', async () => {
+  test('rejects a missing, non-numeric, or impossible temp or humidity with 422', async () => {
     await registerDevice();
     const cases: Array<[Record<string, unknown>, RegExp]> = [
+      [{ device: 'ESP_A1B2C3', temp: 1e12, humidity: 40 }, /temp/i],
+      [{ device: 'ESP_A1B2C3', temp: 201, humidity: 40 }, /temp/i],
+      [{ device: 'ESP_A1B2C3', temp: -41, humidity: 40 }, /temp/i],
+      [{ device: 'ESP_A1B2C3', temp: 72, humidity: 101 }, /humidity/i],
+      [{ device: 'ESP_A1B2C3', temp: 72, humidity: -1 }, /humidity/i],
       [{ device: 'ESP_A1B2C3', humidity: 40 }, /temp/i],
       [{ device: 'ESP_A1B2C3', temp: null, humidity: 40 }, /temp/i],
       [{ device: 'ESP_A1B2C3', temp: '72', humidity: 40 }, /temp/i],
@@ -142,6 +147,29 @@ describe('POST /api/readings', () => {
     await registerDevice();
     const response = await fetch(client.readings.url(), { ...asDevice(), method: 'POST', body: '{not json' });
     assert.equal(response.status, 400);
+    assert.deepEqual(await stored(), []);
+  });
+
+  test('accepts the edges of the plausible range', async () => {
+    await registerDevice();
+    for (const [temp, humidity] of [[-40, 0], [200, 100]]) {
+      assert.equal((await post({ device: 'ESP_A1B2C3', temp, humidity })).status, 201, `${temp} °F, ${humidity}%`);
+    }
+  });
+
+  test('keeps the status of a body the parser refuses: 413 too large, 415 unsupported charset', async () => {
+    await registerDevice();
+    const tooLarge = await post({ device: 'ESP_A1B2C3', temp: 72, humidity: 40, pad: 'x'.repeat(200_000) });
+    assert.equal(tooLarge.status, 413);
+    assert.match(await errorOf(tooLarge), /too large/i);
+
+    const charset = await fetch(client.readings.url(), {
+      ...asDevice({ headers: { 'Content-Type': 'application/json; charset=klingon' } }),
+      method: 'POST',
+      body: JSON.stringify({ device: 'ESP_A1B2C3', temp: 72, humidity: 40 }),
+    });
+    assert.equal(charset.status, 415);
+    assert.match(await errorOf(charset), /charset/i);
     assert.deepEqual(await stored(), []);
   });
 

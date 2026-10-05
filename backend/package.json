@@ -8,7 +8,7 @@
     "dev": "nodemon src/index.ts",
     "build": "tsc",
     "typecheck": "tsc -p tsconfig.test.json --noEmit",
-    "test": "TS_NODE_PROJECT=tsconfig.test.json node --test --test-concurrency=1 --require ts-node/register/transpile-only 'test/**/*.test.ts'",
+    "test": "node --test --test-concurrency=1 --require ./test/helpers/register.cjs \"test/**/*.test.ts\"",
     "test:db": "docker compose up -d --wait",
     "test:db:down": "docker compose down -v"
   },
