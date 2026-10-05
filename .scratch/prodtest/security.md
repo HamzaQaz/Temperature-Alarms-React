@@ -1,0 +1,300 @@
+# Production security review
+
+Scope: the stack as `compose.yaml` runs it behind nginx. That covers backend/src, frontend/src, frontend/nginx.conf, both Dockerfiles, compose.yaml, deploy/, and the firmware's use of the Device token.
+
+Evidence is under `.scratch/prodtest/runs/security/`. The live checks ran on a `ta-sec` stack on :8098, built from this worktree with my backend fixes, and was torn down afterwards (`down -v --rmi local`). The backend tests ran against the shared test DB on :3307. I started that DB because it was down, and left it up for the other agents.
+
+## Pass/fail
+
+| Area | Check | Before | After | Evidence |
+|---|---|---|---|---|
+| Tokens | Constant-time comparison (`timingSafeEqual`, length checked first) | PASS | PASS | `src/auth.ts:10` |
+| Tokens | Never logged (api/web/db logs searched for both tokens, DB password, 600 guesses) | PASS | PASS | 0 hits; `runs/security/http-checks.txt` |
+| Tokens | Never echoed in errors (401 is always `{"error":"Not authorised"}`) | PASS | PASS | test `a refused token is never echoed` |
+| Tokens | Admin token ≠ Device token enforced | FAIL | PASS (fix 4) | config test |
+| Tokens | Admin token in localStorage: XSS exposure | NOTE | NOTE, mitigated by CSP once routed | finding S3 |
+| Tokens | Device token over plain HTTP | NOTE (by design) | NOTE | finding N1 |
+| Rate limit | Per Device: 20/min keyed by hostname | PASS | PASS | existing readings test |
+| Rate limit | General /api/: 500/15 min, `trust proxy 1`; rotated X-Forwarded-For does not escape it | PASS | PASS | `rateLimit.test.ts`; live: XFF rotated, first 429 at request 501 |
+| Rate limit | Admin token brute force | 2,000 guesses/h/host | same, acceptable | finding N2 |
+| Rate limit | Device token brute force on POST /api/readings | **FAIL: unlimited** | PASS: 100/15 min/address | fix 2; live: 401×100, then 429 |
+| Rate limit | IPv4-mapped IPv6 bypass of express-rate-limit (GHSA-46wh-pxpv-q5gq) | FAIL | PASS (bumped) | fix 5 |
+| Input | SQL injection: every query param (campus, order, tz, from, to, date) and path id | PASS | PASS | test `SQL in every query parameter…`; all statements parameterised |
+| Input | Names with SQL, markup, emoji, RTL stored verbatim; 50-emoji closet refused 422 (not a 500) | PASS | PASS | tests; columns are utf8mb4 |
+| Input | XSS via Closet/Campus names in the UI | PASS | PASS | headless Chromium: payload shown as text on every page, 0 injected elements, 0 alerts |
+| Input | Oversized body | PASS (api 413 at 100 KB, nginx 413 at 1 MB) | PASS | test; live |
+| Input | Header injection (CRLF) | PASS | PASS | no response header echoes input; Node rejects CRLF in header values |
+| HTTP | CSP, nosniff, Referrer-Policy, frame-ancestors, Permissions-Policy | **FAIL: none set** | route nginx diff | `http-checks.txt`; finding S1 |
+| HTTP | Server version hidden | FAIL: `Server: nginx/1.28.2`, also on error pages; `X-Powered-By: Express` | api fixed (fix 1); nginx: route diff | |
+| HTTP | CORS | PASS | PASS | foreign Origin → 403, no ACAO; same origin → ACAO echoed; preflight from a foreign origin → 403 |
+| HTTP | Error pages leak stack traces | PASS | PASS | 500 is generic (test); malformed JSON → 400 generic |
+| HTTP | SSE open streams per IP | **FAIL: unlimited** | PASS: 20/address, 400 total | fix 3; live: 20×200, then 429; a slot frees on close |
+| Secrets | .env permissions | PASS | PASS | deploy.sh `lock_env` chmod 600; `umask 077` writes |
+| Secrets | Nothing secret in images (`docker history`, image fs, .dockerignore) | PASS | PASS | 0 hits; `.env*` ignored in both contexts; no .env in /app |
+| Secrets | Backups' file permissions | PASS | PASS | dir 700, `umask 077` dump; cron log in the same 700 dir |
+| Secrets | deploy.sh token handling (`info --reveal`) | PASS | PASS | masked by default; full only with `--reveal` or an interactive yes; generated with `openssl rand -hex 32` and never printed |
+| Deps | `npm audit --omit=dev` backend | **FAIL: 4 high, 2 moderate** | PASS: 0 | fix 5 |
+| Deps | `npm audit --omit=dev` frontend | **FAIL: 8 high** | PASS: 0 | fix 5 |
+| Deps | Base images | NOTE | NOTE | finding S5 |
+| Containers | Non-root | PASS (api `node`, web uid 101; db entrypoint drops to mysql) | PASS | `docker inspect` |
+| Containers | Read-only root fs | FAIL (not set) | feasible, proven; route compose diff | finding S4 |
+| Containers | cap_drop / no-new-privileges | FAIL (not set) | feasible, proven; route compose diff | finding S4 |
+| Containers | MySQL not published | PASS | PASS | no port bindings on db or api |
+
+## Findings, by production impact
+
+No blockers.
+
+### Should fix
+
+**S1. nginx sends no security headers and shows its version.** (Infra; diff below.)
+Repro: `curl -sD- -o /dev/null http://host/`. The response has `Server: nginx/1.28.2` and none of CSP, X-Content-Type-Options, Referrer-Policy, X-Frame-Options/frame-ancestors or Permissions-Policy. Error pages print `nginx/1.28.2`.
+Impact: the page can be framed (clickjacking the Settings page), and there is no second line of defence against XSS. That matters more here than usual because the Admin token sits in localStorage (S3).
+Proven: I ran the proposed conf on the `ta-sec` stack. Every header lands on the page, the assets and `/api/`. Headless Chromium visited `/`, `/campuses`, `/incidents`, `/settings`, `/history/1` and a 404 with **0 CSP violations and 0 console errors** (`runs/security/csp-browser.txt`).
+Gotcha the diff handles: `add_header` inside a location replaces every server-level one. The two locations that set Cache-Control therefore repeat the block.
+
+**S2. POST /api/readings let anyone guess the Device token without limit.** (Fixed: fix 2.)
+The general /api/ limiter skips this route, and the per-Device limiter sits after the token check. Wrong-token requests were therefore never counted.
+Repro before the fix: 110 wrong tokens from one host all came back 401. After the fix, 100 come back 401 and the rest 429, even with X-Forwarded-For and the hostname rotated (`runs/security/rate-limits.txt`). Once an address is over the limit, the right token is refused too; otherwise the 429 would tell a guesser which guess was right.
+A campus of boards with the *right* token behind one NAT is never counted (test with 105 boards on one address). Trade-off: boards with a *wrong* token retry 30 times per 15 minutes each, so four of them behind one NAT would lock out their good neighbours for up to 15 minutes. That is a misconfiguration the operator would see as 401s on those boards anyway.
+
+**S3. Admin token in localStorage: any XSS takes it.** (Note on design; S1 is the mitigation.)
+Today there is no XSS sink:
+- React renders every name as text.
+- The only `dangerouslySetInnerHTML` (shadcn `ChartStyle`) takes the static `chartConfig` in History.tsx, never API data.
+- There are no inline scripts, `eval`, or user-controlled `href`s.
+I proved this with `<img src=x onerror=alert(1)>` and `<script>` names on every page.
+The residual risk is a future XSS or a compromised dependency, which could read the token and send it anywhere. With the routed CSP (`script-src 'self'`, `connect-src 'self'`), a payload can neither run inline nor exfiltrate cross-origin by fetch.
+Further options, not taken: sessionStorage (forces re-entry per tab) or an HttpOnly cookie (needs CSRF handling; ADR 0003 chose bearer tokens). The token's power is bounded: it adds and deletes Campuses and Devices and resets history. It cannot read anything that isn't already public.
+
+**S4. Containers run with default capabilities and a writable root fs.** (Infra; diff below.)
+All three services keep Docker's default capability set and can gain privileges through setuid binaries.
+Proven on `ta-sec`, with a fresh volume (`down -v`, then up):
+- api and web run `read_only: true` with a `/tmp` tmpfs, `cap_drop: [ALL]` and `no-new-privileges`.
+- db runs `cap_drop: [ALL]` plus CHOWN, DAC_OVERRIDE, FOWNER, SETGID and SETUID.
+- With that set, the database initialised, all three containers were healthy, and `mysqldump` (deploy.sh backup) completed.
+- A 60 KB admin POST went through nginx's client-body temp file under /tmp.
+- SSE delivered a live Reading, and history read back (`runs/security/hardened-functional.txt`).
+The one log line this adds is harmless: `10-listen-on-ipv6-by-default.sh: can not modify default.conf (read-only file system?)`. The conf already sets `listen 8080` without IPv6.
+
+**S5. Base images: tags float, and a stale local cache is reused.** (Infra / deploy.)
+Both Dockerfiles use `node:22-alpine` and `nginxinc/nginx-unprivileged:1.28-alpine`; compose uses `mysql:8.4`. All are maintained lines: Node 22 is maintenance LTS to April 2027, nginx 1.28 is stable, MySQL 8.4 is LTS.
+The problem: `docker compose up --build` reuses whatever base is cached locally. On this machine `node:22-alpine` was from 2026-06-23, so it was 3½ months behind.
+Recommendation (CT owns deploy.sh): `deploy` and `upgrade` should build with `--pull` (`docker compose build --pull` before `up`). That way each upgrade picks up Alpine and Node security patches. Pinning by digest is the stricter alternative, but it needs someone to bump it.
+
+**S6. Dependency advisories that ship in the images.** (Fixed: fix 5.)
+Backend (runtime):
+- express-rate-limit: the IPv4-mapped IPv6 bypass of per-client limits.
+- mysql2: auth-plugin downgrade leaking the password in cleartext, and an inflate bomb.
+- path-to-regexp: ReDoS.
+- ip-address: several advisories.
+- body-parser and qs: DoS.
+
+Frontend:
+- react-router: open-redirect XSS.
+- Build-time only: vite, rollup, postcss, picomatch, nanoid, lodash.
+
+All were fixed in-range by `npm audit fix` (lockfiles only; no package.json range changed). `npm audit` now reports 0 in both, dev dependencies included.
+
+### Notes
+
+**N1. The Device token over plain HTTP (ADR 0001/0003).**
+On a school LAN, anyone who can see a board's traffic can read the token and the readings. That includes the same Wi-Fi SSID with client isolation off, a mirrored switch port, or a compromised host on the VLAN. With the token they can post false Readings for any registered hostname. They could hide a hot closet by posting cool values, which would be overwritten by the real board's next post within 30 s, or raise false alarms.
+The token cannot change Campuses or Devices (fix 4 now guarantees it differs from the Admin token) and cannot read anything that isn't public.
+What TLS in front already covers:
+- The firmware sends over TLS when `SERVER_URL` is `https://` (`reporter.cpp:18`).
+- Browsers' Admin token then travels encrypted too.
+- Behind a TLS proxy, `trust proxy 1` still resolves the right client address as long as the proxy is the one hop in front of nginx. If TLS terminates in a separate proxy *in front of* this nginx, there are two hops. Every client would then appear as that proxy's address and share one rate-limit allowance, so `trust proxy` would have to become 2. Worth a line in DEPLOYMENT.md (CT).
+Cheapest mitigation without TLS: put the boards on their own VLAN/SSID with client isolation.
+
+**N2. Admin brute force is acceptable.**
+One host gets the general allowance of 500 requests per 15 minutes, which is 2,000 guesses an hour (live: first 429 at request 495 after 5 setup calls). Against deploy.sh's 64-hex-character token (256 bits) that is never. Against a hand-set short token it would matter, so the backend now logs a startup warning for any token under 32 characters (fix 4).
+I didn't make that a hard refusal, because the README's dev flow uses `--token dev-device`. A refusal is a one-line change if the coordinator prefers it.
+Side effect: a host that is guessing also loses its dashboard reads for 15 minutes, because the allowance is shared.
+
+**N3. MySQL root password = DB_PASSWORD** (compose `MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}`). The root account is reachable only inside the db container, which isn't published, so this is defence in depth only. A separate `DB_ROOT_PASSWORD` would let deploy.sh backups avoid root entirely (CT).
+
+**N4. Secrets are visible to `docker inspect`** (environment variables). Anyone in the docker group is root-equivalent on the host anyway. Note it in DEPLOYMENT.md: don't add technicians to the docker group.
+
+**N5. The SSE cap and NAT.** The per-address cap is 20 streams. A browser opens at most 6 HTTP/1.1 connections per origin, so one technician never hits it. A district web filter that presents every browser as one address would cap dashboards at 20 there, and the 429 says why. The total cap of 400 keeps nginx under its 1024 worker connections, since each stream uses two (client and upstream).
+
+**N6. Validation messages echo input** (for example `No device is registered with the hostname <input>`, `…got <value>`). The responses are JSON, and with nosniff routed a browser won't sniff them as HTML. The echo is bounded by the 100 KB body limit. No action needed.
+
+**N7. Flake seen once:** `readings.test.ts › rounds fractional temperature…` failed once out of four full runs, then passed three times in a row. That test doesn't touch anything I changed. I'm flagging it for the resilience/load owners in case it's a timing race on the shared test DB.
+
+**N8. One slip on my side, recovered.** `npm audit fix --omit=dev` pruned devDependencies from both shared `node_modules` for about a minute. I reinstalled them with `npm install` (lockfile unchanged from the fix), and every suite then ran green. Any agent whose build failed with `tsc not found` around 16:50 can just rerun.
+
+## Fixes made (backend/src, test-first)
+
+Each fix's test was written first and seen failing: 6 red, in `runs/security/` and the test log.
+
+1. **`X-Powered-By` removed.** `src/app.ts`: `app.disable('x-powered-by')`. Test: `security.test.ts › no response names the framework`.
+2. **Device-token guessing limited.** `src/routes/readings.ts`: `DEVICE_AUTH_FAILURE_LIMIT = 100` per 15 min per address. It runs before the token check, counts only 401s (`skipSuccessfulRequests` with `requestWasSuccessful: status !== 401`), and refuses even the right token once an address is over the limit. Tests: `guessing the Device token is limited…` and `a Device with the right token is never counted…` (105 boards on one address).
+3. **SSE stream caps.** `src/sse.ts`: `maxStreamsPerAddress` (20) answers 429; `maxStreams` (400) answers 503. Both are counted per `req.ip`, which is trust-proxy aware, and a slot is released on close. Tests: `one address may hold a few streams…` and `the server holds no more than its total…`.
+4. **Token config.** `src/config.ts` refuses ADMIN_TOKEN equal to DEVICE_TOKEN, naming neither value. `tokenWarnings()` names any token under 32 characters without printing it, and `src/index.ts` logs it at startup. Tests: `config.test.ts › refuses an Admin token equal…` and `warns about a token too short…`.
+5. **Dependency advisories.** `npm audit fix` in backend and frontend (package-lock.json only). mysql2 3.15→3.24 retyped the pool's `connection` event as the promise connection. At runtime it is still the callback one, which I verified against the test DB, so `src/db.ts` casts to the core type and `test/retention.test.ts` types its recording pool's `values`.
+
+Also new: `security.test.ts` locks in the parts that already passed:
+- SQL injection on every query param and path id, with nothing dropped.
+- SQL, markup, emoji and RTL names round-trip verbatim.
+- A 50-emoji closet is a 422.
+- A 413 with no stack trace.
+- A generic 500 that hides SQL and the stack.
+- CORS refusal sets no ACAO.
+- 401 bodies never echo the token.
+
+Suites (final run): backend `npm test` 226/226, `typecheck` ok, `build` ok. Frontend `lint`, `typecheck`, `test` (42/42) and `build` all exit 0.
+
+## Infra changes to route
+
+The CT agent owns these files. Every hunk below ran on `ta-sec` as shown, and the results are cited in S1/S4. Raw diffs: `runs/security/nginx.diff` and `runs/security/compose.diff`.
+
+### frontend/nginx.conf
+
+```diff
+--- a/frontend/nginx.conf
++++ b/frontend/nginx.conf
+@@ -1,11 +1,30 @@
+ # The web service of the root compose.yaml: the built frontend plus the /api/ proxy, on
+ # plain HTTP. Put TLS in front of the stack, not inside it (DEPLOYMENT.md).
++# One zone for the stream's per-address connection cap (location = /api/dashboard/stream).
++limit_conn_zone $binary_remote_addr zone=sse_per_addr:1m;
++
+ server {
+     # 8080, not 80: the image runs nginx as a non-root user, which cannot bind below 1024.
+     # compose.yaml publishes it on WEB_PORT (80 by default), so operators see no change.
+     listen 8080;
+     server_name _;
+ 
++    # No version in the Server header or on nginx's own error pages.
++    server_tokens off;
++
++    # Security headers. add_header in a location replaces every one set here, so the two
++    # locations below that add their own repeat this block (nginx < 1.29.3 has no add_header_inherit).
++    # style-src needs 'unsafe-inline': Radix and Recharts set style attributes, and the chart
++    # writes a <style> element. No inline script exists, so script-src stays 'self'.
++    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
++    add_header X-Content-Type-Options "nosniff" always;
++    add_header Referrer-Policy "no-referrer" always;
++    add_header X-Frame-Options "DENY" always;
++    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
++
++    # The API refuses more than 100 KB; nothing here needs nginx's 1 MB default.
++    client_max_body_size 128k;
++
+     root /usr/share/nginx/html;
+     index index.html;
+ 
+@@ -14,6 +33,22 @@
+     resolver 127.0.0.11 valid=10s ipv6=off;
+     set $api http://api:3001;
+ 
++    # The live stream holds a connection open for hours; cap them per address at nginx as well
++    # as in the api (sse.ts), so one host cannot use up worker_connections (1024 a worker).
++    location = /api/dashboard/stream {
++        limit_conn sse_per_addr 20;
++        limit_conn_status 429;
++        proxy_pass $api;
++        proxy_http_version 1.1;
++        proxy_set_header Host $http_host;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_buffering off;
++        proxy_cache off;
++        proxy_read_timeout 86400s;
++    }
++
+     # Backend API, including the SSE stream. ^~ so no asset rule below can outrank it.
+     location ^~ /api/ {
+         proxy_pass $api;
+@@ -41,12 +76,22 @@
+     # fallback above redirects here internally, so every route gets this header.
+     location = /index.html {
+         add_header Cache-Control "no-cache";
++        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
++        add_header X-Content-Type-Options "nosniff" always;
++        add_header Referrer-Policy "no-referrer" always;
++        add_header X-Frame-Options "DENY" always;
++        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+     }
+ 
+     # Hashed build assets can be cached forever
+     location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf)$ {
+         expires 1y;
+         add_header Cache-Control "public, immutable";
++        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
++        add_header X-Content-Type-Options "nosniff" always;
++        add_header Referrer-Policy "no-referrer" always;
++        add_header X-Frame-Options "DENY" always;
++        add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+     }
+ 
+     gzip on;
+```
+
+Notes:
+- `nginx -t` passes on nginx 1.28.2.
+- If TLS goes in front, add `Strict-Transport-Security` at *that* proxy, not here, because this server is plain HTTP.
+- The `limit_conn` zone keys on `$binary_remote_addr`, the address nginx saw. Behind a TLS proxy that is the proxy, so drop or raise that limit there (the api's own per-address cap uses the trusted X-Forwarded-For).
+
+### compose.yaml
+
+```diff
+--- a/compose.yaml
++++ b/compose.yaml
+@@ -21,6 +21,10 @@
+       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+     volumes:
+       - db-data:/var/lib/mysql
++    # The entrypoint chowns the data directory and drops to the mysql user; nothing else is needed.
++    cap_drop: [ALL]
++    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
++    security_opt: ["no-new-privileges:true"]
+     # Not published: only api reaches it. Use `docker compose exec db mysql ...` from the host.
+     healthcheck:
+       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+@@ -55,6 +59,11 @@
+     depends_on:
+       db:
+         condition: service_healthy
++    # It writes nothing to disk: the image is read-only and holds no capabilities.
++    read_only: true
++    tmpfs: [/tmp]
++    cap_drop: [ALL]
++    security_opt: ["no-new-privileges:true"]
+     # Not published: web proxies /api/ to it.
+     healthcheck:
+       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/api/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+@@ -73,6 +82,11 @@
+     depends_on:
+       api:
+         condition: service_healthy
++    # nginx-unprivileged keeps its pid and temp files under /tmp.
++    read_only: true
++    tmpfs: [/tmp]
++    cap_drop: [ALL]
++    security_opt: ["no-new-privileges:true"]
+     healthcheck:
+       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
+       interval: 10s
+```
+
+compose.demo.yaml's `demo` service runs `scripts/demo.mjs`, which writes nothing to disk, so the same api lines should apply to it. I didn't test that.
+
+### deploy/deploy.sh (S5)
+
+Build with a fresh base on `deploy`/`upgrade`: run `dc build --pull` before `dc up -d --build …`, or add `--pull always` to the `up` (Compose ≥ 2.22). `docker compose build --pull` is the portable form.
+
+### DEPLOYMENT.md (N1, N4)
+
+- One sentence on `trust proxy` when TLS terminates in a separate proxy in front of this nginx: the api then needs 2 hops.
+- Keep technicians out of the `docker` group.
+- Put boards on their own VLAN/SSID with client isolation when TLS isn't used.
+
+## Files modified
+
+- backend/src/app.ts, backend/src/config.ts, backend/src/db.ts, backend/src/index.ts, backend/src/routes/readings.ts, backend/src/sse.ts
+- backend/test/security.test.ts (new), backend/test/config.test.ts, backend/test/retention.test.ts
+- backend/package-lock.json, frontend/package-lock.json
+- .scratch/prodtest/security.md

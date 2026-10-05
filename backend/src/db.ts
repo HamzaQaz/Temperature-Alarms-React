@@ -1,3 +1,4 @@
+import type { PoolConnection as CallbackPoolConnection } from 'mysql2';
 import mysql, { type Pool } from 'mysql2/promise';
 
 export interface DatabaseConfig {
@@ -21,8 +22,9 @@ export function createPool(config: DatabaseConfig): Pool {
     connectionLimit: 10,
     timezone: 'Z',
   });
+  // The event hands over the core, callback-style connection, whatever the promise typings say.
   pool.on('connection', (connection) => {
-    connection.query("SET time_zone = '+00:00'", (error: Error | null) => {
+    (connection as unknown as CallbackPoolConnection).query("SET time_zone = '+00:00'", (error: Error | null) => {
       if (error) console.error('Could not set the connection time zone to UTC:', error);
     });
   });

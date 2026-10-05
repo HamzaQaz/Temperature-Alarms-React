@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { loadConfig, ConfigError } from '../src/config';
+import { loadConfig, ConfigError, MIN_TOKEN_LENGTH, tokenWarnings } from '../src/config';
 import { DEFAULT_THRESHOLDS } from '../src/conditions';
 
 const complete = {
@@ -84,6 +84,23 @@ describe('loadConfig', () => {
 
   test('treats an empty string as missing', () => {
     assert.throws(() => loadConfig({ ...complete, ADMIN_TOKEN: '   ' }), /ADMIN_TOKEN/);
+  });
+
+  test('refuses an Admin token equal to the Device token: every board would carry the Admin token in its flash', () => {
+    assert.throws(
+      () => loadConfig({ ...complete, ADMIN_TOKEN: 'same-secret-value', DEVICE_TOKEN: 'same-secret-value' }),
+      (err: unknown) => err instanceof ConfigError && /ADMIN_TOKEN/.test(err.message) && /DEVICE_TOKEN/.test(err.message) && !/same-secret-value/.test(err.message),
+    );
+  });
+
+  test('warns about a token too short to resist guessing, naming it but never printing it', () => {
+    const strong = 'a'.repeat(MIN_TOKEN_LENGTH);
+    assert.deepEqual(tokenWarnings(loadConfig({ ...complete, ADMIN_TOKEN: strong, DEVICE_TOKEN: `b${strong}` })), []);
+    const warnings = tokenWarnings(loadConfig(complete));
+    assert.equal(warnings.length, 2);
+    assert.match(warnings[0], /ADMIN_TOKEN/);
+    assert.match(warnings[1], /DEVICE_TOKEN/);
+    for (const warning of warnings) assert.ok(!warning.includes('admin-secret') && !warning.includes('device-secret'), warning);
   });
 
   test('rejects a non-numeric or non-positive number', () => {

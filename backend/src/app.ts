@@ -14,6 +14,8 @@ import { incidentsRouter } from './routes/incidents';
 export function createApp(appDeps: AppDeps): Express {
   const deps: RouteDeps = { ...appDeps, sse: appDeps.sse ?? createBroadcaster() };
   const app = express();
+  // Naming the framework only helps someone matching it to an advisory.
+  app.disable('x-powered-by');
   // One hop: nginx (the stack's web service, or the manual install's). nginx appends the address it
   // saw to whatever X-Forwarded-For the client sent, so only that last entry can be believed.
   app.set('trust proxy', 1);

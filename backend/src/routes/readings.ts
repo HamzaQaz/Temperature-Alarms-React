@@ -67,6 +67,13 @@ function serverNow(): Date {
 const conditionRules = ({ reportIntervalSeconds, thresholds }: Config): ConditionRules => ({ reportIntervalSeconds, thresholds });
 
 /**
+ * How many requests with a missing or wrong Device token one address may make in 15 minutes. A board
+ * with a wrong token retries every Report interval, 30 a quarter hour, so a few such boards behind one
+ * campus address stay under it; a guesser gets 400 an hour, against a 256-bit token from deploy.sh.
+ */
+export const DEVICE_AUTH_FAILURE_LIMIT = 100;
+
+/**
  * Reading ingest (POST /api/readings): a Device posts `{device, temp, humidity}` with the
  * Device token. Each recorded Reading is broadcast to every open dashboard.
  */
@@ -90,7 +97,22 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
     validate: false,
   });
 
-  router.post('/', requireDeviceToken(config), writeLimiter, async (req, res, next) => {
+  // The general /api/ limit skips this route, so refusals get their own: per address, since a guesser
+  // can claim any hostname. Every request is counted until the token is right, then none are, so a
+  // campus of boards with the right token behind one address never adds to it. Past the limit even
+  // the right token is refused from that address, or the 429 would tell a guesser which guess was right.
+  const authFailureLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: DEVICE_AUTH_FAILURE_LIMIT,
+    standardHeaders: true,
+    legacyHeaders: false,
+    requestWasSuccessful: (_req, res) => res.statusCode !== 401,
+    skipSuccessfulRequests: true,
+    message: { error: 'Too many requests with a wrong Device token from this address, please try again later.' },
+    validate: false,
+  });
+
+  router.post('/', authFailureLimiter, requireDeviceToken(config), writeLimiter, async (req, res, next) => {
     const parsed = parseReading(req.body);
     if ('error' in parsed) {
       res.status(422).json({ error: parsed.error });

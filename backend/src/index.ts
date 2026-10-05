@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { createApp } from './app';
-import { loadConfig, ConfigError } from './config';
+import { loadConfig, ConfigError, tokenWarnings } from './config';
 import { createPool } from './db';
 import { migrationContext, runMigrations } from './migrations';
 import { startRetentionJob } from './retention';
@@ -21,6 +21,8 @@ async function main(): Promise<void> {
     }
     throw error;
   }
+
+  for (const warning of tokenWarnings(config)) console.warn(`Warning: ${warning}`);
 
   const pool = createPool(config.database);
   const applied = await runMigrations(pool, { context: migrationContext(config) });

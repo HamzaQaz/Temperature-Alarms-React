@@ -51,7 +51,7 @@ describe('retention job', () => {
   /** The pool, with every statement it runs recorded. */
   const recordingPool = (statements: string[]): Pool => {
     const recording = Object.create(pool) as Pool;
-    recording.query = ((sql: string, values?: unknown) => {
+    recording.query = ((sql: string, values?: Parameters<Pool['query']>[1]) => {
       statements.push(sql);
       return pool.query(sql, values);
     }) as Pool['query'];

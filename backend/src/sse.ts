@@ -81,12 +81,29 @@ export interface Broadcaster {
 export interface BroadcasterOptions {
   /** How often to send a heartbeat comment. Under most proxies' idle timeout. */
   heartbeatMs?: number;
+  /** Streams one address may hold open; past it, 429. */
+  maxStreamsPerAddress?: number;
+  /** Streams the server holds open in all; past it, 503. */
+  maxStreams?: number;
 }
 
 const DEFAULT_HEARTBEAT_MS = 25_000;
+/**
+ * A browser holds at most six HTTP/1.1 connections to one origin, so one technician's tabs fit with
+ * room to spare, as do a few screens behind one address. Each stream is a socket here and two in
+ * nginx, whose 1024 worker connections are the tighter bound, so the total stays well under that.
+ */
+export const DEFAULT_MAX_STREAMS_PER_ADDRESS = 20;
+export const DEFAULT_MAX_STREAMS = 400;
 
-export function createBroadcaster({ heartbeatMs = DEFAULT_HEARTBEAT_MS }: BroadcasterOptions = {}): Broadcaster {
+export function createBroadcaster({
+  heartbeatMs = DEFAULT_HEARTBEAT_MS,
+  maxStreamsPerAddress = DEFAULT_MAX_STREAMS_PER_ADDRESS,
+  maxStreams = DEFAULT_MAX_STREAMS,
+}: BroadcasterOptions = {}): Broadcaster {
   const clients = new Set<Response>();
+  /** Open streams per address, as app.ts's trust proxy setting resolves it. */
+  const perAddress = new Map<string, number>();
   let heartbeat: NodeJS.Timeout | undefined;
 
   // The timer runs only while someone is listening, so an idle server holds no timer at all.
@@ -104,6 +121,18 @@ export function createBroadcaster({ heartbeatMs = DEFAULT_HEARTBEAT_MS }: Broadc
   };
 
   const handler = (req: Request, res: Response) => {
+    const address = req.ip ?? '';
+    const held = perAddress.get(address) ?? 0;
+    if (held >= maxStreamsPerAddress) {
+      res.status(429).json({ error: 'Too many open streams from this address; close a tab and try again.' });
+      return;
+    }
+    if (clients.size >= maxStreams) {
+      res.status(503).json({ error: 'The server is holding as many streams as it can; try again shortly.' });
+      return;
+    }
+    perAddress.set(address, held + 1);
+
     res.status(200).set({
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -119,6 +148,9 @@ export function createBroadcaster({ heartbeatMs = DEFAULT_HEARTBEAT_MS }: Broadc
     startHeartbeat();
     req.on('close', () => {
       clients.delete(res);
+      const left = (perAddress.get(address) ?? 1) - 1;
+      if (left > 0) perAddress.set(address, left);
+      else perAddress.delete(address);
       stopHeartbeatIfIdle();
     });
   };
