@@ -12,6 +12,8 @@ web
 
 Network technicians at a school district, at a laptop. They open the site deliberately when checking on the closets they look after, and go to a Device's history when something looks wrong. The same people add Devices and Campuses now and then with the shared Admin token; that is another hat, not a second audience. A dashboard left on a wall screen is a secondary case, not the one the design is built around.
 
+**Open decision (2026-10-04):** the owner says a new audience now uses the site beyond network technicians, but has not said who (candidates raised: IT leadership, facilities or HVAC staff, campus staff, an unattended NOC wall screen). Until that is answered, design for the technicians above and do not build a surface for an unnamed audience.
+
 ## Product Purpose
 
 Live temperature and humidity monitoring for network closets across the district's campuses. Each closet has a NodeMCU board with a DHT11 sensor that posts a Reading every Report interval; the backend computes the Conditions a closet is in (Hot, Cold, Dry, Mold risk, Offline) and pushes every Reading to open browsers. Success is a technician learning that a closet is heading for trouble early enough to act, and trusting the numbers and the timeline enough to act on them without checking by hand.

@@ -1,0 +1,256 @@
+/* Temperature Alarms design comps: the Night Shift Console, as DESIGN.md writes it.
+   Dark only, because dark is what ships by default. Tokens mirror frontend/src/index.css. */
+
+:root {
+  color-scheme: dark;
+  --console-black: oklch(0.145 0 0);
+  --panel-grey: oklch(0.205 0 0);
+  --raised-grey: oklch(0.269 0 0);
+  --readout-white: oklch(0.985 0 0);
+  --primary-ink: oklch(0.922 0 0);
+  --dimmed-grey: oklch(0.708 0 0);
+  --hairline: oklch(1 0 0 / 10%);
+  --input-hairline: oklch(1 0 0 / 15%);
+  --focus-grey: oklch(0.556 0 0);
+  --signal-blue: oklch(0.488 0.243 264.376);
+  --humidity-green: oklch(0.696 0.17 162.48);
+  --critical-red: oklch(0.704 0.191 22.216);
+  --critical-fill: oklch(0.505 0.213 27.518);
+  --high-red: oklch(0.637 0.237 25.331);
+  --warning-amber: oklch(0.769 0.188 70.08);
+  --moderate-yellow: oklch(0.852 0.199 91.936);
+  --mdf-sky: oklch(0.685 0.169 237.323);
+
+  /* Tailwind steps the Condition looks use on dark (lib/conditions.ts). */
+  --amber-text: oklch(0.879 0.169 91.605);
+  --amber-note: oklch(0.828 0.189 84.429);
+  --red-text: oklch(0.808 0.114 19.571);
+  --yellow-text: oklch(0.945 0.129 101.54);
+  --green-text: oklch(0.765 0.177 163.223);
+  --sky-text: oklch(0.828 0.111 230.318);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --sans: system-ui, Avenir, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --overlay-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--console-black);
+  color: var(--readout-white);
+  font: 400 0.875rem/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--primary-ink); color: var(--panel-grey); }
+
+h1, h2, h3, h4, p, ul, ol, dl, dd, figure { margin: 0; }
+ul, ol { padding: 0; list-style: none; }
+
+a { color: inherit; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+
+:focus-visible {
+  outline: 3px solid oklch(0.556 0 0 / 50%);
+  outline-offset: 2px;
+  border-radius: var(--radius-md);
+}
+
+* { scrollbar-color: var(--raised-grey) transparent; scrollbar-width: thin; }
+
+.num { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--mono); font-size: 0.875rem; }
+.dim { color: var(--dimmed-grey); }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.icon { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-sm { width: 12px; height: 12px; }
+
+/* ---------- Comp chrome: the frame around the product, not part of it ---------- */
+
+.comp-bar {
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--console-black);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 0.875rem;
+}
+.comp-bar__title { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-right: auto; }
+.comp-bar__title strong { font-weight: 600; }
+.comp-bar__title span { color: var(--dimmed-grey); }
+.comp-bar__actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- Buttons ---------- */
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 36px; padding: 0 16px;
+  border-radius: var(--radius-md);
+  font: 500 0.875rem/1 var(--sans);
+  white-space: nowrap; text-decoration: none; cursor: pointer;
+  border: 1px solid transparent;
+  transition: background-color 150ms var(--ease-out-quint), transform 150ms var(--ease-out-quint);
+}
+.btn:active { transform: scale(0.98); }
+.btn-outline { background: var(--console-black); border-color: var(--input-hairline); color: var(--readout-white); }
+.btn-outline:hover { background: var(--raised-grey); }
+.btn-outline[aria-pressed="true"] { background: var(--raised-grey); }
+.btn-ghost { background: transparent; color: var(--readout-white); }
+.btn-ghost:hover { background: oklch(0.269 0 0 / 50%); }
+.btn-primary { background: var(--primary-ink); color: var(--panel-grey); }
+.btn-primary:hover { background: oklch(0.922 0 0 / 90%); }
+.btn-sm { height: 32px; padding: 0 12px; gap: 6px; }
+.btn-icon { width: 36px; padding: 0; }
+@media (pointer: coarse) {
+  .btn, .btn-sm { min-height: 44px; }
+  .btn-icon { min-width: 44px; }
+}
+
+/* ---------- Badges ---------- */
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  font: 500 0.75rem/1.33 var(--sans);
+  white-space: nowrap;
+}
+.badge-condition { padding: 4px 10px; font-size: 0.875rem; font-weight: 600; line-height: 1.25; }
+.badge-condition .lvl { font-weight: 400; opacity: 0.8; }
+.lv-critical { background: var(--critical-fill); color: oklch(1 0 0); }
+.lv-high { background: oklch(0.637 0.237 25.331 / 20%); color: var(--red-text); }
+.lv-warning { background: oklch(0.769 0.188 70.08 / 20%); color: var(--amber-text); }
+.lv-moderate { background: oklch(0.852 0.199 91.936 / 15%); color: var(--yellow-text); }
+.badge-online { background: oklch(0.696 0.17 162.48 / 15%); color: var(--green-text); }
+.tag { border-color: var(--hairline); color: var(--readout-white); }
+.tag-mdf { border-color: oklch(0.685 0.169 237.323 / 40%); background: oklch(0.685 0.169 237.323 / 10%); color: var(--sky-text); }
+
+/* Border of the worst active Condition (the Worst Wins Rule). */
+.bd-critical { border-color: var(--critical-red) !important; }
+.bd-high { border-color: oklch(0.637 0.237 25.331 / 70%) !important; }
+.bd-warning { border-color: oklch(0.769 0.188 70.08 / 70%) !important; }
+.bd-moderate { border-color: oklch(0.852 0.199 91.936 / 60%) !important; }
+
+/* ---------- Surfaces ---------- */
+
+.card {
+  background: var(--panel-grey);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xl);
+  transition: border-color 300ms var(--ease-out-quint);
+}
+
+/* ---------- App shell (inset sidebar) ---------- */
+
+.shell { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: calc(100vh - 57px); background: var(--panel-grey); }
+.sidebar { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+.sidebar__brand { display: flex; align-items: center; gap: 8px; padding: 8px; }
+.mark {
+  display: grid; place-items: center; width: 32px; height: 32px; flex: none;
+  border-radius: var(--radius-md); background: var(--signal-blue); color: oklch(1 0 0);
+}
+.sidebar__brand b { display: block; font-weight: 500; font-size: 0.875rem; line-height: 1.25; }
+.sidebar__brand small { display: block; font-size: 0.75rem; color: var(--dimmed-grey); line-height: 1.33; }
+.nav { display: flex; flex-direction: column; gap: 4px; padding: 0 8px; }
+.nav__label { padding: 8px 8px 4px; font-size: 0.75rem; font-weight: 500; color: var(--dimmed-grey); }
+.nav a {
+  display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px;
+  border-radius: var(--radius-md); text-decoration: none; font-size: 0.875rem;
+}
+.nav a:hover { background: oklch(0.269 0 0 / 50%); }
+.nav a[aria-current="page"] { background: var(--raised-grey); font-weight: 500; }
+.nav .new { margin-left: auto; font-size: 0.75rem; color: var(--dimmed-grey); }
+
+.main {
+  margin: 8px 8px 8px 0;
+  background: var(--console-black);
+  border-radius: var(--radius-xl);
+  min-width: 0;
+}
+.mobile-header { display: none; }
+.page { padding: 24px; display: flex; flex-direction: column; gap: 24px; max-width: 1280px; }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.page-head h1 { font-size: 1.875rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.025em; }
+.page-head p { margin-top: 4px; color: var(--dimmed-grey); max-width: 65ch; }
+
+.live { display: inline-flex; align-items: center; gap: 8px; font-size: 0.875rem; color: var(--dimmed-grey); }
+.live::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--humidity-green); }
+
+@media (max-width: 767px) {
+  .shell { display: block; background: var(--console-black); }
+  .sidebar { display: none; }
+  .main { margin: 0; border-radius: 0; }
+  .mobile-header {
+    display: flex; align-items: center; gap: 8px; min-height: 64px; padding: 12px 16px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .mobile-header b { font-weight: 500; }
+  .page { padding: 20px 16px 32px; gap: 20px; }
+  .page-head h1 { font-size: 1.875rem; line-height: 1.3; }
+}
+
+/* ---------- Annotation panel (toggleable, off by default) ---------- */
+
+.notes {
+  position: fixed; z-index: 50; top: 66px; right: 16px;
+  width: min(400px, calc(100vw - 32px)); max-height: calc(100vh - 82px); overflow: auto;
+  padding: 20px;
+  background: var(--panel-grey);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--overlay-shadow);
+  opacity: 0; transform: translateY(-6px); visibility: hidden;
+  transition: opacity 200ms var(--ease-out-quint), transform 200ms var(--ease-out-quint), visibility 0s linear 200ms;
+}
+.notes[data-open="true"] { opacity: 1; transform: none; visibility: visible; transition-delay: 0s; }
+.notes__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.notes h2 { font-size: 1.125rem; font-weight: 600; line-height: 1.25; }
+.notes dl { display: grid; gap: 14px; }
+.notes dt { font-size: 0.75rem; font-weight: 500; color: var(--dimmed-grey); margin-bottom: 2px; }
+.notes dd { line-height: 1.5; }
+.notes dd ul { display: grid; gap: 4px; }
+.notes dd li { padding-left: 14px; position: relative; }
+.notes dd li::before { content: ""; position: absolute; left: 2px; top: 0.6em; width: 5px; height: 5px; border-radius: 50%; background: var(--focus-grey); }
+
+/* ---------- Motion ---------- */
+
+/* The signature Reading landing: a Raised Grey wash that holds, then settles. */
+@keyframes landed { 0%, 25% { opacity: 1; } 100% { opacity: 0; } }
+.landing { position: relative; isolation: isolate; }
+.landing::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit;
+  background: var(--raised-grey); opacity: 0; pointer-events: none;
+}
+.landing.is-landed::after { animation: landed 800ms var(--ease-out-expo) forwards; }
+
+@keyframes arrive { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.is-arriving { animation: arrive 200ms var(--ease-out-quint) both; }
+
+/* Reduced motion drops every transform and keeps the crossfade, so a change is still seen.
+   The demo toggle in the comp bar forces this path for review (html.rm). */
+@media (prefers-reduced-motion: reduce) {
+  .is-arriving { animation-name: fade-in; }
+  .landing.is-landed::after { animation: none; }
+  .notes { transform: none; }
+}
+html.rm .is-arriving { animation-name: fade-in; }
+html.rm .landing.is-landed::after { animation: none; }
+html.rm .notes { transform: none; }

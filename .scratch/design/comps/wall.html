@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wall screen mode · Temperature Alarms comp</title>
+<link rel="stylesheet" href="comps.css">
+<style>
+  .stage { padding: 24px; display: grid; gap: 24px; }
+  .stage__intro { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+  .stage__intro h1 { font-size: 1.875rem; font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; }
+  .stage__intro p { color: var(--dimmed-grey); max-width: 70ch; margin-top: 4px; }
+  .states { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
+  .state figcaption { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: var(--dimmed-grey); }
+  .state figcaption b { color: var(--readout-white); font-weight: 500; }
+
+  /* The screen: one 16:9 display, every size in container units so it reads the same on a 55-inch panel. */
+  .frame { container-type: inline-size; border-radius: var(--radius-xl); border: 1px solid var(--hairline); overflow: hidden; }
+  .screen {
+    aspect-ratio: 16 / 9;
+    display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 1.6cqi; padding: 1.6cqi 2cqi 2cqi;
+    background: var(--console-black);
+  }
+  .s-top { display: flex; align-items: center; gap: 1cqi; font-size: clamp(12px, 1.25cqi, 24px); color: var(--dimmed-grey); }
+  .s-top .mark { width: clamp(20px, 2.2cqi, 40px); height: clamp(20px, 2.2cqi, 40px); }
+  .s-top .mark .icon { width: 60%; height: 60%; }
+  .s-top b { color: var(--readout-white); font-weight: 500; }
+  .s-top .live { font-size: inherit; margin-left: auto; }
+  .s-top time { color: var(--readout-white); font-weight: 600; font-size: clamp(14px, 1.9cqi, 36px); }
+
+  /* The status band: the sentence the room reads first. */
+  .band {
+    position: relative; isolation: isolate;
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2cqi;
+    padding: 1.6cqi 2cqi;
+    border-radius: var(--radius-xl); border: 2px solid var(--hairline);
+    background: var(--panel-grey);
+    transition: border-color 300ms var(--ease-out-quint);
+  }
+  .band__headline { font-size: clamp(22px, 5cqi, 96px); font-weight: 600; letter-spacing: -0.025em; line-height: 1; }
+  .band__sub { margin-top: 0.8cqi; font-size: clamp(12px, 1.5cqi, 28px); color: var(--dimmed-grey); }
+  .band__sub b { color: var(--readout-white); font-weight: 500; }
+  .band__side { text-align: right; font-size: clamp(12px, 1.4cqi, 26px); color: var(--dimmed-grey); }
+  .band__side strong { display: block; color: var(--readout-white); font-size: clamp(16px, 2.6cqi, 48px); font-weight: 600; line-height: 1.1; }
+
+  .alarm { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 2.4cqi; }
+  .alarm__value { font-size: clamp(36px, 8cqi, 150px); font-weight: 600; letter-spacing: -0.025em; line-height: 0.9; }
+  .alarm__value span { font-size: 0.42em; font-weight: 500; color: var(--dimmed-grey); letter-spacing: 0; }
+  .alarm .badge-condition { font-size: clamp(12px, 1.5cqi, 28px); padding: 0.3cqi 0.9cqi; border-radius: var(--radius-md); }
+  .alarm__where { margin-top: 0.8cqi; font-size: clamp(16px, 2.8cqi, 52px); font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+  .alarm__where span { color: var(--dimmed-grey); font-weight: 500; }
+  .alarm__note { margin-top: 0.6cqi; font-size: clamp(12px, 1.4cqi, 26px); color: var(--dimmed-grey); }
+
+  /* The announcement: the band's content wipes in once from the left, then holds. Nothing repeats. */
+  @keyframes wipe { from { clip-path: inset(0 100% 0 0); opacity: 0.4; } to { clip-path: inset(0 0 0 0); opacity: 1; } }
+  .band.is-announcing .band__content { animation: wipe 700ms var(--ease-out-expo) both; }
+  html.rm .band.is-announcing .band__content { animation: fade-in 200ms var(--ease-out-quint) both; }
+  @media (prefers-reduced-motion: reduce) { .band.is-announcing .band__content { animation: fade-in 200ms var(--ease-out-quint) both; } }
+
+  /* Campuses: one column each, worst first, left to right. */
+  .campuses { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1.2cqi; min-height: 0; }
+  .campus {
+    display: flex; flex-direction: column; min-height: 0;
+    padding: 1.1cqi 1.2cqi; border-radius: var(--radius-xl);
+    background: var(--panel-grey); border: 2px solid var(--hairline);
+    transition: border-color 300ms var(--ease-out-quint);
+  }
+  .campus h3 { font-size: clamp(12px, 1.5cqi, 28px); font-weight: 600; line-height: 1.15; }
+  .campus h3 span { display: block; font-size: clamp(12px, 1.05cqi, 20px); font-weight: 400; color: var(--dimmed-grey); margin-top: 0.2cqi; }
+  .closets { margin-top: 0.8cqi; display: grid; gap: 0.15cqi; }
+  .closet {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 0.6cqi;
+    padding: 0.3cqi 0.5cqi; margin: 0 -0.5cqi; border-radius: var(--radius-sm);
+  }
+  .closet__name { font-size: clamp(12px, 1.2cqi, 22px); color: var(--dimmed-grey); white-space: nowrap; }
+  .closet__temp { font-size: clamp(14px, 2.15cqi, 40px); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; }
+  .closet__temp span { font-size: 0.7em; color: var(--dimmed-grey); font-weight: 500; margin-left: 1px; }
+  .closet.is-critical { background: var(--critical-fill); }
+  .closet.is-critical .closet__name, .closet.is-critical .closet__temp span { color: oklch(1 0 0 / 85%); }
+
+  /* A narrow container (a phone) reflows the screen into a portrait board. */
+  @container (max-width: 560px) {
+    .screen { aspect-ratio: auto; gap: 12px; padding: 14px; }
+    .s-top { font-size: 12px; gap: 8px; }
+    .s-top .hide-narrow { display: none; }
+    .band { grid-template-columns: 1fr; padding: 16px; gap: 12px; }
+    .band__side { text-align: left; }
+    .band__headline { font-size: 2.25rem; }
+    .alarm { gap: 14px; }
+    .alarm__value { font-size: 3rem; }
+    .alarm__where { font-size: 1.125rem; }
+    .campuses { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .campus { padding: 12px; }
+    .closets { gap: 2px; margin-top: 8px; }
+    .closet { padding: 2px 6px; margin: 0 -6px; }
+    .closet__temp { font-size: 1.125rem; }
+  }
+
+  .full .comp-bar, .full .stage__intro, .full .state figcaption { display: none; }
+  .full .stage { padding: 0; }
+  .full .states { grid-template-columns: 1fr; }
+  .full .frame { border: 0; border-radius: 0; }
+  .full .screen { min-height: 100vh; aspect-ratio: auto; }
+
+  @media (max-width: 1023px) { .states { grid-template-columns: 1fr; } }
+  @media (max-width: 767px) { .stage { padding: 20px 16px 32px; gap: 20px; } .stage__intro h1 { font-size: 1.875rem; line-height: 1.3; } }
+</style>
+</head>
+<body>
+<header class="comp-bar">
+  <a class="btn btn-ghost btn-sm" href="index.html"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>Comps</a>
+  <div class="comp-bar__title"><strong>Wall screen mode</strong><span>Comp 1 of 4</span></div>
+  <div class="comp-bar__actions">
+    <button class="btn btn-outline btn-sm" type="button" data-replay><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Replay announcement</button>
+    <button class="btn btn-outline btn-sm" type="button" data-rm-toggle aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-motion"/></svg>Reduced motion</button>
+    <button class="btn btn-outline btn-sm" type="button" data-notes-toggle aria-expanded="false" aria-controls="notes"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>Notes</button>
+  </div>
+</header>
+
+<aside class="notes" id="notes" data-open="false" aria-labelledby="notes-title">
+  <div class="notes__head">
+    <h2 id="notes-title" tabindex="-1">About this comp</h2>
+    <button class="btn btn-ghost btn-icon" type="button" data-notes-close aria-label="Close notes"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <dl>
+    <div><dt>Audience</dt><dd>An unattended NOC or office wall screen, read by whoever walks past: technicians, the help desk, a supervisor across the room.</dd></div>
+    <div><dt>Job</dt><dd>Answer one question from ten metres away: is every closet calm? If not, which one, how bad, and since when.</dd></div>
+    <div><dt>Key decision</dt><dd>A status band is the screen's sentence. Calm, it says "All calm" in grey. A new Condition replaces that sentence once, with a single wipe, and then holds still: the age ("3 min ago") is what tells the room it is new, not a blink. Campuses are columns, worst first, so the trouble is always top left.</dd></div>
+    <div><dt>Relies on</dt><dd><ul>
+      <li>Quiet until it matters: calm is near monochrome.</li>
+      <li>Worst Wins: the column takes the critical border; only the closet row takes the solid fill.</li>
+      <li>Two Reds: Critical Fill under white, Critical Red only as a border.</li>
+      <li>No blinking indicators; the pulsing border stays gone.</li>
+      <li>Display sizing, extended: readouts scale with the screen (container units), not fixed at 48 to 60px.</li>
+    </ul></dd></div>
+    <div><dt>Would change</dt><dd><ul>
+      <li>DESIGN.md needs a "wall screen" exception to the 48 to 60px Display range and to the sidebar shell (a kiosk route has none).</li>
+      <li>The Critical Fill on a closet row is a new use: today it only fills a badge and a destructive button.</li>
+      <li>PRODUCT.md calls the wall screen a secondary case; building this makes it a designed one.</li>
+    </ul></dd></div>
+    <div><dt>Server needs</dt><dd>Nothing new: Conditions, levels, thresholds and worst-first order already come from /api/dashboard and the stream. "Started" needs the Condition's start time, which the incident log (comp 3) would provide.</dd></div>
+  </dl>
+</aside>
+
+<main class="stage">
+  <div class="stage__intro">
+    <div>
+      <h1>Wall screen mode</h1>
+      <p>The Dashboard for a screen nobody is sitting at. Every Campus at once, worst first, readouts sized for the far side of the room. Left: a calm night. Right: the same minute, one closet critical.</p>
+    </div>
+    <a class="btn btn-outline btn-sm" href="wall.html?full=critical">Open the critical state full screen</a>
+  </div>
+  <div class="states">
+    <figure class="state">
+      <figcaption><b>All calm</b><span>29 closets, 6 Campuses</span></figcaption>
+      <div class="frame"><div class="screen" data-state="calm" aria-label="Wall screen, all calm"></div></div>
+    </figure>
+    <figure class="state">
+      <figcaption><b>One closet critical</b><span>Announced at 02:11, now 02:14</span></figcaption>
+      <div class="frame"><div class="screen" data-state="critical" aria-label="Wall screen, one closet critical"></div></div>
+    </figure>
+  </div>
+</main>
+
+<script src="comps.js"></script>
+<script>
+  // Fictional district. Readings in °F and % relative humidity, as the API sends them.
+  const CAMPUSES = [
+    { code: 'RHS', name: 'Riverbend High School', closets: [['MDF', 78, 41], ['IDF 1', 74, 44], ['IDF 2', 73, 46], ['IDF 3', 76, 43], ['IDF 4', 71, 47], ['IDF 5', 72, 45], ['IDF 6', 70, 49]] },
+    { code: 'HVMS', name: 'Harbor View Middle', closets: [['MDF', 75, 42], ['IDF 1', 72, 45], ['IDF 2', 71, 48], ['IDF 3', 73, 44], ['IDF 4', 69, 50]] },
+    { code: 'OHMS', name: 'Oak Hollow Middle', closets: [['MDF', 74, 39], ['IDF 1', 70, 43], ['IDF 2', 72, 41], ['IDF 3', 71, 42], ['IDF 4', 68, 46]] },
+    { code: 'CPE', name: 'Cedar Point Elementary', closets: [['MDF', 73, 44], ['IDF 1', 69, 47], ['IDF 2', 70, 46], ['IDF 3', 71, 45]] },
+    { code: 'MCE', name: 'Mill Creek Elementary', closets: [['MDF', 72, 52], ['IDF 1', 70, 55], ['IDF 2', 68, 57], ['IDF 3', 69, 54]] },
+    { code: 'LKE', name: 'Lakeside Elementary', closets: [['MDF', 71, 46], ['IDF 1', 68, 48], ['IDF 2', 67, 50], ['IDF 3', 69, 47]] },
+  ];
+  // The one Condition in the critical state, exactly as the API would send it.
+  const INCIDENT = { campus: 'OHMS', closet: 'IDF 2', temp: 93, humidity: 34, condition: { name: 'Hot', level: 'critical' }, started: '02:11', minutes: 3, threshold: 90 };
+
+  function model(state) {
+    const campuses = CAMPUSES.map((c) => ({
+      ...c,
+      closets: c.closets.map(([closet, t, h]) => {
+        const hit = state === 'critical' && c.code === INCIDENT.campus && closet === INCIDENT.closet;
+        return { closet, t: hit ? INCIDENT.temp : t, h: hit ? INCIDENT.humidity : h, critical: hit };
+      }),
+    }));
+    // Worst first: a closet in a Condition leads, then the warmest. The server sends this order.
+    campuses.forEach((c) => c.closets.sort((a, b) => (b.critical - a.critical) || (b.t - a.t)));
+    campuses.sort((a, b) => (b.closets[0].critical - a.closets[0].critical) || (b.closets[0].t - a.closets[0].t));
+    return campuses;
+  }
+
+  function band(state) {
+    if (state === 'calm') {
+      return `<div class="band" data-band>
+        <div class="band__content">
+          <p class="band__headline">All calm</p>
+          <p class="band__sub"><b>29 closets</b> on 6 Campuses, every one in range. Warmest: Riverbend High MDF, <span class="num">78°F</span>.</p>
+        </div>
+        <p class="band__side"><strong class="num">0</strong>in a Condition</p>
+      </div>`;
+    }
+    const c = CAMPUSES.find((x) => x.code === INCIDENT.campus);
+    return `<div class="band bd-critical" data-band role="alert">
+      <div class="band__content alarm">
+        <p class="alarm__value num">${INCIDENT.temp}<span>°F</span></p>
+        <div>
+          <span class="badge badge-condition lv-critical">${INCIDENT.condition.name}<span class="lvl">· ${INCIDENT.condition.level}</span></span>
+          <p class="alarm__where">${c.name} <span>· ${INCIDENT.closet}</span></p>
+          <p class="alarm__note num">Hot is critical at ${INCIDENT.threshold}°F. Humidity ${INCIDENT.humidity}%.</p>
+        </div>
+      </div>
+      <p class="band__side num">Started ${INCIDENT.started}<strong>${INCIDENT.minutes} min ago</strong>28 others in range</p>
+    </div>`;
+  }
+
+  function render(screen) {
+    const state = screen.dataset.state;
+    const campuses = model(state);
+    screen.innerHTML = `
+      <div class="s-top">
+        <span class="mark">${icon('thermometer')}</span>
+        <b>Riverbend Unified</b><span class="hide-narrow">· Network closets</span>
+        <span class="live"><span class="hide-narrow">Live ·</span> <span class="num">29</span> Devices reporting</span>
+        <time class="num" datetime="2026-10-04T02:14">02:14</time>
+      </div>
+      ${band(state)}
+      <div class="campuses">
+        ${campuses.map((c) => `
+          <section class="campus ${c.closets[0].critical ? 'bd-critical' : ''}" aria-label="${c.name}">
+            <h3>${c.code}<span>${c.name}</span></h3>
+            <ul class="closets">
+              ${c.closets.map((d) => `
+                <li class="closet landing ${d.critical ? 'is-critical' : ''}" ${d.critical ? 'data-hit' : ''}>
+                  <span class="closet__name">${d.closet}</span>
+                  <span class="closet__temp num">${d.t}<span>°</span></span>
+                </li>`).join('')}
+            </ul>
+          </section>`).join('')}
+      </div>`;
+  }
+
+  const full = new URLSearchParams(location.search).get('full');
+  if (full) {
+    document.body.classList.add('full');
+    const keep = document.querySelector(`.screen[data-state="${full === 'calm' ? 'calm' : 'critical'}"]`);
+    document.querySelectorAll('.state').forEach((f) => { if (!f.contains(keep)) f.remove(); });
+  }
+  document.querySelectorAll('.screen').forEach(render);
+
+  // Demo: the right screen goes calm, then the new Condition arrives on the next Reading.
+  document.querySelector('[data-replay]')?.addEventListener('click', () => {
+    const screen = document.querySelector('.screen[data-state="critical"]');
+    screen.dataset.state = 'calm';
+    render(screen);
+    setTimeout(() => {
+      screen.dataset.state = 'critical';
+      render(screen);
+      const b = screen.querySelector('[data-band]');
+      b.classList.remove('bd-critical');
+      screen.querySelectorAll('.campus.bd-critical').forEach((x) => x.classList.remove('bd-critical'));
+      requestAnimationFrame(() => {
+        b.classList.add('bd-critical', 'is-announcing');
+        screen.querySelector('.campus').classList.add('bd-critical');
+        const hit = screen.querySelector('[data-hit]');
+        if (hit && !reducedMotion()) replayClass(hit, 'is-landed');
+      });
+    }, 1200);
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Campus overview · Temperature Alarms comp</title>
+<link rel="stylesheet" href="comps.css">
+<style>
+  .summary { font-size: 1.125rem; line-height: 1.5; max-width: 70ch; }
+  .summary b { font-weight: 600; }
+  .summary .dim { font-size: 0.875rem; display: block; margin-top: 2px; }
+
+  .table-card { padding: 8px 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 500; font-size: 0.875rem; color: var(--dimmed-grey); padding: 12px 16px; border-bottom: 1px solid var(--hairline); white-space: nowrap; }
+  td { padding: 16px; border-bottom: 1px solid var(--hairline); vertical-align: middle; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: oklch(0.269 0 0 / 35%); }
+
+  .c-name a { font-size: 1.125rem; font-weight: 600; line-height: 1.25; text-decoration: none; }
+  .c-name a:hover { text-decoration: underline; }
+  .c-name p { color: var(--dimmed-grey); margin-top: 2px; }
+  .now { display: flex; flex-wrap: wrap; gap: 6px; }
+  .now { align-items: center; }
+  .none { color: var(--dimmed-grey); }
+
+  .worst { display: flex; align-items: baseline; gap: 12px; text-decoration: none; padding: 4px 8px; margin: -4px -8px; border-radius: var(--radius-md); }
+  .worst__temp { font-size: 1.875rem; font-weight: 600; letter-spacing: -0.025em; line-height: 1; }
+  .worst__temp span { font-size: 1.125rem; font-weight: 500; color: var(--dimmed-grey); }
+  .worst__where b { display: block; font-weight: 500; }
+  .worst:hover .worst__where b { text-decoration: underline; }
+  .worst__where span { color: var(--dimmed-grey); }
+
+  .trend { display: flex; align-items: center; gap: 14px; }
+  .trend svg { display: block; overflow: visible; }
+  .trend .bar { fill: var(--focus-grey); }
+  .trend .bar.in-condition { fill: oklch(0.769 0.188 70.08 / 70%); }
+  .trend .bar.today { fill: var(--dimmed-grey); }
+  .trend .bar.today.in-condition { fill: var(--warning-amber); }
+  .trend .limit { stroke: var(--dimmed-grey); stroke-dasharray: 3 3; stroke-width: 1; }
+  .trend .day { fill: var(--dimmed-grey); font: 400 12px var(--sans); text-anchor: middle; }
+  .trend__peak { white-space: nowrap; }
+  .trend__peak b { display: block; font-weight: 600; font-size: 1.125rem; }
+  .trend__peak span { color: var(--dimmed-grey); }
+
+  .since b { display: block; font-size: 1.125rem; font-weight: 600; line-height: 1.25; }
+  .since span { color: var(--dimmed-grey); }
+  .since.ongoing b { color: var(--amber-note); }
+
+  .footnote { color: var(--dimmed-grey); max-width: 75ch; }
+
+  @media (max-width: 1100px) { .trend__peak { display: none; } }
+  @media (max-width: 767px) {
+    .summary { font-size: 1.125rem; }
+    .table-card { background: transparent; border: 0; overflow: visible; padding: 0; }
+    table, tbody, tr, td { display: block; }
+    thead { display: none; }
+    tbody { display: grid; gap: 12px; }
+    tr { background: var(--panel-grey); border: 1px solid var(--hairline); border-radius: var(--radius-xl); padding: 4px 16px; }
+    tbody tr:hover td { background: none; }
+    td { padding: 12px 0; display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 12px; align-items: center; }
+    td::before { content: attr(data-label); color: var(--dimmed-grey); font-size: 0.875rem; }
+    td.c-name { display: block; }
+    td.c-name::before { content: none; }
+    tbody tr td:last-child { border-bottom: 0; }
+    .worst__temp { font-size: 1.875rem; }
+  }
+</style>
+</head>
+<body>
+<header class="comp-bar">
+  <a class="btn btn-ghost btn-sm" href="index.html"><svg class="icon" aria-hidden="true"><use href="#i-back"/></svg>Comps</a>
+  <div class="comp-bar__title"><strong>Campus overview</strong><span>Comp 2 of 4</span></div>
+  <div class="comp-bar__actions">
+    <button class="btn btn-outline btn-sm" type="button" data-reading><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg>Send a Reading</button>
+    <button class="btn btn-outline btn-sm" type="button" data-rm-toggle aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-motion"/></svg>Reduced motion</button>
+    <button class="btn btn-outline btn-sm" type="button" data-notes-toggle aria-expanded="false" aria-controls="notes"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>Notes</button>
+  </div>
+</header>
+
+<aside class="notes" id="notes" data-open="false" aria-labelledby="notes-title">
+  <div class="notes__head">
+    <h2 id="notes-title" tabindex="-1">About this comp</h2>
+    <button class="btn btn-ghost btn-icon" type="button" data-notes-close aria-label="Close notes"><svg class="icon" aria-hidden="true"><use href="#i-x"/></svg></button>
+  </div>
+  <dl>
+    <div><dt>Audience</dt><dd>IT leadership: a director or network manager who wants the district's state in one look, weekly or before a meeting, without opening twenty-nine cards.</dd></div>
+    <div><dt>Job</dt><dd>Know which Campuses need attention, how the week has trended, and how long each has gone without trouble.</dd></div>
+    <div><dt>Key decision</dt><dd>A plain table, one row per Campus, worst first, with a one-sentence summary above it instead of hero tiles. The 7-day trend is a labelled column chart of each day's worst high against the Hot warning line, so it reads as evidence, not decoration. "Since last incident" is the calm number leadership actually asks for.</dd></div>
+    <div><dt>Relies on</dt><dd><ul>
+      <li>No SaaS hero metrics: the summary is a sentence, the numbers live in the rows.</li>
+      <li>One Meaning: amber only on days and rows that were in a warning Condition.</li>
+      <li>Tabular figures in every column; 14px floor in the table.</li>
+      <li>The Reading-landed wash when a worst closet updates.</li>
+    </ul></dd></div>
+    <div><dt>Would change</dt><dd><ul>
+      <li>A fourth nav item (Campuses) beside Dashboard, History and Settings.</li>
+      <li>DESIGN.md's charts section covers day charts only; a small per-row column chart is a new chart type to document.</li>
+    </ul></dd></div>
+    <div><dt>Server needs</dt><dd>A per-Campus endpoint: counts per Condition now, the worst Device, each day's highest Reading for 7 days with whether that day was in a Condition, and the end of the last incident. The browser totals nothing it cannot see.</dd></div>
+  </dl>
+</aside>
+
+<div class="shell">
+  <nav class="sidebar" aria-label="Main">
+    <div class="sidebar__brand"><span class="mark"><svg class="icon" aria-hidden="true"><use href="#i-thermometer"/></svg></span><div><b>Riverbend Unified</b><small>Temperature Alarms</small></div></div>
+    <ul class="nav">
+      <li><a href="#"><svg class="icon" aria-hidden="true"><use href="#i-dashboard"/></svg>Dashboard</a></li>
+      <li><a href="#" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#i-building"/></svg>Campuses</a></li>
+      <li><a href="incidents.html"><svg class="icon" aria-hidden="true"><use href="#i-clock"/></svg>Incidents</a></li>
+      <li><a href="#"><svg class="icon" aria-hidden="true"><use href="#i-history"/></svg>History</a></li>
+      <li><a href="#"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg>Settings</a></li>
+    </ul>
+  </nav>
+
+  <div class="main">
+    <div class="mobile-header">
+      <button class="btn btn-ghost btn-icon" type="button" aria-label="Open navigation"><svg class="icon" aria-hidden="true"><use href="#i-panel"/></svg></button>
+      <b>Campuses</b>
+    </div>
+    <main class="page">
+      <div class="page-head">
+        <div>
+          <h1>Campuses</h1>
+          <p>Each Campus now and over the last 7 days. Worst first.</p>
+        </div>
+        <span class="live">Live</span>
+      </div>
+
+      <p class="summary">
+        <b class="num">2 closets</b> are in a Condition now, at Oak Hollow Middle and Harbor View Middle. The other <span class="num">27</span> are in range.
+        <span class="dim num">6 Campuses, 29 closets. Week of Mon 28 Sep to Sun 4 Oct, as of 14:20.</span>
+      </p>
+
+      <div class="card table-card">
+        <table>
+          <caption class="sr-only">Campuses, worst first</caption>
+          <thead>
+            <tr>
+              <th scope="col">Campus</th>
+              <th scope="col">In a Condition now</th>
+              <th scope="col">Worst closet</th>
+              <th scope="col">Worst daily high, 7 days</th>
+              <th scope="col">Since last incident</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+
+      <p class="footnote">An incident is a Condition at warning or worse. Moderate Mold risk is a heads-up and is not counted. The dashed line is the Hot warning threshold the server uses, 82°F. Readings are kept 90 days, so "since last incident" looks back 90 days at most.</p>
+    </main>
+  </div>
+</div>
+
+<script src="comps.js"></script>
+<script>
+  const DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const HOT_WARNING = 82;
+  // As a per-Campus endpoint would send them, worst first. inCondition marks days the server flagged.
+  const ROWS = [
+    { name: 'Oak Hollow Middle School', code: 'OHMS', closets: 5,
+      now: [{ name: 'Hot', level: 'warning', count: 1 }],
+      worst: { closet: 'IDF 2', temp: 84, humidity: 38, level: 'warning' },
+      highs: [78, 79, 80, 81, 83, 88, 84], flagged: [4, 5, 6],
+      since: { ongoing: true, value: 'Ongoing', note: 'Hot since 12:10' } },
+    { name: 'Harbor View Middle School', code: 'HVMS', closets: 5,
+      now: [{ name: 'Offline', level: 'warning', count: 1 }],
+      worst: { closet: 'IDF 4', temp: null, note: 'Offline, last Reading 41 min ago', level: 'warning' },
+      highs: [75, 76, 75, 77, 76, 75, 75], flagged: [],
+      since: { ongoing: true, value: 'Ongoing', note: 'Offline since 13:39' } },
+    { name: 'Mill Creek Elementary', code: 'MCE', closets: 4,
+      now: [{ name: 'Mold risk', level: 'moderate', count: 2 }],
+      worst: { closet: 'IDF 2', temp: 71, humidity: 64, level: 'moderate' },
+      highs: [72, 73, 72, 74, 73, 72, 71], flagged: [],
+      since: { value: '12 days', note: 'Mold risk ended 22 Sep' } },
+    { name: 'Riverbend High School', code: 'RHS', closets: 7,
+      now: [],
+      worst: { closet: 'MDF', temp: 78, humidity: 41 },
+      highs: [79, 80, 79, 82, 80, 79, 78], flagged: [3],
+      since: { value: '3 days', note: 'Hot ended Thu 16:42' } },
+    { name: 'Cedar Point Elementary', code: 'CPE', closets: 4,
+      now: [],
+      worst: { closet: 'MDF', temp: 73, humidity: 44 },
+      highs: [73, 74, 73, 72, 74, 73, 73], flagged: [],
+      since: { value: '47 days', note: 'Offline ended 18 Aug' } },
+    { name: 'Lakeside Elementary', code: 'LKE', closets: 4,
+      now: [],
+      worst: { closet: 'MDF', temp: 71, humidity: 46 },
+      highs: [71, 72, 70, 71, 72, 71, 71], flagged: [],
+      since: { value: 'None in 90 days', note: 'As far back as Readings go' } },
+  ];
+
+  function chart(highs, flagged) {
+    const w = 182, h = 44, lo = 66, hi = 90, bw = 18, gap = 8;
+    const y = (v) => h - ((v - lo) / (hi - lo)) * h;
+    const bars = highs.map((v, i) => {
+      const x = i * (bw + gap);
+      const cls = ['bar', flagged.includes(i) ? 'in-condition' : '', i === 6 ? 'today' : ''].join(' ');
+      return `<rect class="${cls}" x="${x}" y="${y(v).toFixed(1)}" width="${bw}" height="${(h - y(v)).toFixed(1)}" rx="3"/>
+        <text class="day" x="${x + bw / 2}" y="${h + 16}">${DAYS[i]}</text>`;
+    }).join('');
+    const ly = y(HOT_WARNING).toFixed(1);
+    const label = highs.map((v, i) => `${DAY_NAMES[i]} ${v}°F`).join(', ');
+    return `<svg width="${w}" height="${h + 20}" viewBox="0 0 ${w} ${h + 20}" role="img" aria-label="Worst daily high: ${label}. Hot warning at ${HOT_WARNING}°F.">
+      ${bars}<line class="limit" x1="-4" x2="${w - gap + 4}" y1="${ly}" y2="${ly}"/></svg>`;
+  }
+
+  function badge(c) {
+    return `<span class="badge badge-condition lv-${c.level}">${c.name}<span class="lvl">· ${c.level}</span></span><span class="dim num">${c.count} closet${c.count > 1 ? "s" : ""}</span>`;
+  }
+
+  function worst(w) {
+    const value = w.temp === null
+      ? `<span class="worst__temp num dim" aria-label="No current Reading">–</span>`
+      : `<span class="worst__temp num">${w.temp}<span>°F</span></span>`;
+    const detail = w.temp === null ? w.note : `Humidity ${w.humidity}%`;
+    return `<a class="worst landing" href="#history" data-worst>${value}<span class="worst__where"><b>${w.closet}</b><span class="num">${detail}</span></span></a>`;
+  }
+
+  function peak(highs) {
+    const max = Math.max(...highs);
+    return `<p class="trend__peak"><b class="num">${max}°F</b><span>${DAY_NAMES[highs.lastIndexOf(max)]}</span></p>`;
+  }
+
+  document.getElementById('rows').innerHTML = ROWS.map((r) => `
+    <tr>
+      <td class="c-name"><a href="#">${r.name}</a><p class="num">${r.code} · ${r.closets} closets</p></td>
+      <td data-label="Now"><div class="now">${r.now.length ? r.now.map(badge).join('') : '<span class="none">None</span>'}</div></td>
+      <td data-label="Worst closet">${worst(r.worst)}</td>
+      <td data-label="7 days"><div class="trend">${chart(r.highs, r.flagged)}${peak(r.highs)}</div></td>
+      <td data-label="Since last" class="since ${r.since.ongoing ? 'ongoing' : ''}"><div><b class="num">${r.since.value}</b><span class="num">${r.since.note}</span></div></td>
+    </tr>`).join('');
+
+  // Demo: Oak Hollow IDF 2 posts a new Reading; the cell washes Raised Grey and settles.
+  document.querySelector('[data-reading]').addEventListener('click', () => {
+    const cell = document.querySelector('[data-worst]');
+    const temp = cell.querySelector('.worst__temp');
+    const next = temp.firstChild.nodeValue === '84' ? '85' : '84';
+    temp.firstChild.nodeValue = next;
+    if (!reducedMotion()) replayClass(cell, 'is-landed');
+  });
+</script>
+</body>
+</html>
