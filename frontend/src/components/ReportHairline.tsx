@@ -44,7 +44,7 @@ function Depletion({ anchorMs, intervalMs }: { anchorMs: number; intervalMs: num
   const [delayMs] = useState(() => -Math.max(0, Date.now() - anchorMs));
   return (
     <span
-      className="report-depletion absolute inset-x-0 -top-px h-px origin-left bg-muted-foreground/45"
+      className="report-depletion absolute inset-x-0 -top-px h-px origin-left bg-muted-foreground/20"
       style={{ animationDuration: `${intervalMs}ms`, animationDelay: `${delayMs}ms` }}
     />
   );

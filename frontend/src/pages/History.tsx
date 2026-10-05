@@ -3,7 +3,7 @@ import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Info, Trash2 } from 'lucide-react';
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
+import { CartesianGrid, Line, LineChart, ReferenceDot, XAxis, YAxis } from 'recharts';
 import { getHistory, resetHistory } from '@/api';
 import { AdminTokenPanel } from '@/components/AdminTokenPanel';
 import { LiveStatus } from '@/components/LiveStatus';
@@ -34,6 +34,7 @@ import { cardScope, headingScope, morphTo, readSeed, type HistorySeed } from '@/
 import { dayShift, settle } from '@/lib/motion';
 import { useResource } from '@/hooks/use-resource';
 import { clearAdminToken, getAdminToken, setAdminToken } from '@/lib/adminToken';
+import { bucketReadings, extremes, type Extreme } from '@/lib/chartBuckets';
 import { addDays, formatDayLong, formatDayShort, formatHour, formatTime, formatTimeSeconds, isDateString, today } from '@/lib/localDate';
 import { cn } from '@/lib/utils';
 import type { DaySummary, History as HistoryPayload, Reading } from '@/types';
@@ -137,8 +138,9 @@ function PageHeading({ title, subtitle, tag, actions, deviceId, back = '/', read
           </Link>
         </Button>
         <div className="min-w-0 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 data-morph="closet" className="text-3xl font-bold tracking-tight">
+          {/* The name and its IDF/MDF tag are one piece of the move from the card. */}
+          <div data-morph="closet" className="flex w-fit max-w-full flex-wrap items-center gap-2">
+            <h1 className="text-3xl font-bold tracking-tight">
               {title}
             </h1>
             {tag}
@@ -157,9 +159,9 @@ function LastReading({ tempF }: { tempF: number }) {
   return (
     <div className="min-w-0">
       <p className="text-xs text-muted-foreground">Last Reading</p>
-      <p data-morph="temp" className="text-3xl font-semibold tabular-nums leading-none tracking-tight">
+      <p data-morph="temp" className="w-fit text-3xl font-semibold tabular-nums leading-none tracking-tight">
         <NumberFlow value={tempF} />
-        <span className="text-lg font-medium text-muted-foreground">°F</span>
+        <span className="text-[0.5em] font-medium text-muted-foreground">°F</span>
       </p>
     </div>
   );
@@ -514,19 +516,50 @@ function niceDomain(values: number[], step = 5): [number, number] {
   return [Math.floor((min - 1) / step) * step, Math.ceil((max + 1) / step) * step];
 }
 
-/** Both series over the whole day, midnight to midnight, so a quiet hour reads as a gap and not as a shorter day. */
+/**
+ * The day's low or high, drawn where it happened with its raw value, so a spike the line's mean
+ * smooths over is still on the chart. Small and in the series' own colour: a fact, not an alarm.
+ */
+const extremeDot = (axis: 'tempF' | 'humidity', point: Extreme, unit: string, color: string, below: boolean) => (
+  <ReferenceDot
+    key={`${axis}-${below ? 'low' : 'high'}`}
+    yAxisId={axis}
+    x={point.at}
+    y={point.value}
+    r={3}
+    fill={color}
+    stroke="var(--card)"
+    strokeWidth={1.5}
+    ifOverflow="extendDomain"
+    label={{ value: `${point.value}${unit}`, position: below ? 'bottom' : 'top', offset: 6, fontSize: 11, fill: color, className: 'tabular-nums' }}
+  />
+);
+
+/**
+ * Both series over the whole day, midnight to midnight, so a quiet hour reads as a gap and not as
+ * a shorter day. The lines are 5-minute means (lib/chartBuckets.ts), since the DHT11's whole-degree
+ * flicker drawn raw is a solid block; the day's raw low and high are marked on top of them.
+ */
 function DayChart({ history }: { history: HistoryPayload }) {
   const from = Date.parse(history.from);
   const to = Date.parse(history.to);
-  const data = useMemo(() => history.readings.map((r) => ({ at: Date.parse(r.recordedAt), tempF: r.tempF, humidity: r.humidity })), [history.readings]);
+  // The bucket comes from the span the Readings cover, so a day that began an hour ago keeps minute detail.
+  const data = useMemo(() => {
+    const first = history.readings[0];
+    const last = history.readings.at(-1);
+    return bucketReadings(history.readings, from, first && last ? Date.parse(last.recordedAt) - Date.parse(first.recordedAt) : 0);
+  }, [history.readings, from]);
+  const tempRange = useMemo(() => extremes(history.readings, (r) => r.tempF), [history.readings]);
+  const humidityRange = useMemo(() => extremes(history.readings, (r) => r.humidity), [history.readings]);
   // A tick every three hours from midnight; the closing midnight is the last one.
   const ticks = useMemo(() => {
     const out: number[] = [];
     for (let t = from; t <= to; t += 3 * MS_PER_HOUR) out.push(t);
     return out;
   }, [from, to]);
-  const tempDomain = useMemo(() => niceDomain(data.map((d) => d.tempF)), [data]);
-  const humidityDomain = useMemo(() => niceDomain(data.flatMap((d) => (d.humidity === null ? [] : [d.humidity]))), [data]);
+  // The axes cover the raw extremes, not just the means, so the marked low and high sit inside them.
+  const tempDomain = useMemo(() => niceDomain(tempRange ? [tempRange.low.value, tempRange.high.value] : []), [tempRange]);
+  const humidityDomain = useMemo(() => niceDomain(humidityRange ? [humidityRange.low.value, humidityRange.high.value] : []), [humidityRange]);
   // Dots on a few points help; on a full day of 30-second Readings they are noise.
   const sparse = data.length <= 48;
   // Mounted once per day shown (the day's content is keyed by date), so this is the day's first load.
@@ -563,8 +596,10 @@ function DayChart({ history }: { history: HistoryPayload }) {
               content={
                 <ChartTooltipContent
                   labelFormatter={(_label, payload) => {
-                    const at = payload?.[0]?.payload?.at as number | undefined;
-                    return at === undefined ? '' : formatTimeSeconds(at);
+                    const point = payload?.[0]?.payload as { from: number; to: number; count: number } | undefined;
+                    if (point === undefined) return '';
+                    const readings = point.count === 1 ? 'one Reading' : `mean of ${point.count} Readings`;
+                    return `${formatTime(point.from)} to ${formatTime(point.to)}, ${readings}`;
                   }}
                   formatter={(value, name) => (
                     <div className="flex flex-1 items-center justify-between gap-4">
@@ -594,6 +629,15 @@ function DayChart({ history }: { history: HistoryPayload }) {
               onAnimationEnd={() => setDrawing(false)}
             />
             <Line yAxisId="humidity" dataKey="humidity" type="monotone" stroke="var(--color-humidity)" strokeWidth={2} strokeDasharray="4 3" dot={sparse} activeDot={{ r: 4 }} isAnimationActive={false} />
+            {/* Called, not rendered as components: Recharts only draws a ReferenceDot that is its direct child. */}
+            {tempRange && tempRange.high.value !== tempRange.low.value && [
+              extremeDot('tempF', tempRange.high, '°', 'var(--color-tempF)', false),
+              extremeDot('tempF', tempRange.low, '°', 'var(--color-tempF)', true),
+            ]}
+            {humidityRange && humidityRange.high.value !== humidityRange.low.value && [
+              extremeDot('humidity', humidityRange.high, '%', 'var(--color-humidity)', false),
+              extremeDot('humidity', humidityRange.low, '%', 'var(--color-humidity)', true),
+            ]}
           </LineChart>
         </ChartContainer>
       </CardContent>
