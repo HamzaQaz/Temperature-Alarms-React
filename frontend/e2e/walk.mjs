@@ -142,6 +142,30 @@ await check('dashboard: the Campus filter narrows to one Campus and the other is
   await page.getByRole('article', { name: /MDF/ }).waitFor({ timeout: 5000 });
   await page.getByRole('tab', { name: 'All campuses' }).click();
 });
+await check('campuses: the sidebar opens Campuses, titled, worst first, with the Hot Campus and its week', async () => {
+  await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Campuses' }).click();
+  await page.getByRole('heading', { name: 'Campuses', level: 1 }).waitFor();
+  expect((await page.title()) === 'Campuses · Temperature Alarms', 'title: ' + (await page.title()));
+  const rows = page.getByRole('table', { name: 'Campuses, worst first' }).getByRole('row');
+  await rows.nth(1).waitFor({ timeout: 8000 });
+  const first = await rows.nth(1).innerText();
+  expect(/Central High School/.test(first) && /Hot/.test(first) && /critical/.test(first) && /Ongoing/.test(first), 'first row: ' + first.slice(0, 200));
+  expect(/West Elementary/.test(await rows.nth(2).innerText()), 'West Elementary should follow');
+  expect(/1 Campus has/.test(await page.locator('main').innerText()), 'summary does not count the Campus');
+  const chart = rows.nth(1).getByRole('img');
+  expect(/Today 91°F so far/.test(await chart.getAttribute('aria-label')), 'chart label: ' + (await chart.getAttribute('aria-label')));
+  await page.getByText(/threshold the server uses, 82°F/).waitFor();
+});
+if (SHOTS) await page.screenshot({ path: SHOTS + '/campuses.png', fullPage: true });
+await check('campuses: by keyboard, the Campus link opens the Dashboard filtered to it', async () => {
+  const link = page.getByRole('link', { name: 'Central High School on the Dashboard' });
+  await link.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForURL(/\?campus=CHS/, { timeout: 5000 });
+  await page.getByRole('article', { name: /MDF/ }).waitFor({ timeout: 5000 });
+  await page.goBack();
+  await page.getByRole('link', { name: /^History today: MDF, Central High School/ }).waitFor({ timeout: 5000 });
+});
 await check('incidents: the sidebar opens Incidents, titled, with the Hot incident ongoing today', async () => {
   await page.getByRole('navigation', { name: 'Pages' }).getByRole('link', { name: 'Incidents' }).click();
   await page.getByRole('heading', { name: 'Incidents', level: 1 }).waitFor();
@@ -216,7 +240,7 @@ await check('dashboard: after the reset the card has no readings again', async (
   await page.getByRole('article', { name: /MDF/ }).waitFor({ timeout: 5000 });
   await page.getByText(/No readings yet/).first().waitFor({ timeout: 5000 });
 });
-await check('phone width: the dashboard and Incidents have no horizontal scroll', async () => {
+await check('phone width: the dashboard, Incidents, and Campuses have no horizontal scroll', async () => {
   const phone = await context.newPage();
   await phone.setViewportSize({ width: 400, height: 800 });
   await phone.goto(WEB + '/');
@@ -231,6 +255,12 @@ await check('phone width: the dashboard and Incidents have no horizontal scroll'
   const wideIncidents = await phone.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
   if (SHOTS) await phone.screenshot({ path: SHOTS + '/incidents-phone.png', fullPage: true });
   expect(!wideIncidents, 'Incidents scrolls horizontally at 400px');
+  await phone.goto(WEB + '/campuses');
+  await phone.getByRole('heading', { name: 'Campuses', level: 1 }).waitFor();
+  await phone.waitForTimeout(1000);
+  const wideCampuses = await phone.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+  if (SHOTS) await phone.screenshot({ path: SHOTS + '/campuses-phone.png', fullPage: true });
+  expect(!wideCampuses, 'Campuses scrolls horizontally at 400px');
   await phone.close();
 });
 await check('settings: the Device and then the Campuses can be deleted', async () => {

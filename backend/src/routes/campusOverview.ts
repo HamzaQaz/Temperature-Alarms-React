@@ -246,6 +246,8 @@ export function campusOverviewRouter({ pool, config, now = () => new Date() }: R
       res.json({
         timeZone,
         threshold: { name: 'Hot', level: 'warning', tempF: thresholds.hotWarningF },
+        /** How far back Readings, and so "since last incident", reach. */
+        retentionDays,
         campuses: overview,
       });
     } catch (error) {

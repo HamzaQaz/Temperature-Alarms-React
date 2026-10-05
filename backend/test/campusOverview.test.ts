@@ -46,6 +46,7 @@ interface CampusOverview {
 interface Overview {
   timeZone: string;
   threshold: { name: 'Hot'; level: 'warning'; tempF: number };
+  retentionDays: number;
   campuses: CampusOverview[];
 }
 
@@ -111,11 +112,12 @@ describe('GET /api/campuses/overview', () => {
     return found;
   };
 
-  test('needs no token, names the Hot warning threshold the server uses, and refuses an unknown zone (422)', async () => {
+  test('needs no token, names the Hot warning threshold and the retention window the server uses, and refuses an unknown zone (422)', async () => {
     const response = await overviewAt(NOW);
     assert.equal(response.status, 200);
     const body = await json<Overview>(response);
     assert.deepEqual(body.threshold, { name: 'Hot', level: 'warning', tempF: 82 });
+    assert.equal(body.retentionDays, 90);
     assert.deepEqual(body.campuses, []);
 
     const bad = await overviewAt(NOW, '?tz=Mars/Olympus');

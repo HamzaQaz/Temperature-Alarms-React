@@ -1,4 +1,4 @@
-import type { Device, Campus, Dashboard, DashboardOrder, History, Incidents } from './types';
+import type { Device, Campus, Dashboard, DashboardOrder, History, Incidents, Overview } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -82,6 +82,10 @@ export const addCampus = (name: string, shortcode: string): Promise<Campus> =>
 
 export const deleteCampus = (id: number): Promise<void> =>
   request(`/api/campuses/${id}`, { method: 'DELETE' });
+
+/** Every Campus worst first, with its last seven days cut in this browser's zone. */
+export const getCampusOverview = (): Promise<Overview> =>
+  request(`/api/campuses/overview?${new URLSearchParams({ tz: browserTimeZone() })}`);
 
 // ==================== DEVICES ====================
 

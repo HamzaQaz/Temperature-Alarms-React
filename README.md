@@ -195,7 +195,7 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | --- | --- | --- |
 | `GET /api/health` | none | `{status, database}`; 503 when the database cannot be reached |
 | `GET /api/campuses` | none | `[{id, name, shortcode}]` by name |
-| `GET /api/campuses/overview?tz=America/Chicago` | none | `{timeZone, threshold, campuses}` for IT leadership: every Campus, worst first by its worst closet now (as the dashboard ranks Devices), then by name. Each is `{id, name, shortcode, closets, level, now, worst, days, lastIncident}`: `now.conditions` counts closets per Condition and level at warning or worse, and `now.headsUp` counts moderate Mold risk apart; `worst` is the worst closet with its `latestReading`, `level`, `offline`, and `conditions` (null with no Devices); `days` is the last seven local days in `tz` (the server's zone by default; an unknown one is 422), oldest first, each with its bounds, `maxTempF` (null with no Readings), and `incident`, true when an incident overlapped it; today is `partial`. `lastIncident` is `{ongoing: true, start}` while one is open, else `{ongoing: false, end}` for the latest to close within the retention window, else null. `threshold` is the Hot warning line the server uses, for the chart. The completed days' highs are reused for up to five minutes; today's are read on every request. Example below |
+| `GET /api/campuses/overview?tz=America/Chicago` | none | `{timeZone, threshold, campuses}` for IT leadership: every Campus, worst first by its worst closet now (as the dashboard ranks Devices), then by name. Each is `{id, name, shortcode, closets, level, now, worst, days, lastIncident}`: `now.conditions` counts closets per Condition and level at warning or worse, and `now.headsUp` counts moderate Mold risk apart; `worst` is the worst closet with its `latestReading`, `level`, `offline`, and `conditions` (null with no Devices); `days` is the last seven local days in `tz` (the server's zone by default; an unknown one is 422), oldest first, each with its bounds, `maxTempF` (null with no Readings), and `incident`, true when an incident overlapped it; today is `partial`. `lastIncident` is `{ongoing: true, start}` while one is open, else `{ongoing: false, end}` for the latest to close within the retention window, else null. `threshold` is the Hot warning line the server uses, for the chart, and `retentionDays` how far back Readings (and so the last incident) reach. The completed days' highs are reused for up to five minutes; today's are read on every request. Example below |
 | `POST /api/campuses` | Admin | `{name, shortcode}` → 201 Campus; 409 when the shortcode exists |
 | `DELETE /api/campuses/:id` | Admin | 204; 409 while the Campus still has Devices |
 | `GET /api/devices` | none | `[{id, hostname, closet, campus}]` by Campus name, then closet |
@@ -215,6 +215,7 @@ An overview with one Campus, trimmed to two of its seven days:
 {
   "timeZone": "America/Chicago",
   "threshold": { "name": "Hot", "level": "warning", "tempF": 82 },
+  "retentionDays": 90,
   "campuses": [
     {
       "id": 1, "name": "Riverside High School", "shortcode": "RHS", "closets": 8, "level": "critical",

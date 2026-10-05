@@ -5,6 +5,7 @@ import { Link, useLocation } from 'react-router-dom'
 import {
   Settings2,
   LayoutDashboard,
+  Building2,
   Clock,
   MonitorCog
 } from "lucide-react"
@@ -36,6 +37,12 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       url: "/",
       icon: LayoutDashboard,
       isActive: location.pathname === "/",
+    },
+    {
+      title: "Campuses",
+      url: "/campuses",
+      icon: Building2,
+      isActive: location.pathname === "/campuses",
     },
     {
       title: "Incidents",
