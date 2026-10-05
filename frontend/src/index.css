@@ -152,15 +152,58 @@
   }
 }
 
-/* Reduced motion: every animation and transition completes at once. Crossfades driven by
-   framer-motion keep their opacity change (MotionConfig reducedMotion="user" in App.tsx). */
+/* The Report hairline on a Device card: a line over the footer's top border that empties
+   across the Report interval. Started once per Reading with a negative delay (ReportHairline.tsx);
+   a transform, so sixty of them cost the compositor and not the main thread. */
+@keyframes report-deplete {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+.report-depletion {
+  animation-name: report-deplete;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
+
+/* Card to History and back (lib/card-morph.ts): the Closet name, Campus and temperature travel
+   between the card and History's header on an expo ease; the old page fades out quickly under
+   them while the new one fades in with its own route fade. */
+::view-transition-group(device-closet),
+::view-transition-group(device-campus),
+::view-transition-group(device-temp) {
+  animation-duration: 440ms;
+  animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+::view-transition-old(root) {
+  animation: 140ms cubic-bezier(0.22, 1, 0.36, 1) both view-fade-out;
+}
+::view-transition-new(root) {
+  animation: none;
+}
+@keyframes view-fade-out {
+  to { opacity: 0; }
+}
+
+/* Reduced motion: nothing moves. Animations complete at once, except the few marked
+   data-reduced="fade" that only change opacity (a Reading landing). Transitions keep their
+   colour and opacity changes, so a border, a badge or a note still crossfades into its new
+   state, and drop everything spatial. framer-motion runs under MotionConfig reducedMotion="user"
+   (App.tsx), which drops transforms and layout moves and keeps fades; the view transition and the
+   escalation trace are not started at all. */
 @media (prefers-reduced-motion: reduce) {
-  *,
+  *:not([data-reduced="fade"]),
   ::before,
   ::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+  }
+  *,
+  ::before,
+  ::after {
+    transition-property: color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, opacity !important;
     scroll-behavior: auto !important;
+  }
+  .report-depletion {
+    display: none;
   }
 }
