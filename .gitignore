@@ -45,3 +45,4 @@ desktop.ini
 # Review screenshots stay local
 .scratch/rebuild/reviews/ui/
 .scratch/design/motion/
+.scratch/design/comps/bundle/
