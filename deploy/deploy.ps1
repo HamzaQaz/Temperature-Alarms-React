@@ -20,7 +20,7 @@ $ExamplePath = Join-Path $RepoDir '.env.example'
 $BackupDir = Join-Path $RepoDir 'backups'
 $DbName = 'temperature_alarms'
 $Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD')
-$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE')
+$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE')
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
 # repeated deploy leaves the running containers alone instead of recreating them.
 if (-not $env:BUILDX_NO_DEFAULT_ATTESTATIONS) { $env:BUILDX_NO_DEFAULT_ATTESTATIONS = '1' }
@@ -84,7 +84,8 @@ Options:
   -p, --project NAME    Compose project name; default is Compose's own (the folder name), which
                         names the database volume, so keep it for an existing install
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
-      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy)
+      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
+                        TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
       --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
@@ -237,10 +238,27 @@ function Protect-EnvFile {
     else { & chmod 600 $EnvPath }
 }
 
+# TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
+# Never /0: trusting every address would let any client write its own X-Forwarded-For.
+# frontend/real-ip.sh checks the same at container start.
+function Test-TrustProxy([string]$Value) {
+    if (-not $Value) { return $true }
+    if ($Value -notmatch '^[0-9A-Za-z.:/, ]*$') { return $false }
+    foreach ($entry in ($Value -split '[, ]+' | Where-Object { $_ })) {
+        if ($entry -match '/0$') { return $false }
+        if ($entry -eq 'gateway') { continue }
+        if ($entry -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$') { return $false }
+    }
+    return $true
+}
+
 function Test-Setting([string]$Key, [string]$Value) {
     switch ($Key) {
         'WEB_PORT' { return $Value -match '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' }
+        'TRUST_PROXY' { return Test-TrustProxy $Value }
         'LEGACY_TIME_ZONE' { return ($Value -eq '') -or ($Value -match '^[A-Za-z0-9_/+:-]+$') }
+        # MySQL's size syntax: bytes, or a whole number of K, M, or G.
+        'DB_BUFFER_POOL_SIZE' { return ($Value -eq '') -or ($Value -cmatch '^[1-9][0-9]*[KMG]?$') }
         default { return $Value -match '^[0-9]+$' }
     }
 }
@@ -253,7 +271,7 @@ function Set-FlagsInEnv {
     foreach ($kv in $O.Sets) {
         $key = $kv.Split('=', 2)[0]
         $value = if ($kv.Contains('=')) { $kv.Split('=', 2)[1] } else { '' }
-        if ($key -notin (@('WEB_PORT') + $Tunables)) { Fail "--set: $key is not a setting this script manages (WEB_PORT $($Tunables -join ' '))" }
+        if ($key -notin (@('WEB_PORT', 'TRUST_PROXY') + $Tunables)) { Fail "--set: $key is not a setting this script manages (WEB_PORT TRUST_PROXY $($Tunables -join ' '))" }
         if (-not (Test-Setting $key $value)) { Fail "--set: '$value' is not valid for $key" }
         Set-EnvValue $key $value; Ok "$key=$value"
     }
@@ -268,6 +286,19 @@ function Read-Tunables {
         Warn "'$value' is not PORT or ADDR:PORT"
     }
     Set-EnvValue 'WEB_PORT' $value
+    # Behind a TLS proxy every browser arrives from the proxy's address, so the per-address
+    # limits would count them all as one unless nginx is told to trust the proxy.
+    $current = Get-EnvValue 'TRUST_PROXY'
+    if (Confirm-Choice 'Is a TLS proxy (Caddy, nginx) in front of this stack?' ([bool]$current)) {
+        if (-not $current) { $current = 'gateway' }
+        while ($true) {
+            $value = Ask 'Proxy address(es) to trust: IP or CIDR, comma-separated; gateway = a proxy on this host' $current
+            if ($value -and (Test-Setting 'TRUST_PROXY' $value)) { break }
+            Warn "'$value' is not a list of IP addresses or CIDR ranges (or gateway)"
+        }
+        Set-EnvValue 'TRUST_PROXY' $value
+    }
+    elseif ($current) { Set-EnvValue 'TRUST_PROXY' '' }
     if (Confirm-Choice 'Change the alarm thresholds and retention from their defaults?' $false) {
         foreach ($k in $Tunables) {
             $current = Get-EnvValue $k
@@ -276,7 +307,7 @@ function Read-Tunables {
                 if (Test-Setting $k $value) { break }
                 Warn "'$value' is not valid for $k"
             }
-            if ($k -eq 'LEGACY_TIME_ZONE' -and -not $value) { continue }
+            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE') -and -not $value) { continue }
             Set-EnvValue $k $value
         }
     }
@@ -364,7 +395,7 @@ function Invoke-Preflight {
     $drive = (Get-Item -LiteralPath $RepoDir).PSDrive
     if ($drive -and $drive.Free) {
         $mb = [int]($drive.Free / 1MB)
-        if ($mb -lt 1024) { Bad "only $mb MB free on $($drive.Root); the first build needs about 2 GB"; $failed = $true }
+        if ($mb -lt 1024) { Bad "only $mb MB free on $($drive.Root); the first build needs about 3.5 GB"; $failed = $true }
         elseif ($mb -lt 5120) { Warn "$mb MB free on $($drive.Root); 5 GB leaves room for images and backups" }
         else { Ok "$mb MB free on $($drive.Root)" }
     }
@@ -451,6 +482,11 @@ function Invoke-Deploy {
     Assert-Secrets
     Invoke-MaybePull
     if (-not (Invoke-Preflight)) { Fail 'preflight failed; fix the [FAIL] lines above' }
+    # A plain `up --build` reuses whatever node and nginx base images are cached, so a server
+    # would never get their security patches; --pull checks for newer ones on every deploy.
+    Step 'Build with fresh base images (docker compose build --pull)'
+    Invoke-Dc build --pull
+    if ($LASTEXITCODE -ne 0) { Warn 'the build with --pull failed (no registry?); the next step builds from the local cache' }
     Step 'Build and start (docker compose up -d --build --wait)'
     Invoke-Dc up -d --build --remove-orphans --wait --wait-timeout 600
     if ($LASTEXITCODE -ne 0) {
@@ -523,11 +559,21 @@ function Invoke-Restore {
     if ($LASTEXITCODE -ne 0) { Fail 'could not copy the backup into the db container' }
     Invoke-Dc exec -T db gzip -t $tmp
     if ($LASTEXITCODE -ne 0) { Invoke-Dc exec -T db rm -f $tmp; Fail "$($O.File) is not a readable .sql.gz" }
-    try { Confirm-Typed "This replaces every table in the $(Get-ProjectName) database with $($O.File)." }
+    try { Confirm-Typed "This replaces the whole $(Get-ProjectName) database with $($O.File): every table, including any the backup does not have." }
     catch { Invoke-Dc exec -T db rm -f $tmp; throw }
     Invoke-Backup
     Ok "the current database is saved in $script:LastBackup"
     Invoke-Dc stop api
+    # Into an empty database, so a table the dump lacks (one a later version added) does not survive
+    # with rows from after the backup (.scratch/prodtest/resilience.md S5). The temperature user's
+    # grant is on the database name and survives the drop; the api's migrations recreate whatever
+    # newer tables the dump lacks, empty, when it starts.
+    Invoke-Dc exec -T db sh -c "MYSQL_PWD=`$MYSQL_ROOT_PASSWORD mysql -uroot -e 'DROP DATABASE IF EXISTS ``$DbName``; CREATE DATABASE ``$DbName``'"
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Dc exec -T db rm -f $tmp
+        Invoke-Dc up -d --wait api
+        Fail "could not empty the database before the restore; put the previous state back with: deploy.ps1 restore --file $script:LastBackup"
+    }
     Invoke-Dc exec -T db sh -c "gzip -dc $tmp | MYSQL_PWD=`$MYSQL_ROOT_PASSWORD mysql -uroot $DbName"
     $restored = $LASTEXITCODE
     Invoke-Dc exec -T db rm -f $tmp
@@ -594,6 +640,11 @@ function Invoke-Uninstall {
         Invoke-Dc down --rmi local --remove-orphans
         if ($LASTEXITCODE -ne 0) { Fail 'docker compose down failed' }
         Ok 'containers and built images removed; the database volume stays (--wipe deletes it)'
+    }
+    # A nightly backup of a removed stack fails every night; the task is the operator's to delete.
+    if ($IsWindows -ne $false -and (Get-Command schtasks.exe -ErrorAction SilentlyContinue)) {
+        schtasks.exe /Query /TN 'Temperature Alarms backup' *> $null
+        if ($LASTEXITCODE -eq 0) { Warn 'the nightly backup task is still scheduled; remove it with: schtasks /Delete /F /TN "Temperature Alarms backup"' }
     }
     Write-Host "  .env and backups\ are left in $RepoDir."
 }

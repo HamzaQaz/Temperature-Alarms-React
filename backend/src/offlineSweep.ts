@@ -20,19 +20,33 @@ export interface OfflineSweep {
   stop(): void;
 }
 
-type SweepDeps = Pick<RouteDeps, 'pool' | 'config' | 'sse' | 'now'>;
+type SweepDeps = Pick<RouteDeps, 'pool' | 'config' | 'sse' | 'now' | 'listening'>;
 
-/** One pass: open what is due and tell the dashboards. Returns how many incidents opened. */
-export async function runOfflineSweep({ pool, config, sse, now = () => new Date() }: SweepDeps): Promise<number> {
-  const changed = await sweepOffline(pool, { reportIntervalSeconds: config.reportIntervalSeconds, thresholds: config.thresholds }, now());
-  await broadcastIncidentChanges(pool, sse, changed);
-  return changed.length;
+/**
+ * One pass: open what is due and tell the dashboards. Returns how many incidents opened. A pass
+ * that fails tells `listening` the server may not be hearing Devices; the next one that reaches
+ * the database first tells it the server hears them again, so a Device's silence during the
+ * outage is not judged as its own (listening.ts).
+ */
+export async function runOfflineSweep({ pool, config, sse, now = () => new Date(), listening }: SweepDeps): Promise<number> {
+  try {
+    await pool.query('SELECT 1');
+    const at = now();
+    listening?.regained(at);
+    const changed = await sweepOffline(pool, { reportIntervalSeconds: config.reportIntervalSeconds, thresholds: config.thresholds }, at, listening?.since());
+    await broadcastIncidentChanges(pool, sse, changed);
+    return changed.length;
+  } catch (error) {
+    listening?.lost();
+    throw error;
+  }
 }
 
 /**
- * Run a pass every interval. The first waits one interval, so a backend restarted in under
- * that long does not open an Offline incident for every Device before it has had a chance to
- * hear from them. The timer never keeps the process alive on its own.
+ * Run a pass every interval. The first waits one interval. With `listening` from the process
+ * start, no Device is judged Offline until it has been silent a whole Offline window since the
+ * start, and no incident starts inside the server's own downtime (docs/adr/0006). The timer
+ * never keeps the process alive on its own.
  */
 export function startOfflineSweep(deps: SweepDeps, options: OfflineSweepOptions = {}): OfflineSweep {
   const { intervalMs = deps.config.reportIntervalSeconds * 1000, onError = (error) => console.error('offline sweep: pass failed:', error) } = options;

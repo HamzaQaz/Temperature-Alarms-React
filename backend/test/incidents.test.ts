@@ -1,7 +1,9 @@
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
-import { createTestPool, resetDatabase } from './helpers/database';
+import { createTestPool, resetDatabase, testDatabaseConfig } from './helpers/database';
+import { createPool } from '../src/db';
+import { createListening } from '../src/listening';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, asAdmin, errorOf, json, type Incident, type RecordedReading } from './helpers/api';
 import { subscribe, type SseClient } from './helpers/sse';
@@ -190,6 +192,17 @@ describe('incidents', () => {
       assert.deepEqual(closed.segments, [{ level: 'warning', start: offline.start, end: back.reading.recordedAt }]);
     });
 
+    test('a Reading stamped in the future by a clock step does not hide the silence from the sweep', async () => {
+      const device = await registerDevice();
+      const last = new Date(Math.floor((Date.now() - 5 * MINUTE) / 1000) * 1000);
+      await readingAt(device.id, last, 71, 44);
+      await readingAt(device.id, new Date(Date.now() + 60 * MINUTE), 71, 44);
+      assert.equal(await sweep(), 1);
+      const offline = await only();
+      assert.equal(offline.condition, 'Offline');
+      assert.equal(offline.peak.recordedAt, last.toISOString(), 'the last real Reading, not the future one');
+    });
+
     test('a Device back before the sweep caught its silence still gets the Offline stretch, already closed', async () => {
       const device = await registerDevice();
       // Offline began 9 seconds ago, inside the sweep's period, and no pass has run since.
@@ -225,6 +238,54 @@ describe('incidents', () => {
       } finally {
         job.stop();
       }
+    });
+
+    describe('the server\'s own downtime (resilience.md S2)', () => {
+      const whole = (ms: number) => new Date(Math.floor(ms / 1000) * 1000);
+
+      test('after a start, silence counts from the start: no incident until one Offline window later, and none starting before it', async () => {
+        const device = await registerDevice();
+        const started = whole(Date.now() - MINUTE);
+        await readingAt(device.id, new Date(started.getTime() - 4 * MINUTE), 71, 44);
+        const listening = createListening(started);
+        const sweepFrom = (now: Date) => runOfflineSweep({ pool, config: testConfig(), sse, now: () => now, listening });
+
+        assert.equal(await sweepFrom(new Date()), 0, 'the Device has had a minute, not an Offline window, to report since the start');
+        assert.equal(await sweepFrom(new Date(started.getTime() + OFFLINE_AFTER_MS)), 0);
+        const at = new Date(started.getTime() + OFFLINE_AFTER_MS + 1000);
+        assert.equal(await sweepFrom(at), 1, 'a Device still silent an Offline window after the start is Offline');
+        const offline = await only();
+        assert.equal(offline.start, at.toISOString(), 'it starts when the server could first have known, never inside its own downtime');
+        assert.ok(new Date(offline.start).getTime() >= started.getTime());
+      });
+
+      test('a failed pass followed by a good one restarts the count, as after a database outage', async () => {
+        const device = await registerDevice();
+        await readingAt(device.id, whole(Date.now() - 5 * MINUTE), 71, 44);
+        const listening = createListening(new Date(Date.now() - DAY_MS));
+        const unreachable = createPool({ ...testDatabaseConfig(), host: '127.0.0.1', port: 1 });
+        try {
+          await assert.rejects(runOfflineSweep({ pool: unreachable, config: testConfig(), sse, listening }));
+        } finally {
+          await unreachable.end();
+        }
+        const now = whole(Date.now());
+        assert.equal(await runOfflineSweep({ pool, config: testConfig(), sse, now: () => now, listening }), 0);
+        assert.equal(listening.since().getTime(), now.getTime());
+      });
+
+      test('a Device back right after a database outage gets no Offline stretch for it', async () => {
+        await server.close();
+        const listening = createListening(new Date(Date.now() - DAY_MS));
+        server = await startServer(pool, testConfig(), { sse, listening });
+        client = api(server);
+        const device = await registerDevice();
+        // Its last Reading went Offline 9 seconds ago, inside the outage; the db is back and this is the first Reading since.
+        await readingAt(device.id, whole(Date.now() - OFFLINE_AFTER_MS - 10_000), 71, 44);
+        listening.lost();
+        await postReading(72);
+        assert.deepEqual(await allIncidents(), []);
+      });
     });
 
     test('a Device that has never reported has no Offline incident', async () => {

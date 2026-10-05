@@ -315,6 +315,28 @@ describe('GET /api/dashboard', () => {
       assert.equal(entry.secondsSinceReading, 0);
       assert.equal(entry.online, true);
     });
+
+    // A host clock stepped forward stamps Readings hours ahead; once it steps back they must not
+    // stay "latest", or the card freezes and the Device never goes Offline until the clock catches up.
+    test('a Reading stamped an hour ahead by a clock step is passed over for the newest one not in the future', async () => {
+      const campus = await addCampus();
+      const device = await addDevice(campus.id, 'ESP_000001', 'IDF 1');
+      await readingAgedSeconds(device.id, 10, 74);
+      await readingAgedSeconds(device.id, -3600, 99);
+      const entry = await entryFor('ESP_000001');
+      assert.equal(entry.latestReading?.tempF, 74);
+      assert.equal(entry.secondsSinceReading, 10);
+    });
+
+    test('a Device whose only recent Reading is from the future is Offline once its real Readings age out', async () => {
+      const campus = await addCampus();
+      const device = await addDevice(campus.id, 'ESP_000001', 'IDF 1');
+      await readingAgedSeconds(device.id, 600, 72);
+      await readingAgedSeconds(device.id, -3600, 72);
+      const entry = await entryFor('ESP_000001');
+      assert.equal(entry.online, false);
+      assert.equal(entry.secondsSinceReading, 600);
+    });
   });
 
   test('the old /api/temperature/* and /api/history routes are gone', async () => {

@@ -9,6 +9,9 @@
 # .env.demo, so it never shares a database volume with a real install. By hand, the same is
 #   docker compose --env-file .env.demo -f compose.yaml -f compose.demo.yaml up -d --build
 # with .env.demo holding ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD, and WEB_PORT.
+#
+# db is compose.yaml's own, so the demo runs MySQL as production does: no binary log, a 512 MB
+# buffer pool (DB_BUFFER_POOL_SIZE in .env.demo to change it).
 
 name: temperature-alarms-demo
 
@@ -40,6 +43,11 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    # Like api: it writes nothing to disk and needs no capabilities.
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     logging:
       driver: json-file
       options:

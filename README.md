@@ -247,7 +247,7 @@ Tokens are sent as `Authorization: Bearer <token>`. The Admin token is the one t
 
 Browsers are accepted from the API's own origin, which is how the stack serves them, and from one more origin named in `CORS_ORIGIN` for a dev server on another port.
 
-Apart from Readings, which have the per-Device limit above, `/api/` allows 500 requests per 15 minutes per client address. The address is the one the stack's nginx saw: the backend trusts exactly one proxy hop. With another proxy in front, such as the TLS proxy in DEPLOYMENT.md, that address is the proxy's, so every browser shares one allowance.
+Apart from Readings, which have the per-Device limit above, `/api/` allows each client address 6,000 reads (GET and HEAD) and 500 other requests per 15 minutes. The reads are sized for about 30 open tabs behind one address: a Campuses tab, the busiest page, reloads at most every 10 seconds. The address is the one the stack's nginx saw: the backend trusts exactly one proxy hop. With another proxy in front, such as the TLS proxy in DEPLOYMENT.md, that address is the proxy's, so every browser shares one allowance, unless `TRUST_PROXY` in `.env` names the proxy. nginx then takes the browser's address from the proxy's `X-Forwarded-For` ([TLS in front of the stack](DEPLOYMENT.md#tls-in-front-of-the-stack)).
 
 ## Hardware
 
@@ -359,7 +359,7 @@ The Compose stack from the quick start is the deployment too, and deploying it i
 - **The deploy script.** On the server, `deploy/deploy.sh deploy --yes` (Linux, macOS) or `deploy\deploy.ps1 deploy --yes` (Windows Server) writes `.env` with generated secrets, builds and starts the stack, and checks it is healthy. Run either with no action for a menu that also upgrades, backs up, schedules a nightly backup, restores, shows the tokens and the `config.h` lines, and removes the stack. From one machine, `--host admin@server` (repeatable) or `--servers deploy/servers.txt` does the same on each server over ssh, each keeping its own `.env` and backups.
 - **Ask your Claude agent.** In Claude Code in this repo, say "set up the new server admin@server", "deploy this to admin@server", "upgrade", or "back up nightly"; the `deploy` skill drives the script, keeps the secrets out of the chat, and ends on the health check.
 
-A fresh Linux server (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora) needs only git and sudo:
+A fresh Linux server (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora) needs only git and sudo (on a minimal Debian or Ubuntu, such as a Proxmox CT, `sudo apt-get install -y git` first; see [Proxmox LXC](DEPLOYMENT.md#proxmox-lxc)):
 
 ```bash
 git clone <repo-url> temperature-alarms && cd temperature-alarms
@@ -370,7 +370,7 @@ cd temperature-alarms && deploy/deploy.sh deploy --yes
 
 From another machine, `deploy/deploy.sh deploy --bootstrap --host admin@server --yes` does both over ssh, with no git needed on the server first.
 
-[`DEPLOYMENT.md`](DEPLOYMENT.md) covers both, then the same steps by hand with `docker compose` as the fallback: first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, and the manual PM2 and nginx install for a server that cannot run Docker.
+[`DEPLOYMENT.md`](DEPLOYMENT.md) covers both, then the same steps by hand with `docker compose` as the fallback: first run and the end-to-end check, upgrades, backups and restore, migrating an old database in, TLS in front of the stack, what the stack hardens and what it needs from you, and the manual PM2 and nginx install for a server that cannot run Docker.
 
 ## License
 

@@ -1,0 +1,253 @@
+{
+  "updated": "Mon 05 Oct, 14:49",
+  "goal": "Fully test master for the production Proxmox LXC deploy: about 100 Devices, technicians and IT leadership.",
+  "master": "91288a5",
+  "agents": [
+    {
+      "name": "CT deploy test",
+      "what": "A fresh Debian 12 CT stand-in: bootstrap, deploy, backup and restore, cron, CT restart, demo, every test suite inside, the browser walk from the host, and the Proxmox LXC notes",
+      "state": "passed",
+      "result": "Every step passed in a fresh Debian 12 CT: bootstrap (twice), deploy in 2m26s, health from the host, backup and restore, a cron backup, the CT restart (back in 12 s with data), the demo beside the real install, legacy migration, uninstall. Suites inside the CT: backend 211, frontend 29, Python 53; browser walk 36/36.",
+      "report": ".scratch/rebuild/reviews/ct-test.md"
+    },
+    {
+      "name": "Security",
+      "what": "Tokens, rate limits, injection, XSS, headers and CSP, SSE limits, secrets, npm audit, container hardening",
+      "state": "passed",
+      "result": "No blockers. SQL injection, XSS via names, CORS, error leaks, token logging, and secrets in images, logs, and backups all pass. 5 backend fixes (test-first), and all npm advisories cleared. Backend 226/226.",
+      "report": ".scratch/prodtest/security.md"
+    },
+    {
+      "name": "Infra hardening",
+      "what": "Apply the security agent's nginx headers and CSP, compose read_only, cap_drop and no-new-privileges, and build --pull; then prove them in the CT stand-in (walk, 0 CSP violations, SSE, backup, demo, restart)",
+      "state": "passed",
+      "result": "Proven in a fresh CT: every security header, no nginx version, walk 36/36 with 0 CSP violations (real install and demo), stream caps at nginx and the API, backup and restore with read-only containers, planned and unplanned restarts healthy in under 15 s.",
+      "report": ".scratch/prodtest/security.md"
+    },
+    {
+      "name": "TRUST_PROXY",
+      "what": "Opt-in real-client addresses behind the documented TLS proxy, so per-address caps (20 dashboards) apply per browser, not district-wide. Proven end to end through Caddy, including a spoof attempt",
+      "state": "passed",
+      "result": "Proven through Caddy. Empty: as today. Set: 20 streams per browser. Spoofs stay capped (default Caddy, lax Caddy, direct to nginx). Bad values stop the container. Reads get 6000 per 15 min (Campuses tab: 93 reads per 15 min). Backend 228/228, walk 38/38 through Caddy.",
+      "report": ".scratch/prodtest/security.md"
+    },
+    {
+      "name": "Accessibility and browsers",
+      "what": "WCAG 2.2 AA on every page: axe in Chromium, Firefox, and WebKit, keyboard only, screen-reader semantics, 200 to 400% zoom, forced colours",
+      "state": "passed",
+      "result": "axe serious and critical nodes went from 279 to 0 in all 29 page states, in Chromium, Firefox, and WebKit. The keyboard-only walk is complete. Frontend 42 tests, walk 38/38.",
+      "report": ".scratch/prodtest/accessibility.md"
+    },
+    {
+      "name": "Perf fixes",
+      "what": "B1 (an overview query plus a covering index migration), S2 (db: binlog off, 512M pool), S3 (clock-step robustness), and the stream cap raised to 60 per address; then re-proven at scale",
+      "state": "passed",
+      "result": "At 26.2M rows: overview 28 s cold to 1.4 s (60 ms cached); ingest p99 with 4 Campuses tabs 26.8 s to 46 ms; DB CPU 240% to 4.7%. Index builds in about 33 s. Backup and restore work with binlog off. Streams 60 per address. Backend 245/245, frontend 45.",
+      "report": ".scratch/prodtest/perf.md"
+    },
+    {
+      "name": "Load and soak",
+      "what": "100 Devices plus 30 dashboards, then 300 and 60; 90 days of data (about 26 M rows); retention, backup, and restore timings",
+      "state": "passed, 1 blocker found",
+      "result": "Baseline (100 Devices, 30 dashboards, 15 min): 0 errors, 100% delivered, API p95 19-28 ms. No breaking point up to 1500 Devices. 90 days (26.2M rows): pages 15-30 ms, retention 8.2 s without stalling ingest, backup 31 s / 145 MB, restore 6 min. Blocker: the Campuses overview at 90 days.",
+      "report": ".scratch/prodtest/load.md"
+    },
+    {
+      "name": "Resilience and upgrade",
+      "what": "API, DB, and nginx kills; restarts; disk pressure; DST; a slow DB network; upgrade from fa39159 to master, rollback, restore, legacy migration",
+      "state": "passed, 1 blocker found",
+      "result": "All 7 drills: api 3.4 s, db 5.0 s, web 2.6 s, compose 6.3 s, reboot intact; 0 acknowledged Readings lost of 3,535; DST 8/8 in 6 zones. Upgrade fa39159 to master in 32.6 s (Devices down 6.4 s); rollback, forward, restore, and legacy migration all pass.",
+      "report": ".scratch/prodtest/resilience.md"
+    },
+    {
+      "name": "Final fixes and proof",
+      "what": "Resilience B1 and S1-S5 plus DB_BUFFER_POOL_SIZE, then the finished branch proven in the CT: walk, CSP, axe, a DB-outage drill, backup and restore, the 15-min baseline, restart, all suites",
+      "state": "running",
+      "result": "",
+      "report": ".scratch/prodtest/final.md"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "fixed",
+      "what": "uninstall left the schedule-backup crontab line, so a backup failed every night after an uninstall",
+      "from": "CT deploy test",
+      "status": "fixed in 001d650"
+    },
+    {
+      "severity": "note",
+      "what": "Proxmox: Docker 29 needs an ext4 or ZFS >= 2.2 CT root; it failed on overlay-on-overlay. The CT needs nesting=1,keyctl=1, 2 GiB RAM, 512 MiB swap, 2 cores, 16 GB disk",
+      "from": "CT deploy test",
+      "status": "documented in DEPLOYMENT.md"
+    },
+    {
+      "severity": "note",
+      "what": "Not provable in the stand-in: an unprivileged CT, AppArmor, ZFS/LVM-thin storage, the Proxmox firewall, a host reboot with onboot. Proxmox recommends a VM for Docker",
+      "from": "CT deploy test",
+      "status": "for the Proxmox agent"
+    },
+    {
+      "severity": "fixed",
+      "what": "Device-token guessing on POST /api/readings was unlimited; now capped at 100 failures per 15 min per address (successes never count, so a campus behind NAT is safe)",
+      "from": "Security",
+      "status": "fixed in 88f02b7"
+    },
+    {
+      "severity": "fixed",
+      "what": "Open SSE streams were unlimited (a file-descriptor exhaustion risk); now capped at 20 per address and 400 in all",
+      "from": "Security",
+      "status": "fixed in 88f02b7"
+    },
+    {
+      "severity": "fixed",
+      "what": "npm advisories: 4 high and 2 moderate in the backend (mysql2, an express-rate-limit IPv6 bypass, path-to-regexp), 8 high in the frontend (react-router and others)",
+      "from": "Security",
+      "status": "fixed in 88f02b7 (lockfiles)"
+    },
+    {
+      "severity": "fixed",
+      "what": "Missing nginx security headers and CSP; containers not read-only and not dropping capabilities",
+      "from": "Security",
+      "status": "fixed in 640f5dd, proven in the CT"
+    },
+    {
+      "severity": "note",
+      "what": "Upgrade: an install whose Admin and Device tokens are identical now refuses to start, with a clear error (deploy.sh always generates two)",
+      "from": "Security",
+      "status": "goes in the PR merge notes"
+    },
+    {
+      "severity": "note",
+      "what": "Token rotation: 25 boards on the old Device token behind one NAT hit the failure cap in about 2 minutes, which blocks re-flashed boards on that address for 15 min",
+      "from": "Coordinator",
+      "status": "goes in the PR merge notes"
+    },
+    {
+      "severity": "fixed",
+      "what": "Behind the documented TLS proxy, every browser shares the proxy's address, so only 20 live dashboards district-wide (and shared Device-token and API limits)",
+      "from": "Infra hardening",
+      "status": "fixed in 90ecb05"
+    },
+    {
+      "severity": "note",
+      "what": "Docker Desktop's VM went down at 17:15Z under the memory of 4 test stacks; everything recovered. On Proxmox, give the CT headroom above the 2 GiB floor",
+      "from": "Coordinator",
+      "status": "guards added: tests take turns, MySQL capped"
+    },
+    {
+      "severity": "fixed",
+      "what": "279 serious or critical axe nodes (tab aria-controls, an invalid dl, badge contrast, an unfocusable History scroller, the Select's aria-hidden)",
+      "from": "Accessibility",
+      "status": "fixed in dc7412d"
+    },
+    {
+      "severity": "fixed",
+      "what": "Focus was invisible in High Contrast and the ring was under 3:1; there was no skip link and no 404 page, focus was lost after navigation, the Dashboard said nothing to screen readers, the chart had no text equivalent, cards clipped at 320 px, and some targets were 32 px",
+      "from": "Accessibility",
+      "status": "fixed in dc7412d; DESIGN.md in the next commit"
+    },
+    {
+      "severity": "fixed",
+      "what": "The general API read limit (500 per address per 15 min) blanks pages for an office behind one NAT",
+      "from": "Accessibility",
+      "status": "fixed in 90ecb05"
+    },
+    {
+      "severity": "fixed",
+      "what": "An office of 30 tabs behind one NAT still hits the 20-streams-per-address cap. This is a capacity call",
+      "from": "TRUST_PROXY",
+      "status": "fixed in b1179df: 60 per address, at the api and nginx"
+    },
+    {
+      "severity": "fixed",
+      "what": ".env.example lacks the 3-line TRUST_PROXY block: your permission settings deny every .env* path to agents, so it is for you to add (optional; compose defaults it empty)",
+      "from": "TRUST_PROXY",
+      "status": "added after you allowed .env.* reads"
+    },
+    {
+      "severity": "fixed",
+      "what": "B1: the Campuses overview at 90 days scans the whole readings index: 28 s cold / 8.7 s cached; 4 open Campuses pages pushed ingest p99 to 26.8 s. The measured fix (a range query plus a covering index) gives 0.75 s",
+      "from": "Load",
+      "status": "fixed in b1179df, proven at 26.2M rows"
+    },
+    {
+      "severity": "fixed",
+      "what": "S1: the per-IP limit covered every read, so 8 Campuses tabs behind one IP got 429s",
+      "from": "Load",
+      "status": "already fixed by 90ecb05 (load tested the build before it)"
+    },
+    {
+      "severity": "fixed",
+      "what": "S2: MySQL writes ~3 GB of unused binary logs per 90 days and runs a 128 MB buffer pool",
+      "from": "Load",
+      "status": "fixed in b1179df, proven at 26.2M rows"
+    },
+    {
+      "severity": "fixed",
+      "what": "S3: a host clock step freezes the cards and locks Devices out of the per-Device limiter",
+      "from": "Load",
+      "status": "fixed in b1179df, proven at 26.2M rows"
+    },
+    {
+      "severity": "note",
+      "what": "Ingest p99 1.5 s at baseline was all COMMIT fsync on Docker Desktop's shared disk (31 ms when quiet); it will differ on the Proxmox disk",
+      "from": "Load",
+      "status": "measure on the real CT"
+    },
+    {
+      "severity": "blocker",
+      "what": "After a 90 s DB outage, every Device behind one address was locked out about 11 more minutes (1,303 Readings lost against 113 from the outage): the new Device-token failure cap counted abandoned requests as wrong guesses",
+      "from": "Resilience",
+      "status": "the final agent is fixing it"
+    },
+    {
+      "severity": "should-fix",
+      "what": "S1 the Dashboard stays on its error screen while Readings stream; S2 the Offline sweep backdates false incidents into server downtime; S3 nginx takes about 30 s to reconnect streams after an api restart; S4 health is green on a full disk; S5 restore leaves tables the dump lacks",
+      "from": "Resilience",
+      "status": "the final agent is fixing them"
+    }
+  ],
+  "changes": [
+    {
+      "commit": "001d650",
+      "what": "deploy.sh: uninstall removes its backup cron line; shellcheck 0.9 clean; preflight says 3.5 GB; the Proxmox LXC section in DEPLOYMENT.md"
+    },
+    {
+      "commit": "88f02b7",
+      "what": "Security: Device-token guess cap, SSE stream caps, X-Powered-By off, tokens must differ, npm advisories cleared"
+    },
+    {
+      "commit": "640f5dd",
+      "what": "Infra: nginx security headers and CSP, stream connection limit, 128k body cap, read-only containers with dropped capabilities, build --pull"
+    },
+    {
+      "commit": "dc7412d",
+      "what": "Accessibility fixes across every page, with axe and keyboard checks added to the e2e folder"
+    },
+    {
+      "commit": "DESIGN.md",
+      "what": "DESIGN.md records the focus ring, forced colours, skip link, 404, badge level, 320 px grid, and higher contrast"
+    },
+    {
+      "commit": "90ecb05",
+      "what": "TRUST_PROXY (nginx real-IP from the configured proxy only) and a separate 6000 per 15 min read allowance"
+    },
+    {
+      "commit": "env",
+      "what": ".env.example documents TRUST_PROXY"
+    },
+    {
+      "commit": "load",
+      "what": "Load test report and reusable scripts committed (.scratch/prodtest/load/)"
+    },
+    {
+      "commit": "b1179df",
+      "what": "Perf: covering index (migration 0006) and an IN-list overview, binlog off and a 512M pool, clock-step-proof limiter and card timing, 60 streams per address"
+    }
+  ],
+  "decisions": [
+    "Stack-heavy tests take turns, because Docker has about 6 GB.",
+    "Every fix is committed to a branch and goes to master by PR after you can see it.",
+    "Fixes collect on branch HamzaQaz/prod-hardening, in a draft PR to master."
+  ]
+}

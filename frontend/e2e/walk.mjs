@@ -280,6 +280,21 @@ await check('settings: Forget removes the token and the panel asks again', async
   await page.getByRole('button', { name: 'Forget' }).click();
   await page.getByText('Admin token needed').waitFor({ timeout: 5000 });
 });
+await check('a11y: Skip to content is the first Tab stop and lands on the page heading', async () => {
+  await page.goto(WEB + '/incidents');
+  await page.getByRole('heading', { name: 'Incidents', level: 1 }).waitFor();
+  await page.keyboard.press('Tab');
+  expect((await page.evaluate(() => document.activeElement.textContent)) === 'Skip to content', 'first stop is not the skip link');
+  await page.keyboard.press('Enter');
+  expect((await page.evaluate(() => document.activeElement.tagName + ' ' + document.activeElement.textContent)) === 'H1 Incidents', 'focus did not land on the h1');
+});
+await check('a11y: an unknown address is a titled Page not found with a way home', async () => {
+  await page.goto(WEB + '/no-such-page');
+  await page.getByRole('heading', { name: 'Page not found', level: 1 }).waitFor();
+  expect((await page.title()) === 'Page not found · Temperature Alarms', 'title: ' + (await page.title()));
+  await page.getByRole('link', { name: 'Go to the dashboard' }).click();
+  await page.getByRole('heading', { name: 'Dashboard', level: 1 }).waitFor();
+});
 await check('no server errors (5xx) and no console errors during the walk', async () => {
   expect(failedRequests.length === 0, 'server errors: ' + failedRequests.join(', '));
   const real = consoleErrors.filter((e) => !/401|403|404|409|422|429|Failed to load resource/.test(e));

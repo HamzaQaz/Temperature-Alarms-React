@@ -23,7 +23,7 @@ deploy/deploy.sh deploy --yes          # port 80, default thresholds, no questio
 deploy/deploy.sh schedule-backup       # optional: a backup every night at 02:00, a week kept
 ```
 
-`deploy/deploy.sh` with no action shows a menu instead. `bootstrap` supports Ubuntu, Debian, RHEL, Rocky Linux, AlmaLinux, CentOS Stream, and Fedora. On a server without git yet (a minimal RHEL-family install), `sudo dnf install git` first, or run `bootstrap` from another machine with `--host` (below), which needs no checkout. Elsewhere, install Docker with the Compose v2 plugin yourself: Docker Desktop on macOS and Windows, Docker running Linux containers on Windows Server. On Windows:
+`deploy/deploy.sh` with no action shows a menu instead. `bootstrap` supports Ubuntu, Debian, RHEL, Rocky Linux, AlmaLinux, CentOS Stream, and Fedora. On a server without git yet, install it first: `sudo apt-get update && sudo apt-get install -y git` on a minimal Debian or Ubuntu (a Proxmox CT template has none), `sudo dnf install git` on a minimal RHEL-family install; or run `bootstrap` from another machine with `--host` (below), which needs no checkout. Elsewhere, install Docker with the Compose v2 plugin yourself: Docker Desktop on macOS and Windows, Docker running Linux containers on Windows Server. On Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1                 # Windows PowerShell 5.1
@@ -41,10 +41,10 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 | `status`, `logs` | `docker compose ps` and the health check; recent logs (`--service api`, `--tail 500`, `--follow`) |
 | `backup` | `mysqldump` through the `db` container to `backups/<project>_<date>-<time>.sql.gz`, checked for completeness. `--keep-days N` then deletes this project's backups older than N days |
 | `schedule-backup`, `unschedule-backup` | Adds a line to your crontab that runs `backup --keep-days 7` every night at 02:00 (`--at HH:MM`, `--keep-days N`), logging to `backups/backup.log`; or removes it. Repeating `schedule-backup` replaces its own line, found by a `# temperature-alarms backup: <checkout>` comment, and other crontab lines are never touched. Linux and macOS; in Git Bash or `deploy.ps1` on Windows it prints the `schtasks` command for Task Scheduler instead |
-| `restore` | Replaces the database with a backup (`--file`, or pick from a list). Asks you to type the project name, and backs up the current database first |
+| `restore` | Replaces the whole database with a backup (`--file`, or pick from a list): it empties the database first, so a table the backup lacks does not survive it, and the api's migrations recreate any newer table, empty. Asks you to type the project name, and backs up the current database first |
 | `migrate-legacy` | Backs up, then runs `npm run migrate:legacy` in `api` (see [Migrating an old database in](#migrating-an-old-database-in)) |
 | `info` | The dashboard URL, the three secrets masked (`--reveal` to print them), and the two `config.h` lines for the firmware |
-| `stop`, `uninstall` | `docker compose stop`; `docker compose down` and the built images. `--wipe` also deletes the database volume, behind the typed project name |
+| `stop`, `uninstall` | `docker compose stop`; `docker compose down` and the built images, and the `schedule-backup` crontab line if there is one. `--wipe` also deletes the database volume, behind the typed project name. `.env` and `backups/` stay |
 
 Running `deploy` twice is safe: an unchanged checkout leaves the containers running, and a changed one rebuilds and recreates only what changed. The destructive actions take `--confirm <project>` in place of typing the name, so they can be scripted too. The database volume is named after the Compose project, `<project>_db-data`, and the project is Compose's own default, the checkout's folder name. On first install the script writes that name into `.env` as `COMPOSE_PROJECT_NAME`, so renaming or moving the folder later still finds the same volume; it never rewrites the line. Pass `-p` only for a second stack on the same machine, and never to an existing install. An install made by hand before the script has no such line and keeps using the folder name; see [Docker Compose by hand](#docker-compose-by-hand) to pin it.
 
@@ -69,6 +69,41 @@ On each server it connects with plain `ssh`, clones the repo into `~/temperature
 `bootstrap` with `--host` or `--servers` copies `deploy.sh` to each server on its own and runs it there, so a server with no git and no checkout can be prepared from here. `deploy --bootstrap` runs `bootstrap` and then the deploy on each server; each is its own ssh login, so the deploy already has the new `docker` group. `sudo` on the server asks for your password when you run from a terminal; unattended (`--yes` from a script or an agent), the login needs passwordless sudo, and without it `bootstrap` stops and says so.
 
 Apart from `bootstrap`, the servers need git, Docker with Compose v2, and a login that can run `docker` (in the `docker` group), which is what `bootstrap` sets up. Key-based ssh saves typing a password per server; extra ssh options go in `--ssh-opts "-p 2222 -i ~/.ssh/district"` or `DEPLOY_SSH_OPTS`. `deploy.ps1` takes the same `--host`, `--servers`, and `--bootstrap` flags and uses the OpenSSH client built into Windows. The remote side is always `deploy.sh`, so the targets are Linux or macOS servers; for a Windows server, run `deploy.ps1` on it.
+
+### Proxmox LXC
+
+The deploy script runs in a Proxmox container (CT) the same way as on any Debian server, provided the CT can run Docker. This was tested end to end on a stand-in, not on Proxmox itself: a `debian:12` container with systemd as PID 1, run privileged under Docker Desktop (WSL2 kernel 6.18, cgroup v2). Everything below the "Not proven" list is what that run showed.
+
+CT settings:
+
+- **Template and features**: `debian-12-standard`, with `features: nesting=1,keyctl=1` (Options, Features: Nesting and keyctl). Nesting is what lets Docker run inside; Proxmox applies keyctl only to an unprivileged CT.
+- **Privileged or unprivileged**: the stand-in was privileged with the host's cgroup namespace, the closest match to a privileged CT, and everything passed. An unprivileged CT with nesting and keyctl is the usual community setup for Docker and is not proven here (see below). Proxmox's own documentation recommends a VM for application containers such as Docker; a small Debian VM runs this stack with the same commands and none of the caveats below.
+- **Storage**: Docker 29 on a fresh install keeps images in containerd's store with the `overlayfs` snapshotter (`docker info` shows `Storage Driver: overlayfs`, `driver-type: io.containerd.snapshotter.v1`). It worked with `/var/lib/docker` and `/var/lib/containerd` on ext4. It failed on a root that is itself overlayfs, at the first `docker run`: `failed to mount ... fstype: overlay ... err: invalid argument`. A CT root on LVM-thin or a directory store is ext4 and fine. On ZFS, overlayfs needs ZFS 2.2 or newer (Proxmox VE 8.1 and later); on older ZFS, give the CT a mount point on ext4 for `/var/lib/containerd` and `/var/lib/docker`. Neither fuse-overlayfs nor vfs was needed.
+- **Clock**: a CT has no clock of its own; it reads the Proxmox host's. Let the host slew its clock rather than step it: Proxmox VE runs chrony, so check that `/etc/chrony/chrony.conf` on the host has `makestep 1 3` (step only in the first three updates after boot) and nothing that steps later. In the load test a 5-hour step lasting 12 seconds stamped Readings 5 hours ahead. The stack now passes over Readings stamped more than 5 minutes ahead and times its rate limits and the browser's ages on monotonic clocks, so a step no longer freezes cards or locks Devices out, but the Readings stamped during it still carry the wrong time.
+- **Resources**: the running stack uses about 640 MiB on a new install (MySQL about 500, the API about 120, nginx about 10). MySQL grows to about 1 GiB as its 512 MB buffer pool fills, which at 100 Devices takes a few weeks of Readings (see [Database settings and sizing](#database-settings-and-sizing)). The whole CT peaked at about 1.3 GiB during a first build with no cache. After the first deploy, Docker's stores held 3.4 GB (`/var/lib/containerd` 2.1 GB, `/var/lib/docker` 1.3 GB, of which 0.8 GB is build cache), on top of about 1.5 GB for Debian, Docker's packages, and the clone. Give the CT 3 GiB of memory, 512 MiB of swap, 2 cores, and a 24 GB disk: a running stack of about 1.1 GiB plus an upgrade's build of about 1.3 GiB, and 90 days of Readings for 100 Devices (about 3 GB) plus a week of nightly backups (about 1 GB) on top of the 5 GB above, with room for upgrades. 2 GiB and 16 GB are enough for the first weeks. For 300 Devices, 4 GiB with `DB_BUFFER_POOL_SIZE=1G` (`deploy.sh install --set DB_BUFFER_POOL_SIZE=1G --reconfigure`) and 32 GB. The rule behind these: MySQL takes about `DB_BUFFER_POOL_SIZE` plus 400 MiB, the api and nginx about 150 MiB, and an upgrade's build about 1.3 GiB on top while it runs. A first build took 3 minutes on 12 cores; fewer cores take longer.
+
+The exact sequence, as the CT's sudo user (`admin` here), from a fresh debian-12 CT:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/HamzaQaz/Temperature-Alarms-React.git temperature-alarms
+cd temperature-alarms
+deploy/deploy.sh bootstrap             # Docker 29 from Docker's apt repository, cron, the docker group
+exit                                   # log in again, so the docker group applies
+cd temperature-alarms
+deploy/deploy.sh deploy --yes          # port 80
+deploy/deploy.sh info                  # the URL and config.h lines; --reveal for the tokens
+deploy/deploy.sh schedule-backup --yes # nightly at 02:00, a week kept
+```
+
+What the run showed: `bootstrap` installs and enables Docker, containerd, and cron, and a second run changes nothing. A restart of the CT brings the stack back on its own, healthy and with its data, in about 12 seconds, because `docker` is enabled and every service restarts unless stopped. The cron line fires and writes a backup. `deploy.sh demo --web-port 8091` runs beside the real install on its own volume without touching it. `--at` is the CT's local time, and a fresh CT's clock is UTC, so the default 02:00 is 02:00 UTC; set the zone first (`sudo timedatectl set-timezone America/Chicago && sudo systemctl restart cron`) for a local 02:00. The stack itself runs in UTC either way. `info` reports the CT's own address, the one Devices and browsers use when the CT is on a bridge to the LAN.
+
+Not proven by the stand-in, so check these on the real CT:
+
+- An unprivileged CT. Its uid mapping and AppArmor confinement are where Docker inside LXC most often fails. If `docker run` fails there with `permission denied` from AppArmor or on a sysctl, the stand-in, which had no AppArmor, could not have shown it; try a privileged CT, or ask before relaxing the CT's AppArmor profile.
+- ZFS or LVM-thin storage, and the snapshotter on them (the stand-in's Docker stores were on ext4 volumes).
+- The Proxmox kernel, the Proxmox firewall, and the bridge: the stand-in published port 80 through Docker, not through `vmbr0`. Check `http://<CT address>/api/health` from another machine on the LAN.
+- Starting with the Proxmox host: set the CT to start at boot (`onboot: 1`); the stand-in only restarted the CT, not a host.
 
 ## Ask your Claude agent
 
@@ -115,7 +150,7 @@ Set the three secrets; `docker compose up` refuses to start and names any that i
 | `DEVICE_TOKEN` | The secret every Device sends with every Reading. Generate another one; it goes into each board's `config.h`, so rotating it means reflashing every Device (ADR 0003) |
 | `DB_PASSWORD` | The password of the database user, and of MySQL root inside the stack. Generate a third one; nothing outside the stack can reach the database |
 
-`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). `.env` is gitignored.
+`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. `TRUST_PROXY` stays empty unless a TLS proxy sits in front of the stack ([TLS in front of the stack](#tls-in-front-of-the-stack)). Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). `.env` is gitignored.
 
 ### First run
 
@@ -165,11 +200,19 @@ Once a day, and once at every start, the backend deletes Readings older than `RE
 
 ```bash
 git pull
+docker compose build --pull       # newer node and nginx base images, for their security patches
 docker compose up -d --build
 docker image prune -f             # drop the previous images
 ```
 
 Compose rebuilds what changed and recreates only those containers. New schema migrations run on the first start of the new `api`, and the data on the volume is untouched. A change to `.env` needs `docker compose up -d` as well; Compose recreates the containers whose environment changed. Run every upgrade from the same folder, or with `COMPOSE_PROJECT_NAME` set as described above: a stack first started from a differently named folder keeps its old volume name, and `docker volume ls` shows which one holds the data.
+
+An upgrade that adds an index to `readings` takes `api` off the air while it builds, since migrations run before it listens: migration `0006-readings-covering-index` took 33 s at 26 M Readings (90 days of 100 Devices), so each Device misses about one Reading. To lose none, build it first by hand while the old `api` keeps serving; MySQL builds it online, ingest kept working throughout (all 201s, p99 0.36 s during the 32 s build), and the migration then finds it done:
+
+```bash
+set -a; source .env; set +a
+docker compose exec db mysql -uroot -p"$DB_PASSWORD" temperature_alarms -e "ALTER TABLE readings ADD INDEX ix_readings_device_recorded_temp (device_id, recorded_at, id, temp_f), DROP INDEX ix_readings_device_recorded, ALGORITHM=INPLACE, LOCK=NONE"
+```
 
 The migration runner holds a MySQL lock while it works, so a second runner, such as `npm run migrate:legacy` started while `api` is still converting a large old database, waits for the first to finish. After ten minutes it gives up with `Another migration run still holds the lock`; run it again once the first has finished.
 
@@ -203,11 +246,32 @@ Restore into a running stack (the `-T` matters, it lets the file stream in). Eve
 ```bash
 set -a; source .env; set +a
 docker compose stop api
+docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" -e 'DROP DATABASE temperature_alarms; CREATE DATABASE temperature_alarms'
 gunzip -c backup_20260909_020000.sql.gz | docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" temperature_alarms
 docker compose start api
 ```
 
+The drop and create matter: a dump replaces only the tables it holds, so without them a table added after the backup (the incident log, for one) would keep rows from after the backup point, pointing at Readings that are gone. The `temperature` user's grant survives the drop, and the api recreates any table the dump lacks, empty, when it starts.
+
 To move to another machine, copy the repo, the `.env`, and a dump; `up -d --build` there, then restore. Keep `COMPOSE_PROJECT_NAME` in the copied `.env`, or clone into a folder of the same name, so the new machine's volume has the name the old one had.
+
+### Database settings and sizing
+
+`compose.yaml` starts MySQL with two settings of its own (the `command:` of `db`):
+
+- **`--disable-log-bin`: no binary log.** Nothing replicates from this database and there is no point-in-time recovery: the backups are the `mysqldump` files above, and a restore brings back the moment of the dump, no later. MySQL 8.4 writes a binary log by default and keeps 30 days of it; nothing here read it, yet each Reading paid a second fsync for it (a commit took 3.75 ms with it and 1.72 ms without), and it held about 3 GB at 100 Devices, plus a full copy of every restored dump. `deploy.sh backup` and `restore` work the same without it (they use `mysqldump --single-transaction`, which needs no binary log). If you ever add a replica or want point-in-time recovery, remove the flag and plan the disk for the log.
+- **`--innodb-buffer-pool-size=512M`**, where MySQL's default is 128 MB. The Campuses overview reads a week of every Device's Readings; with 128 MB that week did not stay in memory and the page took seconds at 90 days. 512 MB holds it for 100 Devices with room to spare. Set `DB_BUFFER_POOL_SIZE` (for example `1G` for 300 Devices or more, on a CT with 4 GiB) with `deploy/deploy.sh install --set DB_BUFFER_POOL_SIZE=1G --reconfigure` and then `deploy/deploy.sh deploy`, or in `.env` followed by `docker compose up -d`. MySQL uses about the pool plus 400 MiB, so every step up in the pool is the same step up in the CT's memory.
+
+What to plan for, measured with 100 Devices posting every 30 seconds and 90 days kept (26 M Readings):
+
+| | 100 Devices | Each further 100 |
+|---|---|---|
+| MySQL memory | about 470 MiB on a new install, growing to about 1 GiB as the buffer pool fills | the same with 512M; raise `DB_BUFFER_POOL_SIZE` past 300 |
+| `readings` on disk at 90 days | about 3.0 GB (table 1.2 GB, indexes 1.8 GB) | about 3 GB |
+| One backup (`backups/*.sql.gz`) | about 150 MB, taking 30 s | about 150 MB |
+| Restore of that backup | about 4.5 minutes, the api down throughout | proportionally longer |
+
+Readings keep arriving for the first 90 days and then level off, since the retention job removes what is older.
 
 ### Migrating an old database in
 
@@ -220,7 +284,7 @@ A database from the PHP era or the first Node backend holds `devices`, `location
    ```
 
 1. Dump the old database on the old server: `mysqldump temperature_alarms > old.sql`.
-2. In `.env`, set `LEGACY_TIME_ZONE=America/Chicago`, the zone the old writer used. The container's own zone is UTC, so the default would parse every old timestamp six hours wrong. (`deploy/deploy.sh install --yes --set LEGACY_TIME_ZONE=America/Chicago` writes a new `.env` with it.)
+2. In `.env`, set `LEGACY_TIME_ZONE=America/Chicago`, the zone the old writer used. The container's own zone is UTC, so the default would parse every old timestamp six hours wrong. (`deploy/deploy.sh install --yes --set LEGACY_TIME_ZONE=America/Chicago` writes a new `.env` with it; when `.env` already exists, add `--reconfigure`, which sets that one line and keeps the secrets.)
 3. Start only the database and restore into it:
 
    ```bash
@@ -284,7 +348,38 @@ With nginx and certbot instead, follow steps 5 and 6 of the [manual install](#5-
 
 No Device needs to change at certificate renewal: one with an `https://` server URL sends over TLS without checking the certificate (see the firmware section of the README). One with `http://YOUR_DOMAIN`, or `http://` and the server's address, keeps posting over plain HTTP through the blocks above; with the stack on `127.0.0.1:8080`, the proxy is now the only way in.
 
-Behind this proxy there are two hops, the proxy and the stack's own nginx, and the backend trusts one (`trust proxy` is 1). It sees every request as coming from the host proxy, so the general limit of 500 API requests per 15 minutes per address (Readings have their own per-Device limit and are not counted) is shared by every browser together. A handful of open dashboards stays far below it. If browsers start getting 429s, that shared allowance is the cause.
+#### Client addresses behind the proxy: `TRUST_PROXY`
+
+Behind the proxy, every browser and every Device reaches the stack's nginx from the proxy's one address. Per-address limits then count the whole district as one client:
+
+- the cap of 60 open live streams per address, one per open Dashboard or Campuses tab, which both nginx and the backend apply (and 400 in all, in the backend). The 61st tab open anywhere gets a 429 for its stream, shows Reconnecting, and tries again every 5 seconds until another tab closes. The load test held 60 streams with the stream adding 1 to 2 ms to each Reading's delivery.
+- the general limits per 15 minutes: 6,000 reads (GET), which about 30 open tabs stay well under (a Campuses tab, the busiest, makes about 90), and 500 changes (everything else; Readings have their own per-Device limit and are not counted). An office of browsers behind one NAT address shares these too, with or without the proxy.
+- the cap of 100 wrong Device tokens per 15 minutes. Past it, every Reading from that address is refused, even with the right token. A few boards still flashed with an old token would then stop every Device behind the proxy from recording.
+
+Set `TRUST_PROXY` in `.env` to the proxy's address, then run `docker compose up -d`, which recreates only `web`. nginx then takes the client from the proxy's `X-Forwarded-For`, and each browser and Device counts on its own:
+
+| Where the proxy runs | `TRUST_PROXY` |
+| --- | --- |
+| On this host, as above (Caddy or nginx proxying to `127.0.0.1:8080`) | `gateway`. A host proxy reaches the container through the Docker network's gateway; nginx looks that address up when it starts |
+| On another machine, or in a container on the stack's network | Its IP address, or several, comma-separated: `10.20.0.5,10.20.0.6`. CIDR ranges work too: `10.20.0.0/29` |
+
+Leave it empty with no proxy in front. That is the default, and nginx then counts the address it sees, as without the setting. `deploy/deploy.sh install` asks for the value only when you say a proxy is in front; non-interactively, use `--set TRUST_PROXY=gateway` (with `--reconfigure` on an existing `.env`). `docker compose logs web` shows what nginx trusts, as a line starting `real-ip:`.
+
+nginx believes `X-Forwarded-For` only on connections from the addresses you list. It reads the header from the right and stops at the first address it does not trust, so a value a browser wrote itself is ignored, and so is any request that skips the proxy. The backend trusts one hop, the stack's nginx, so it sees the address nginx settled on. Never list an address that ordinary clients connect from, such as the LAN's whole range when `WEB_PORT` is open to the LAN. Anyone at a listed address can claim to be any client. `0.0.0.0/0` is refused for that reason, and so is any value that is not an address: `web` does not start and its log says why.
+
+### Security
+
+What the stack does by itself:
+
+- nginx sends a Content-Security-Policy (scripts, styles, fetches, and the live stream only from the site's own origin; no framing), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, and a Permissions-Policy, and does not name its version. The headers live in `frontend/security-headers.conf`. Add `Strict-Transport-Security` at the TLS proxy, not there.
+- `api` and `web` run with a read-only root filesystem (only `/tmp` is writable), no Linux capabilities, and `no-new-privileges`; `db` keeps only the five capabilities its entrypoint needs to hand the data directory to the mysql user. A shell from `docker compose exec` in those containers cannot write outside `/tmp`, which is expected.
+- Only `web` is published; the database and the backend are not reachable from outside the host.
+
+What it needs from you:
+
+- **Keep technicians out of the `docker` group.** The secrets are environment variables, so `docker inspect` shows them, and the group is root on the host anyway. Give technicians the dashboard, and the Admin token if they manage Campuses and Devices.
+- **Put the boards on their own VLAN or SSID with client isolation** when Devices post over plain HTTP. Anyone who can see a board's traffic can read the Device token, and with it post false Readings (it cannot change Campuses or Devices, or read anything the dashboard does not already show). A Device with an `https://` server URL sends over TLS instead (see TLS in front of the stack).
+- Run every upgrade through `deploy.sh deploy` or with `docker compose build --pull` first, so the base images pick up their security patches.
 
 ## Upgrading a database from the old per-Device tables
 

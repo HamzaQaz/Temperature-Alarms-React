@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { describeError } from '@/api';
+import { coalesce } from '@/lib/reload';
 
 export type ResourceState<T> =
   | { status: 'loading' }
@@ -15,6 +16,7 @@ export type ResourceState<T> =
  * `load` must be a stable function (a module-level API call, not an inline closure).
  * `initial`, when given, is shown at once (data kept from an earlier visit) and refreshed
  * by the first load like any reload, so a page returned to never flashes its skeleton.
+ * Reloads are coalesced: one in flight and at most one queued behind it (lib/reload.ts).
  */
 export function useResource<T>(load: () => Promise<T>, initial?: T): {
   state: ResourceState<T>;
@@ -33,7 +35,7 @@ export function useResource<T>(load: () => Promise<T>, initial?: T): {
     setState((current) => (current.status === 'ready' ? { status: 'ready', data: change(current.data) } : current));
   }, []);
 
-  const reload = useCallback(async () => {
+  const run = useCallback(async () => {
     const id = ++latest.current;
     const changes: Array<(data: T) => T> = [];
     inFlight.current = changes;
@@ -49,6 +51,7 @@ export function useResource<T>(load: () => Promise<T>, initial?: T): {
       if (inFlight.current === changes) inFlight.current = null;
     }
   }, [load]);
+  const reload = useMemo(() => coalesce(run), [run]);
 
   useEffect(() => {
     void reload();

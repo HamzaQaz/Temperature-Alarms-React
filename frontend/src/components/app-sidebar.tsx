@@ -61,10 +61,13 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
   return (
     <Sidebar variant="inset" collapsible="icon" {...props}>
        <SidebarHeader>
+        {/* The site's name: the page's banner landmark (the header inside main is the page's own). */}
+        <header>
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton size="lg" asChild>
-              <a href="#">
+              {/* The district's mark goes home, as a site's name does; it is the one link outside the Pages list. */}
+              <Link to="/" aria-label="Celina ISD Temperature Monitor, home" onClick={() => setOpenMobile(false)}>
                 <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
                   <MonitorCog className="size-4" />
                 </div>
@@ -72,10 +75,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   <span className="truncate font-medium">Celina ISD</span>
                   <span className="truncate text-xs">Temperature Monitor</span>
                 </div>
-              </a>
+              </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
+        </header>
       </SidebarHeader>
       <SidebarContent>
         <nav aria-label="Pages">
@@ -83,7 +87,7 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
       {navItems.map((item) => (
         <SidebarMenuItem key={item.title}>
           <SidebarMenuButton asChild isActive={item.isActive}>
-            <Link to={item.url} onClick={() => setOpenMobile(false)}>
+            <Link to={item.url} aria-current={item.isActive ? 'page' : undefined} onClick={() => setOpenMobile(false)}>
               <item.icon />
               <span>{item.title}</span>
             </Link>
@@ -94,10 +98,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         </nav>
       </SidebarContent>
       <SidebarFooter>
-        {/* Plain text, not a button: there is nothing here to press. */}
-        <p className="truncate px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+        {/* Plain text, not a button: there is nothing here to press. A footer, so it sits in a landmark. */}
+        <footer className="truncate px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
           {new Date().getFullYear()} ©
-        </p>
+        </footer>
       </SidebarFooter>
       <SidebarRail />
     </Sidebar>

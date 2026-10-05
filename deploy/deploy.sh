@@ -16,7 +16,7 @@ ENV_FILE=".env"
 BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
 SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD"
-TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE"
+TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE"
 # The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
 DEMO_PROJECT="temperature-alarms-demo"
 DEMO_ENV=".env.demo"
@@ -107,7 +107,8 @@ Options:
   -p, --project NAME    Compose project name; default is Compose's own (the folder name), which
                         names the database volume, so keep it for an existing install
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
-      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy)
+      --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
+                        TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
       --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
@@ -129,7 +130,7 @@ Remote (runs this script on each server over ssh; each keeps its own .env and ba
 EOF
 }
 
-need_value() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
+need_value() { if [ $# -lt 2 ] || [ -z "$2" ]; then die "$1 needs a value"; fi; }
 
 parse_args() {
   while [ $# -gt 0 ]; do
@@ -246,17 +247,34 @@ lock_env() {
   is_windows_shell || chmod 600 "$ENV_FILE"
 }
 
+# TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
+# Never /0: trusting every address would let any client write its own X-Forwarded-For.
+# frontend/real-ip.sh checks the same at container start.
+valid_trust_proxy() {
+  local entry
+  [ -n "$1" ] || return 0
+  # Only address characters, so the unquoted split below cannot glob.
+  printf '%s' "$1" | grep -Eq '^[0-9A-Za-z.:/, ]*$' || return 1
+  for entry in $(printf '%s' "$1" | tr ',' ' '); do
+    case "$entry" in */0) return 1 ;; gateway) continue ;; esac
+    printf '%s' "$entry" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$' || return 1
+  done
+}
+
 valid_tunable() {
   case "$1" in
     WEB_PORT) printf '%s' "$2" | grep -Eq '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' ;;
+    TRUST_PROXY) valid_trust_proxy "$2" ;;
     LEGACY_TIME_ZONE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[A-Za-z0-9_/+:-]+$' ;;
+    # MySQL's size syntax: bytes, or a whole number of K, M, or G.
+    DB_BUFFER_POOL_SIZE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[1-9][0-9]*[KMG]?$' ;;
     *) printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
   esac
 }
 
 known_key() {
   local k
-  for k in WEB_PORT $TUNABLES; do [ "$k" = "$1" ] && return 0; done
+  for k in WEB_PORT TRUST_PROXY $TUNABLES; do [ "$k" = "$1" ] && return 0; done
   return 1
 }
 
@@ -268,7 +286,7 @@ apply_flags_to_env() {
   fi
   for kv in ${SETS[@]+"${SETS[@]}"}; do
     key=${kv%%=*}; value=${kv#*=}
-    known_key "$key" || die "--set: $key is not a setting this script manages (WEB_PORT $TUNABLES)"
+    known_key "$key" || die "--set: $key is not a setting this script manages (WEB_PORT TRUST_PROXY $TUNABLES)"
     valid_tunable "$key" "$value" || die "--set: '$value' is not valid for $key"
     env_set "$key" "$value"; ok "$key=$value"
   done
@@ -283,6 +301,20 @@ prompt_tunables() {
     warn "'$value' is not PORT or ADDR:PORT"
   done
   env_set WEB_PORT "$value"
+  # Behind a TLS proxy every browser arrives from the proxy's address, so the per-address
+  # limits would count them all as one unless nginx is told to trust the proxy.
+  current=$(env_get TRUST_PROXY)
+  if confirm "Is a TLS proxy (Caddy, nginx) in front of this stack?" "$( [ -n "$current" ] && echo y || echo n)"; then
+    [ -n "$current" ] || current=gateway
+    while :; do
+      value=$(ask "Proxy address(es) to trust: IP or CIDR, comma-separated; gateway = a proxy on this host" "$current")
+      [ -n "$value" ] && valid_tunable TRUST_PROXY "$value" && break
+      warn "'$value' is not a list of IP addresses or CIDR ranges (or gateway)"
+    done
+    env_set TRUST_PROXY "$value"
+  elif [ -n "$current" ]; then
+    env_set TRUST_PROXY ""
+  fi
   if confirm "Change the alarm thresholds and retention from their defaults?" n; then
     for k in $TUNABLES; do
       current=$(env_get "$k")
@@ -291,7 +323,7 @@ prompt_tunables() {
         valid_tunable "$k" "$value" && break
         warn "'$value' is not valid for $k"
       done
-      if [ "$k" = LEGACY_TIME_ZONE ] && [ -z "$value" ]; then continue; fi
+      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ]; } && [ -z "$value" ]; then continue; fi
       env_set "$k" "$value"
     done
   fi
@@ -381,11 +413,11 @@ do_preflight() {
   fi
 
   for dir in "$REPO_DIR" "$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"; do
-    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    if [ -z "$dir" ] || [ ! -d "$dir" ]; then continue; fi
     avail=$(df -Pk "$dir" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
     [ -n "$avail" ] || continue
     root=$dir
-    if [ "$avail" -lt 1024 ]; then bad "only ${avail} MB free on $root; the first build needs about 2 GB"; failed=1
+    if [ "$avail" -lt 1024 ]; then bad "only ${avail} MB free on $root; the first build needs about 3.5 GB"; failed=1
     elif [ "$avail" -lt 5120 ]; then warn "${avail} MB free on $root; 5 GB leaves room for images and backups"
     else ok "${avail} MB free on $root"; fi
   done
@@ -485,6 +517,12 @@ do_deploy() {
   check_secrets
   maybe_pull
   do_preflight || die "preflight failed; fix the [FAIL] lines above"
+  # A plain `up --build` reuses whatever node and nginx base images are cached, so a server
+  # would never get their security patches; --pull checks for newer ones on every deploy.
+  step "Build with fresh base images (docker compose build --pull)"
+  if ! dc build --pull; then
+    warn "the build with --pull failed (no registry?); the next step builds from the local cache"
+  fi
   step "Build and start (docker compose up -d --build --wait)"
   if ! dc up -d --build --remove-orphans --wait --wait-timeout 600; then
     dc ps
@@ -551,7 +589,7 @@ pick_backup() {
   interactive || die "restore needs --file FILE"
   for f in "${files[@]}"; do say "  $i) $f"; i=$((i + 1)); done
   choice=$(ask "Restore which" 1)
-  [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le ${#files[@]} ] || die "no such backup"
+  if ! { [ "$choice" -ge 1 ] && [ "$choice" -le ${#files[@]} ]; } 2>/dev/null; then die "no such backup"; fi
   FILE=${files[$((choice - 1))]}
 }
 
@@ -561,10 +599,19 @@ do_restore() {
   [ -n "$FILE" ] || pick_backup
   [ -f "$FILE" ] || die "$FILE does not exist"
   gzip -t "$FILE" 2>/dev/null || die "$FILE is not a readable .sql.gz"
-  typed_confirm "This replaces every table in the $(project_name) database with $FILE."
+  typed_confirm "This replaces the whole $(project_name) database with $FILE: every table, including any the backup does not have."
   do_backup
   ok "the current database is saved in $LAST_BACKUP"
   dc stop api
+  # Into an empty database, so a table the dump lacks (one a later version added) does not survive
+  # with rows from after the backup (.scratch/prodtest/resilience.md S5). The temperature user's
+  # grant is on the database name and survives the drop; the api's migrations recreate whatever
+  # newer tables the dump lacks, empty, when it starts.
+  # shellcheck disable=SC2016 # $MYSQL_ROOT_PASSWORD expands inside the db container
+  if ! dc exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "DROP DATABASE IF EXISTS \`'"$DB_NAME"'\`; CREATE DATABASE \`'"$DB_NAME"'\`"'; then
+    dc up -d --wait api
+    die "could not empty the database before the restore; put the previous state back with: deploy.sh restore --file $LAST_BACKUP"
+  fi
   # shellcheck disable=SC2016 # $MYSQL_ROOT_PASSWORD expands inside the db container
   if ! gzip -dc "$FILE" | dc exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot '"$DB_NAME"; then
     dc up -d --wait api
@@ -625,6 +672,11 @@ do_uninstall() {
   else
     dc down --rmi local --remove-orphans || die "docker compose down failed"
     ok "containers and built images removed; the database volume stays (--wipe deletes it)"
+  fi
+  # A nightly backup of a removed stack fails every night, so its crontab line goes too.
+  if ! is_windows_shell && command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qF "$(cron_marker)"; then
+    crontab -l 2>/dev/null | without_marker | write_crontab
+    ok "removed the nightly backup from $(id -un)'s crontab (schedule-backup puts it back)"
   fi
   say "  .env and $BACKUP_DIR/ are left in $REPO_DIR."
 }

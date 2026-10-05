@@ -163,12 +163,20 @@ export function offlineStartsAt(last: Date, rules: ConditionRules): Date {
 }
 
 /**
+ * When a Device's silence began, as far as the server can tell: its last Reading, or the moment
+ * the server could hear it again (`heardSince`, listening.ts) if that is later. The server's own
+ * downtime is not the Device's silence.
+ */
+const silentSince = (last: Date, heardSince: Date | undefined): Date =>
+  heardSince !== undefined && heardSince.getTime() > last.getTime() ? heardSince : last;
+
+/**
  * The Offline incident a silence opens, or null while the Device is still Online at `now`. A
  * Device that has never reported has no Offline incident: there is nothing to have lost.
  */
-export function offlineIncident(last: TimedReading | null, now: Date, rules: ConditionRules): IncidentStep | null {
+export function offlineIncident(last: TimedReading | null, now: Date, rules: ConditionRules, heardSince?: Date): IncidentStep | null {
   if (last === null) return null;
-  const start = offlineStartsAt(last.recordedAt, rules);
+  const start = offlineStartsAt(silentSince(last.recordedAt, heardSince), rules);
   if (start.getTime() > now.getTime()) return null;
   return opened('Offline', 'warning', start, last);
 }
@@ -178,11 +186,12 @@ export function offlineIncident(last: TimedReading | null, now: Date, rules: Con
  * after `previous` and is back before the next pass. Recorded already closed, from when the
  * server would first have reported it Offline to this Reading. Only a stretch that began within
  * the last `sweepSeconds` counts: an older one with nothing open means no sweep was running, so
- * the silence was the server's own (a restart, an outage), not the Device's.
+ * the silence was the server's own (a restart, an outage), not the Device's. Silence counts from `heardSince`
+ * when that is later than `previous`, as in offlineIncident.
  */
-export function missedOffline(previous: TimedReading | null, reading: TimedReading, rules: ConditionRules, sweepSeconds: number): IncidentStep | null {
+export function missedOffline(previous: TimedReading | null, reading: TimedReading, rules: ConditionRules, sweepSeconds: number, heardSince?: Date): IncidentStep | null {
   if (previous === null) return null;
-  const start = offlineStartsAt(previous.recordedAt, rules);
+  const start = offlineStartsAt(silentSince(previous.recordedAt, heardSince), rules);
   const at = reading.recordedAt.getTime();
   if (start.getTime() > at || start.getTime() < at - sweepSeconds * 1000) return null;
   return close(opened('Offline', 'warning', start, previous).incident, reading.recordedAt);

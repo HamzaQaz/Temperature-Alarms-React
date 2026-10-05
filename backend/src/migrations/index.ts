@@ -7,6 +7,7 @@ import { legacyCampusesAndDevices } from './0002-legacy-campuses-and-devices';
 import { legacyReadings } from './0003-legacy-readings';
 import { readingsRecordedAtIndex } from './0004-readings-recorded-at-index';
 import { incidentsSchema } from './0005-incidents';
+import { readingsCoveringIndex } from './0006-readings-covering-index';
 
 /** What a migration may consult and report to while it runs. */
 export interface MigrationContext {
@@ -30,6 +31,7 @@ export const migrations: Migration[] = [
   legacyReadings,
   readingsRecordedAtIndex,
   incidentsSchema,
+  readingsCoveringIndex,
 ];
 
 /** The context the running backend hands its migrations: the configured legacy zone, logging to stdout. */

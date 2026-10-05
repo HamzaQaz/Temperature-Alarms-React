@@ -10,7 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useLanded } from '@/hooks/use-landed';
-import { useNow } from '@/hooks/use-now';
+import { useElapsedNow, useNow } from '@/hooks/use-now';
+import { ageSeconds, monotonicNow } from '@/lib/elapsed';
 import { usePageTitle } from '@/hooks/use-page-title';
 import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
@@ -38,15 +39,16 @@ import type { CampusOverview, ConditionCount, Overview, OverviewDay } from '@/ty
 /** At most one reload per this long, however busy the stream: a district posts a Reading every few seconds. */
 const REFRESH_EVERY_MS = 10_000;
 
-/** The overview with the moment it was read, for "as of" in the summary. */
+/** The overview with the moment it was read: for "as of" in the summary, and on the monotonic clock for ageing its Readings. */
 interface LoadedOverview extends Overview {
   asOf: number;
+  fetchedAt: number;
 }
 
-const loadOverview = async (): Promise<LoadedOverview> => ({ ...(await getCampusOverview()), asOf: Date.now() });
+const loadOverview = async (): Promise<LoadedOverview> => ({ ...(await getCampusOverview()), asOf: Date.now(), fetchedAt: monotonicNow() });
 
 /** A link that reads as text until it is pointed at or focused; the focus ring is the controls' own. */
-const quietLink = 'rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50';
+const quietLink = 'rounded-md outline-none focus-visible:ring-[3px] focus-visible:ring-ring';
 
 /**
  * Campuses: the district in one look, for IT leadership. One row per Campus in the server's
@@ -56,6 +58,7 @@ const quietLink = 'rounded-md outline-none focus-visible:ring-[3px] focus-visibl
 export default function Campuses() {
   usePageTitle('Campuses');
   const now = useNow();
+  const elapsedNow = useElapsedNow();
   const { state, reload } = useResource(loadOverview);
 
   // Reload on the stream, throttled: the first message after a quiet spell reloads at once,
@@ -63,15 +66,16 @@ export default function Campuses() {
   const lastLoad = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
-    lastLoad.current = Date.now();
+    lastLoad.current = monotonicNow();
     return () => clearTimeout(timer.current);
   }, []);
   const refresh = useCallback(() => {
     if (timer.current !== undefined) return;
-    const wait = Math.max(0, lastLoad.current + REFRESH_EVERY_MS - Date.now());
+    // On the monotonic clock: a wall clock stepped back would otherwise hold the reload for the length of the step.
+    const wait = Math.max(0, lastLoad.current + REFRESH_EVERY_MS - monotonicNow());
     timer.current = setTimeout(() => {
       timer.current = undefined;
-      lastLoad.current = Date.now();
+      lastLoad.current = monotonicNow();
       void reload();
     }, wait);
   }, [reload]);
@@ -82,7 +86,7 @@ export default function Campuses() {
   return (
     <div className="flex-1 space-y-6">
       <header className="space-y-1">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <h1 className="text-3xl font-bold tracking-tight">Campuses</h1>
           <LiveStatus status={stream} />
         </div>
@@ -112,7 +116,7 @@ export default function Campuses() {
       ) : (
         <motion.div className="space-y-6" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={settle}>
           <Summary data={loaded} />
-          <CampusTable data={loaded} now={now} />
+          <CampusTable data={loaded} now={now} elapsedNow={elapsedNow} />
           <p className="max-w-[75ch] text-sm text-pretty text-muted-foreground">
             An incident is a Condition at warning or worse; moderate Mold risk is a heads-up and is not counted. The dashed line is the{' '}
             {loaded.threshold.name} {loaded.threshold.level} threshold the server uses, <span className="tabular-nums">{figure(loaded.threshold.tempF)}°F</span>, and a coloured
@@ -173,7 +177,7 @@ const stackedLabel =
   'max-md:grid max-md:grid-cols-[7.5rem_minmax(0,1fr)] max-md:items-center max-md:gap-3 max-md:px-0 max-md:before:text-sm max-md:before:text-muted-foreground max-md:before:content-[attr(data-label)]';
 
 /** The table on a laptop; on a phone each row is its own card of labelled lines. */
-function CampusTable({ data, now }: { data: LoadedOverview; now: number }) {
+function CampusTable({ data, now, elapsedNow }: { data: LoadedOverview; now: number; elapsedNow: number }) {
   return (
     <div className="md:rounded-xl md:border md:bg-card md:px-1 md:py-2 md:text-card-foreground md:shadow-sm">
       <Table className="tabular-nums max-md:block [&_tbody]:max-md:grid [&_tbody]:max-md:gap-3">
@@ -190,7 +194,7 @@ function CampusTable({ data, now }: { data: LoadedOverview; now: number }) {
         {/* The table drops the last row's border; on a phone each row is a card and keeps all four. */}
         <TableBody className="max-md:block max-md:[&_tr:last-child]:border">
           {data.campuses.map((campus) => (
-            <CampusRow key={campus.id} campus={campus} data={data} now={now} />
+            <CampusRow key={campus.id} campus={campus} data={data} now={now} elapsedNow={elapsedNow} />
           ))}
         </TableBody>
       </Table>
@@ -198,7 +202,7 @@ function CampusTable({ data, now }: { data: LoadedOverview; now: number }) {
   );
 }
 
-function CampusRow({ campus, data, now }: { campus: CampusOverview; data: LoadedOverview; now: number }) {
+function CampusRow({ campus, data, now, elapsedNow }: { campus: CampusOverview; data: LoadedOverview; now: number; elapsedNow: number }) {
   const landed = useLanded(rowSignature(campus));
   const since = sinceLast(campus.lastIncident, now, data.retentionDays);
   const cell = 'px-4 py-4 align-middle whitespace-normal';
@@ -232,7 +236,7 @@ function CampusRow({ campus, data, now }: { campus: CampusOverview; data: Loaded
       </TableCell>
 
       <TableCell data-label="Worst closet" className={cn(cell, stackedLabel, 'max-md:border-t max-md:py-3')}>
-        <WorstCell campus={campus} now={now} />
+        <WorstCell campus={campus} age={(seconds) => ageSeconds(seconds, data.fetchedAt, elapsedNow)} />
       </TableCell>
 
       <TableCell data-label="7 days" className={cn(cell, stackedLabel, 'max-md:border-t max-md:py-3')}>
@@ -285,8 +289,8 @@ function NowCell({ campus }: { campus: CampusOverview }) {
   );
 }
 
-/** The Campus's worst closet now, as a link to its History today. */
-function WorstCell({ campus, now }: { campus: CampusOverview; now: number }) {
+/** The Campus's worst closet now, as a link to its History today. `age` turns the server's age into one that ticks. */
+function WorstCell({ campus, age }: { campus: CampusOverview; age: (secondsAtFetch: number) => number }) {
   const { worst } = campus;
   if (worst === null) return <span className="text-sm text-muted-foreground">No closets</span>;
   const reading = worst.latestReading;
@@ -295,7 +299,7 @@ function WorstCell({ campus, now }: { campus: CampusOverview; now: number }) {
     reading === null
       ? 'No Readings yet'
       : worst.offline
-        ? `Offline, last Reading ${formatGap(now - new Date(reading.recordedAt).getTime())} ago`
+        ? `Offline, last Reading ${formatGap(age(worst.secondsSinceReading ?? 0) * 1000)} ago`
         : reading.humidity === null
           ? 'No humidity'
           : `Humidity ${figure(reading.humidity)}%`;

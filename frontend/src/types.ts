@@ -183,6 +183,8 @@ export interface CampusOverview {
     latestReading: Reading | null;
     level: ConditionLevel | null;
     offline: boolean;
+    /** Seconds since its latest Reading by the server's clock; null with no Readings. */
+    secondsSinceReading: number | null;
     conditions: Condition[];
   } | null;
   /** The last seven local days, oldest first; the last is today. */

@@ -1,0 +1,6 @@
+# A/B only, never part of the product: the db settings this report recommends, layered over
+# compose.yaml for the comparison runs:
+#   docker compose -p ta-load --env-file <scratch env> -f compose.yaml -f .scratch/prodtest/load/ab-override.yaml up -d db
+services:
+  db:
+    command: ["--disable-log-bin", "--innodb-buffer-pool-size=1G"]

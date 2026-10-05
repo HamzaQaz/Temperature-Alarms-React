@@ -1,7 +1,7 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type RequestHandler } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import { requireAdminToken, requireDeviceToken } from '../auth';
+import { hasDeviceToken, requireAdminToken, requireDeviceToken } from '../auth';
 import type { RouteDeps } from '../deps';
 import { closetType } from '../closet';
 import { SELECT_DEVICES, toDevice, type DeviceRow } from './devices';
@@ -9,6 +9,8 @@ import { conditionsFor, isOffline, LEVELS_WORST_FIRST, offlineAfterSeconds, wors
 import type { Config } from '../config';
 import { isTimeZone, localDay, serverTimeZone, todayIn, type LocalDay } from '../localDay';
 import type { ReadingPayload } from '../sse';
+import { MonotonicStore } from '../monotonicStore';
+import { LATEST_READING_ID, latestAllowed } from '../latestReading';
 import { broadcastIncidentChanges, deleteDeviceIncidents, recordReadingIncidents, type ChangedIncident } from '../incidentStore';
 
 interface DeviceIdRow extends RowDataPacket {
@@ -67,19 +69,28 @@ function serverNow(): Date {
 const conditionRules = ({ reportIntervalSeconds, thresholds }: Config): ConditionRules => ({ reportIntervalSeconds, thresholds });
 
 /**
+ * How many requests with a missing or wrong Device token one address may make in 15 minutes. A board
+ * with a wrong token retries every Report interval, 30 a quarter hour, so a few such boards behind one
+ * campus address stay under it; a guesser gets 400 an hour, against a 256-bit token from deploy.sh.
+ */
+export const DEVICE_AUTH_FAILURE_LIMIT = 100;
+
+/**
  * Reading ingest (POST /api/readings): a Device posts `{device, temp, humidity}` with the
  * Device token. Each recorded Reading is broadcast to every open dashboard.
  */
-export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
+export function readingsRouter({ pool, config, sse, ingest, listening }: RouteDeps): Router {
   const router = Router();
   const rules = conditionRules(config);
 
   // A Device reports every Report interval, so a healthy one never approaches this. The key is the
   // hostname, not the address: every Device on a campus can sit behind one NAT, and one address's
   // twelve boards must not share one allowance. Only requests carrying the Device token get this far.
+  // Windows on the monotonic clock: a host clock step must not lock a Device out for its length.
   const writeLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 20,
+    store: new MonotonicStore(),
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => {
@@ -90,7 +101,45 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
     validate: false,
   });
 
-  router.post('/', requireDeviceToken(config), writeLimiter, async (req, res, next) => {
+  // The general /api/ limit skips this route, so refusals get their own: per address, since a guesser
+  // can claim any hostname. Only a request with a missing or wrong token is counted, and it is
+  // answered at once with a 401. A request with the right token is never counted: not a campus of
+  // boards behind one address, and not the Readings boards gave up on while the database stalled
+  // (express-rate-limit counts on arrival and takes back on finish, so a hundred stalled right-token
+  // POSTs in flight at once would otherwise lock their own address out; resilience.md B1).
+  const isDevice = hasDeviceToken(config);
+  const addressKey = (req: Request): string => ipKeyGenerator(req.ip ?? '');
+  const authFailureMessage = { error: 'Too many requests with a wrong Device token from this address, please try again later.' };
+  const authFailureLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: DEVICE_AUTH_FAILURE_LIMIT,
+    store: new MonotonicStore(),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: addressKey,
+    skip: isDevice,
+    message: authFailureMessage,
+    validate: false,
+  });
+  // Past the limit even the right token is refused from that address, or the 429 would tell a
+  // guesser which guess was right.
+  const refuseLockedOutAddress: RequestHandler = async (req, res, next) => {
+    try {
+      const counted = isDevice(req) ? await authFailureLimiter.getKey(addressKey(req)) : undefined;
+      if (counted !== undefined && counted.totalHits >= DEVICE_AUTH_FAILURE_LIMIT) {
+        if (counted.resetTime !== undefined) {
+          res.set('Retry-After', String(Math.max(0, Math.ceil((counted.resetTime.getTime() - Date.now()) / 1000))));
+        }
+        res.status(429).json(authFailureMessage);
+        return;
+      }
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
+
+  router.post('/', refuseLockedOutAddress, authFailureLimiter, requireDeviceToken(config), writeLimiter, async (req, res, next) => {
     const parsed = parseReading(req.body);
     if ('error' in parsed) {
       res.status(422).json({ error: parsed.error });
@@ -114,11 +163,13 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
           return;
         }
         recordedAt = serverNow();
+        // The database answers again: a silence before this is the server's, not the Device's (listening.ts).
+        listening?.regained(recordedAt);
         await conn.query<ResultSetHeader>(
           'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
           [device.id, tempF, humidity, recordedAt],
         );
-        changed = await recordReadingIncidents(conn, device.id, { tempF, humidity, recordedAt }, rules);
+        changed = await recordReadingIncidents(conn, device.id, { tempF, humidity, recordedAt }, rules, listening?.since());
         await conn.commit();
       } catch (error) {
         await conn.rollback();
@@ -126,6 +177,7 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
       } finally {
         conn.release();
       }
+      ingest.succeeded();
       const reading: ReadingPayload = { tempF, humidity, recordedAt: recordedAt.toISOString() };
       res.status(201).json({ device: device.hostname, reading });
       // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
@@ -133,6 +185,11 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
       sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions });
       await broadcastIncidentChanges(pool, sse, changed);
     } catch (error) {
+      // Only before the 201: a failed broadcast afterwards is not a Reading lost.
+      if (!res.headersSent) {
+        ingest.failed();
+        listening?.lost();
+      }
       next(error);
     }
   });
@@ -152,25 +209,14 @@ interface DashboardRow extends RowDataPacket {
   recordedAt: Date | null;
 }
 
-/**
- * Every Device with its latest Reading, in one statement. The correlated subquery walks
- * ix_readings_device_recorded backwards one step per Device. The order starts with device_id,
- * a constant here, so MySQL sees the index gives it: ordered by recorded_at alone it walks
- * ix_readings_recorded (retention's) backwards instead, through every Reading since a silent
- * Device's last, and one Device off for a week cost the query seconds.
- */
+/** Every Device with its latest Reading, in one statement: one step back along the index per Device (latestReading.ts). */
 const SELECT_DASHBOARD = `
   SELECT d.id, d.hostname, d.closet,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode,
          r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt
   FROM devices d
   JOIN campuses c ON c.id = d.campus_id
-  LEFT JOIN readings r ON r.id = (
-    SELECT r2.id FROM readings r2
-    WHERE r2.device_id = d.id
-    ORDER BY r2.device_id DESC, r2.recorded_at DESC, r2.id DESC
-    LIMIT 1
-  )`;
+  LEFT JOIN readings r ON r.id = (${LATEST_READING_ID})`;
 const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
 
 function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules) {
@@ -225,8 +271,8 @@ export function dashboardRouter({ pool, config, sse, now = () => new Date() }: R
     // Shortcodes match in any case, as the old filter did.
     const [where, params] = campus === '' ? ['', []] : ['WHERE LOWER(c.shortcode) = LOWER(?)', [campus]];
     try {
-      const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, params);
       const at = now();
+      const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, [latestAllowed(at), ...params]);
       const devices = rows.map((row) => toDashboardDevice(row, at, rules));
       // Array sort is stable, so Devices at the same level keep the Campus and closet order of the query.
       if (order === 'worst') devices.sort((a, b) => severity(a.conditions) - severity(b.conditions));

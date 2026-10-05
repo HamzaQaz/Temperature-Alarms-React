@@ -15,14 +15,21 @@ import { Button } from '@/components/ui/button';
 import { hasWarningOrWorse, isWarningOrWorse, worstCondition } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useNow } from '@/hooks/use-now';
+import { useElapsedNow } from '@/hooks/use-now';
+import { ageSeconds, monotonicNow } from '@/lib/elapsed';
 import { arrive, regroup, settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { useReadingStream } from '@/hooks/use-reading-stream';
+import { useAnnouncer } from '@/hooks/use-announcer';
+import { LiveAnnouncement } from '@/components/LiveAnnouncement';
+import { deviceChanges, type Announcement } from '@/lib/announce';
+import { errorReloads } from '@/lib/reload';
 import { useResource } from '@/hooks/use-resource';
 import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, ReadingEvent } from '@/types';
 
 const ALL = 'all';
+/** The cards the Campus and order tabs filter and sort; the tabs name it as what they control. */
+const CONTENT_ID = 'dashboard-devices';
 
 /**
  * What the dashboard last showed, kept for this tab's lifetime so coming back from History
@@ -60,6 +67,7 @@ export default function Dashboard() {
     setSearchParams({ ...(campus === '' ? {} : { campus }), ...(nextOrder === 'worst' ? {} : { order: nextOrder }) });
   const showCampus = (value: string) => showView(value === ALL ? '' : value, order);
   const showOrder = (value: string) => showView(campusParam, value === 'campus' ? 'campus' : 'worst');
+  const { message, announce } = useAnnouncer();
 
   return (
     <div className="flex-1 space-y-6">
@@ -80,9 +88,9 @@ export default function Dashboard() {
               {/* A strip that scrolls sideways; on a phone it runs to the screen's edges, so a Campus cut off there reads as more to scroll. */}
               <div className="-mx-4 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
                 <TabsList aria-label="Filter by campus">
-                  <TabsTrigger value={ALL}>All campuses</TabsTrigger>
+                  <TabsTrigger value={ALL} aria-controls={CONTENT_ID}>All campuses</TabsTrigger>
                   {campusList.map((campus) => (
-                    <TabsTrigger key={campus.id} value={campus.shortcode}>
+                    <TabsTrigger key={campus.id} value={campus.shortcode} aria-controls={CONTENT_ID}>
                       {campus.name}
                     </TabsTrigger>
                   ))}
@@ -93,20 +101,24 @@ export default function Dashboard() {
         </div>
         <Tabs value={order} onValueChange={showOrder} className="shrink-0">
           <TabsList aria-label="Order">
-            <TabsTrigger value="worst">Worst first</TabsTrigger>
-            <TabsTrigger value="campus">By Campus</TabsTrigger>
+            <TabsTrigger value="worst" aria-controls={CONTENT_ID}>Worst first</TabsTrigger>
+            <TabsTrigger value="campus" aria-controls={CONTENT_ID}>By Campus</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
 
-      {/* Not keyed by campus or order: on a switch the cards on screen stay until the new answer arrives,
-          then the ones that stay glide to their new places and the rest fade. */}
-      <DashboardContent campus={campusParam} order={order} campusName={selected?.name} onShowAll={() => showCampus(ALL)} />
+      {/* Tabs filter one set of cards rather than switch between panels, so each names this as what it controls. */}
+      <div id={CONTENT_ID}>
+        {/* Not keyed by campus or order: on a switch the cards on screen stay until the new answer arrives,
+            then the ones that stay glide to their new places and the rest fade. */}
+        <DashboardContent campus={campusParam} order={order} campusName={selected?.name} onShowAll={() => showCampus(ALL)} announce={announce} />
+      </div>
+      <LiveAnnouncement message={message} />
     </div>
   );
 }
 
-/** A Device as loaded, plus when its `secondsSinceReading` was true so the age can tick from there. */
+/** A Device as loaded, plus when its `secondsSinceReading` was true, on the monotonic clock (lib/elapsed.ts), so the age can tick from there. */
 interface LiveDevice extends DashboardDevice {
   asOf: number;
 }
@@ -121,7 +133,7 @@ interface LoadedDashboard extends Omit<DashboardPayload, 'devices'> {
 
 async function loadDashboard(campus: string, order: DashboardOrder): Promise<LoadedDashboard> {
   const payload = await getDashboard(campus || undefined, order);
-  const asOf = Date.now();
+  const asOf = monotonicNow();
   return { ...payload, campus, order, devices: payload.devices.map((device) => ({ ...device, asOf })) };
 }
 
@@ -149,7 +161,7 @@ function applyReading(dashboard: LoadedDashboard, event: ReadingEvent): LoadedDa
   const device = dashboard.devices[index];
   if (device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt) return dashboard;
   const devices = dashboard.devices.slice();
-  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, secondsSinceReading: 0, asOf: Date.now() };
+  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, secondsSinceReading: 0, asOf: monotonicNow() };
   return { ...dashboard, devices };
 }
 
@@ -158,9 +170,11 @@ interface DashboardContentProps {
   order: DashboardOrder;
   campusName: string | undefined;
   onShowAll: () => void;
+  /** Tells a screen reader when a card's worst Condition or Online changes; never for a Reading at the same level. */
+  announce: (announcement: Announcement) => void;
 }
 
-function DashboardContent({ campus, order, campusName, onShowAll }: DashboardContentProps) {
+function DashboardContent({ campus, order, campusName, onShowAll, announce }: DashboardContentProps) {
   const load = useCallback(() => loadDashboard(campus, order), [campus, order]);
   // Read once, at mount: whether this visit starts from what the last one showed.
   const [cached] = useState(() => dashboardCache.get(cacheKey(campus, order)));
@@ -169,9 +183,11 @@ function DashboardContent({ campus, order, campusName, onShowAll }: DashboardCon
   // What is on screen now, for telling whether a Reading changes a card's place.
   const shown = useRef<LoadedDashboard | undefined>(undefined);
   useEffect(() => {
+    const before = shown.current;
+    if (before !== undefined && state.status === 'ready') deviceChanges(before.devices, state.data.devices).forEach(announce);
     shown.current = state.status === 'ready' ? state.data : undefined;
     if (state.status === 'ready') dashboardCache.set(cacheKey(state.data.campus, state.data.order), state.data);
-  }, [state]);
+  }, [state, announce]);
 
   // Hostnames a reload was already asked for without a card coming back (another Campus's under
   // the filter), so each Device costs at most one request per view, however often it reports.
@@ -184,7 +200,9 @@ function DashboardContent({ campus, order, campusName, onShowAll }: DashboardCon
   // first also asks the server for the new order, and the card glides there. A Reading from a Device
   // with no card (registered after this loaded) asks the server once, so a new closet never stays
   // invisible. Only a Reading starts this, never the answer, so it cannot loop. After a dropped
-  // stream, reload: anything sent meanwhile was missed.
+  // stream, reload: anything sent meanwhile was missed. On the error screen, any event reloads: the
+  // stream working means the server is back (lib/reload.ts).
+  const [reloadOnError] = useState(() => errorReloads(monotonicNow));
   const stream = useReadingStream({
     onReading: (event) => {
       const moves = shown.current !== undefined && movesCard(shown.current, event);
@@ -192,7 +210,10 @@ function DashboardContent({ campus, order, campusName, onShowAll }: DashboardCon
         shown.current !== undefined && !shown.current.devices.some((d) => d.hostname === event.device) && !askedAbout.current.has(event.device);
       if (unknown) askedAbout.current.add(event.device);
       update((dashboard) => applyReading(dashboard, event));
-      if (moves || unknown) void reload();
+      if (moves || unknown || reloadOnError(state.status)) void reload();
+    },
+    onIncident: () => {
+      if (reloadOnError(state.status)) void reload();
     },
     onReconnect: () => void reload(),
   });
@@ -272,7 +293,7 @@ interface DeviceGridProps {
 }
 
 function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPastOffline, arriveOnMount, pending }: DeviceGridProps) {
-  const now = useNow();
+  const now = useElapsedNow();
   // After the first render, a card joining or leaving is the filter at work, not the page arriving.
   const [settled, setSettled] = useState(false);
   useEffect(() => setSettled(true), []);
@@ -283,7 +304,7 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
   const reduced = useReducedMotion() ?? false;
   // Each card ages from the moment its own data was true, so a live Reading resets only that card's age.
   const age = (device: LiveDevice): number | null =>
-    device.secondsSinceReading === null ? null : device.secondsSinceReading + Math.max(0, Math.floor((now - device.asOf) / 1000));
+    device.secondsSinceReading === null ? null : ageSeconds(device.secondsSinceReading, device.asOf, now);
 
   // Offline is the server's call, and the server only speaks when a Reading arrives. So when a
   // card shown Online has aged past the threshold, ask again: the answer carries Offline. The key
@@ -298,7 +319,7 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
     <ul
       ref={list}
       className={cn(
-        'relative grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4 transition-opacity duration-200 ease-out-quint',
+        'relative grid grid-cols-[repeat(auto-fill,minmax(min(19rem,100%),1fr))] gap-4 transition-opacity duration-200 ease-out-quint',
         pending && 'opacity-60 delay-150',
       )}
       aria-label="Devices"
@@ -407,7 +428,7 @@ function DashboardSkeleton() {
           <Skeleton key={i} className="h-[6.5rem] rounded-xl" />
         ))}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(19rem,1fr))] gap-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(min(19rem,100%),1fr))] gap-4">
         {Array.from({ length: 6 }, (_, i) => (
           <Skeleton key={i} className="h-60 rounded-xl" />
         ))}

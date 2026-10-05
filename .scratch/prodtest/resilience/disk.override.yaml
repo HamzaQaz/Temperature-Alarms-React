@@ -1,0 +1,11 @@
+# Drill 5: the database on a 700 MB tmpfs volume, so the disk can be filled without touching the host.
+services:
+  db:
+    volumes:
+      - db-small:/var/lib/mysql
+volumes:
+  db-small:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=700m"

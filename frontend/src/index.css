@@ -32,7 +32,8 @@
   --destructive-solid-foreground: oklch(1 0 0);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  /* Focus Grey, drawn at full strength: at 50% (or 0.708 on white) the ring is under the 3:1 a focus indicator needs. */
+  --ring: oklch(0.556 0 0);
   /* Temperature in Signal Blue, humidity in Humidity Green's hue at the 600 step, so the
      line keeps 3:1 against white (DESIGN.md: signal colours keep their hue in the light theme). */
   --chart-1: oklch(0.488 0.243 264.376);
@@ -47,7 +48,7 @@
   --sidebar-accent: oklch(0.97 0 0);
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-ring: oklch(0.556 0 0);
 }
 
 @import "tailwindcss";
@@ -221,5 +222,36 @@
   }
   .report-depletion {
     display: none;
+  }
+}
+
+/* Focus moved by the page rather than by Tab (to the page's h1 after a route change, to the
+   content by Skip to content) lands on text, not a control, so it takes no ring. */
+#main:focus,
+#main h1:focus {
+  outline: none;
+}
+
+/* Forced colours (Windows High Contrast) drop box-shadow, and box-shadow carries every focus ring
+   here (`outline-none` plus a 3px ring). Give the focused control a real outline in the system's
+   own text colour instead. */
+@media (forced-colors: active) {
+  :focus-visible:not(#main, #main h1) {
+    outline: 2px solid CanvasText !important;
+    outline-offset: 2px;
+  }
+}
+
+/* Asked-for contrast: secondary text and hairlines a step stronger in both themes; nothing else changes. */
+@media (prefers-contrast: more) {
+  :root {
+    --muted-foreground: oklch(0.42 0 0);
+    --border: oklch(0.6 0 0);
+    --input: oklch(0.6 0 0);
+  }
+  .dark {
+    --muted-foreground: oklch(0.82 0 0);
+    --border: oklch(1 0 0 / 30%);
+    --input: oklch(1 0 0 / 35%);
   }
 }

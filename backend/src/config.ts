@@ -90,6 +90,10 @@ export function loadConfig(env: Env = process.env): Config {
   if (missing.length > 0) {
     throw new ConfigError(`Missing required environment variable${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
   }
+  if (required(env, 'ADMIN_TOKEN') === required(env, 'DEVICE_TOKEN')) {
+    // Every board's flash holds the Device token, so it must not also open Settings.
+    throw new ConfigError('ADMIN_TOKEN and DEVICE_TOKEN must differ: every Device carries the Device token');
+  }
   return {
     port: positiveInteger(env, 'PORT', 3001),
     corsOrigin: present(env, 'CORS_ORIGIN'),
@@ -107,4 +111,19 @@ export function loadConfig(env: Env = process.env): Config {
     thresholds: thresholds(env),
     legacyTimeZone: timeZone(env, 'LEGACY_TIME_ZONE'),
   };
+}
+
+/** deploy.sh generates 64 hex characters; a token much shorter than that can be guessed (docs/adr/0003). */
+export const MIN_TOKEN_LENGTH = 32;
+
+/** A line for the log about each token shorter than MIN_TOKEN_LENGTH, naming it but never printing it. */
+export function tokenWarnings({ adminToken, deviceToken }: Pick<Config, 'adminToken' | 'deviceToken'>): string[] {
+  return (
+    [
+      ['ADMIN_TOKEN', adminToken],
+      ['DEVICE_TOKEN', deviceToken],
+    ] as const
+  )
+    .filter(([, token]) => token.length < MIN_TOKEN_LENGTH)
+    .map(([name, token]) => `${name} is ${token.length} characters; use at least ${MIN_TOKEN_LENGTH} (openssl rand -hex 32)`);
 }

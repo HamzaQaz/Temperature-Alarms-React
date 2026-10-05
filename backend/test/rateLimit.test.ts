@@ -4,10 +4,11 @@ import type { Pool } from 'mysql2/promise';
 import { createTestPool } from './helpers/database';
 import { startServer, type RunningServer } from './helpers/server';
 
-/** The general per-address allowance on /api/ (app.ts). */
-const GENERAL_LIMIT = 500;
+/** Per address per 15 minutes on /api/ (app.ts): reads (GET, HEAD) and everything else apart. */
+const READ_LIMIT = 6000;
+const WRITE_LIMIT = 500;
 
-describe('general /api/ rate limit behind the proxy', () => {
+describe('general /api/ rate limits behind the proxy', () => {
   let pool: Pool;
   let server: RunningServer;
 
@@ -21,21 +22,41 @@ describe('general /api/ rate limit behind the proxy', () => {
   });
 
   // As nginx sends it: `$proxy_add_x_forwarded_for` appends the address it saw to whatever the client claimed.
-  const throughProxy = (claimed: string, seen: string) => fetch(`${server.url}/api/nothing-here`, { headers: { 'X-Forwarded-For': `${claimed}, ${seen}` } });
+  const throughProxy = async (method: 'GET' | 'POST', claimed: string, seen: string): Promise<number> => {
+    const response = await fetch(`${server.url}/api/nothing-here`, { method, headers: { 'X-Forwarded-For': `${claimed}, ${seen}` } });
+    await response.arrayBuffer();
+    return response.status;
+  };
 
-  test('a client rotating the X-Forwarded-For it sends is still limited by the address the proxy saw', async () => {
-    for (let i = 0; i < GENERAL_LIMIT; i++) {
-      const response = await throughProxy(`10.0.${i >> 8}.${i & 255}`, '203.0.113.7');
-      assert.equal(response.status, 404, `request ${i + 1}`);
-      await response.arrayBuffer();
+  /** `count` requests from one address, a few at a time, each claiming a different address; returns their statuses. */
+  const spend = async (method: 'GET' | 'POST', seen: string, count: number): Promise<number[]> => {
+    const statuses: number[] = [];
+    for (let i = 0; i < count; i += 50) {
+      const batch = Array.from({ length: Math.min(50, count - i) }, (_, j) => throughProxy(method, `10.0.${(i + j) >> 8}.${(i + j) & 255}`, seen));
+      statuses.push(...(await Promise.all(batch)));
     }
-    const limited = await throughProxy('10.9.9.9', '203.0.113.7');
-    assert.equal(limited.status, 429);
-    await limited.arrayBuffer();
+    return statuses;
+  };
+
+  test('changes: a client rotating the X-Forwarded-For it sends is still limited by the address the proxy saw', async () => {
+    const statuses = await spend('POST', '203.0.113.7', WRITE_LIMIT);
+    assert.deepEqual(statuses.filter((s) => s !== 404), [], 'every request within the allowance reaches the router');
+    assert.equal(await throughProxy('POST', '10.9.9.9', '203.0.113.7'), 429);
 
     // Another address the proxy saw has its own allowance.
-    const other = await throughProxy('10.0.0.1', '203.0.113.8');
-    assert.equal(other.status, 404);
-    await other.arrayBuffer();
+    assert.equal(await throughProxy('POST', '10.0.0.1', '203.0.113.8'), 404);
+  });
+
+  test('reads: an office of open tabs behind one address gets far more than the change allowance, and is still capped', async () => {
+    const statuses = await spend('GET', '203.0.113.20', READ_LIMIT);
+    assert.deepEqual(statuses.filter((s) => s !== 404), [], 'every read within the allowance reaches the router');
+    assert.equal(await throughProxy('GET', '10.9.9.9', '203.0.113.20'), 429);
+    assert.equal(await throughProxy('GET', '10.0.0.1', '203.0.113.21'), 404, 'another address has its own read allowance');
+  });
+
+  test('reads and changes are counted apart: spent reads leave changes open, spent changes leave reads open', async () => {
+    // 203.0.113.20 spent its reads above; 203.0.113.7 spent its changes.
+    assert.equal(await throughProxy('POST', '10.0.0.1', '203.0.113.20'), 404);
+    assert.equal(await throughProxy('GET', '10.0.0.1', '203.0.113.7'), 404);
   });
 });

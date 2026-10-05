@@ -1,0 +1,11 @@
+# Drill 7: api reaches the db through toxiproxy, so latency and a black hole can be put between them.
+# Proxy "mysql" listens on toxi:13306 -> db:3306; its control API is on 127.0.0.1:18474.
+services:
+  toxi:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    ports: ["127.0.0.1:18474:8474"]
+    restart: unless-stopped
+  api:
+    environment:
+      DB_HOST: toxi
+      DB_PORT: 13306

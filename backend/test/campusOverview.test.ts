@@ -1,11 +1,12 @@
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Pool } from 'mysql2/promise';
+import type { Pool, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, errorOf, json, type Campus, type Condition, type Reading } from './helpers/api';
 import { insertIncident } from '../src/incidentStore';
-import { PAST_DAYS_CACHE_MS } from '../src/routes/campusOverview';
+import { PAST_DAYS_CACHE_MS, selectDayMaxima } from '../src/routes/campusOverview';
+import { localDay, type LocalDay } from '../src/localDay';
 import type { IncidentState } from '../src/incidents';
 
 const DAY_MS = 86_400_000;
@@ -39,6 +40,8 @@ interface CampusOverview {
     latestReading: Reading | null;
     level: Condition['level'] | null;
     offline: boolean;
+    /** Seconds since its latest Reading by the server's clock, so a browser never subtracts its own clock from the server's. */
+    secondsSinceReading: number | null;
     conditions: Condition[];
   } | null;
   days: OverviewDay[];
@@ -229,7 +232,8 @@ describe('GET /api/campuses/overview', () => {
     await readingAt(d.id, new Date('2026-09-30T04:59:59Z'), 75); // the last second of 29 September
     await readingAt(d.id, new Date('2026-09-30T05:00:00Z'), 80); // midnight starting 30 September
     await readingAt(d.id, secondsAgo(10), 77);
-    await readingAt(d.id, new Date('2026-10-06T04:59:59Z'), 95); // later today, past the pinned clock: still today
+    // Later today, hours past the pinned clock: only a clock step stamps one, so it is not today's high yet.
+    await readingAt(d.id, new Date('2026-10-06T04:59:59Z'), 95);
 
     const chicago = (await overview()).campuses[0];
     assert.equal(chicago.days[0].date, '2026-09-29');
@@ -242,7 +246,7 @@ describe('GET /api/campuses/overview', () => {
       ['2026-10-02', null, false],
       ['2026-10-03', null, false],
       ['2026-10-04', null, false],
-      ['2026-10-05', 95, true],
+      ['2026-10-05', 77, true],
     ]);
 
     // In UTC the same Readings fall on other days: the 99 °F one is now inside the window.
@@ -331,5 +335,113 @@ describe('GET /api/campuses/overview', () => {
     assert.equal(mike.worst?.id, dead.id);
 
     assert.deepEqual(byShortcode(body, 'ED').now, { conditions: [], headsUp: [{ name: 'Mold risk', level: 'moderate', count: 1 }] });
+  });
+  test("the worst closet carries its age by the server's clock, and a Reading stamped in the future by a clock step is passed over", async () => {
+    const c = await campus('Clock Step High', 'CS');
+    const d = await device(c.id);
+    await readingAt(d.id, secondsAgo(600), 72);
+    await readingAt(d.id, new Date(NOW.getTime() + 3_600_000), 99);
+    const [row] = (await overview()).campuses;
+    assert.equal(row.worst?.secondsSinceReading, 600);
+    assert.equal(row.worst?.offline, true);
+    assert.equal(row.worst?.latestReading?.tempF, 72);
+    const today = row.days.find((day) => day.partial);
+    assert.equal(today?.maxTempF, 72, "a future Reading is not today's high either");
+  });
+
+  test("requests that miss the completed days' cache together share one read of them", async () => {
+    const c = await campus('Busy High', 'BH');
+    await readingAt((await device(c.id)).id, new Date('2026-10-01T17:00:00Z'), 74);
+    let pastReads = 0;
+    // The completed days are the only statement with a CASE per day boundary.
+    const counting = new Proxy(pool, {
+      get(target, key) {
+        if (key === 'query') {
+          return (sql: string, ...rest: unknown[]) => {
+            if (typeof sql === 'string' && sql.includes('MAX(r.temp_f)') && sql.includes('CASE')) pastReads += 1;
+            return (target.query as (...a: unknown[]) => unknown)(sql, ...rest);
+          };
+        }
+        const value = Reflect.get(target, key) as unknown;
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    server = await startServer(counting, testConfig(), { now: () => NOW });
+    const responses = await Promise.all(Array.from({ length: 5 }, () => fetch(`${server!.url}/api/campuses/overview?tz=America/Chicago`)));
+    for (const response of responses) assert.equal(response.status, 200);
+    assert.equal(pastReads, 1);
+  });
+
+  test('a clock stepped back does not keep the completed days cached for the length of the step', async () => {
+    const c = await campus('Step Back High', 'SB');
+    const d = await device(c.id);
+    await readingAt(d.id, new Date('2026-10-01T17:00:00Z'), 74);
+    let clock = new Date(NOW.getTime() + 2 * 3_600_000);
+    server = await startServer(pool, testConfig(), { now: () => clock });
+    const get = async () => (await json<Overview>(await fetch(`${server!.url}/api/campuses/overview?tz=America/Chicago`))).campuses[0].days;
+    assert.equal((await get()).find((day) => day.date === '2026-10-01')?.maxTempF, 74);
+    await readingAt(d.id, new Date('2026-10-01T18:00:00Z'), 81);
+    clock = NOW;
+    assert.equal((await get()).find((day) => day.date === '2026-10-01')?.maxTempF, 81);
+  });
+});
+
+describe("the overview's day-maxima statement", () => {
+  let pool: Pool;
+  before(() => {
+    pool = createTestPool();
+  });
+  after(() => pool.end());
+
+  /** Every table access in an EXPLAIN FORMAT=JSON plan. */
+  const tablesIn = (node: unknown, found: Record<string, unknown>[] = []): Record<string, unknown>[] => {
+    if (Array.isArray(node)) node.forEach((n) => tablesIn(n, found));
+    else if (node !== null && typeof node === 'object') {
+      const record = node as Record<string, unknown>;
+      if (typeof record.table_name === 'string' && typeof record.access_type === 'string') found.push(record);
+      Object.values(record).forEach((n) => tablesIn(n, found));
+    }
+    return found;
+  };
+
+  // At 90 days a join on device_id ran as a ref lookup over every Device's whole history, then a
+  // row lookup each for temp_f: 9 to 28 s at 26 M Readings (.scratch/prodtest/load.md, B1).
+  test("range-scans each Device's span on the covering index, reading no table rows", async () => {
+    await resetDatabase(pool);
+    const [campus] = await pool.query<ResultSetHeader>("INSERT INTO campuses (name, shortcode) VALUES ('Plan High', 'PH')");
+    const ids: number[] = [];
+    for (const hostname of ['ESP_PLAN01', 'ESP_PLAN02']) {
+      const [d] = await pool.query<ResultSetHeader>("INSERT INTO devices (hostname, campus_id, closet) VALUES (?, ?, 'IDF 1')", [
+        hostname,
+        campus.insertId,
+      ]);
+      ids.push(d.insertId);
+    }
+    // Thirty days, one Reading every ten minutes each, so the week is a small part of each Device's history.
+    const start = NOW.getTime() - 30 * DAY_MS;
+    for (const id of ids) {
+      const rows = Array.from({ length: 30 * 144 }, (_, i) => [id, 70 + (i % 7), 40, new Date(start + i * 600_000)]);
+      await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [rows]);
+    }
+    await pool.query('ANALYZE TABLE readings');
+
+    const days = ['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05'].map(
+      (date) => localDay(date, 'America/Chicago') as LocalDay,
+    );
+    for (const [label, span, first] of [['past days', days.slice(0, -1), 0], ['today', days.slice(-1), 6]] as const) {
+      const statement = selectDayMaxima(ids, span, first);
+      assert.ok(statement);
+      const { sql, params } = statement;
+      const [[{ EXPLAIN: plan }]] = await pool.query<RowDataPacket[]>(`EXPLAIN FORMAT=JSON ${sql}`, params);
+      const readings = tablesIn(JSON.parse(plan as string)).filter((t) => t.table_name === 'r');
+      assert.equal(readings.length, 1, `${label}: ${plan}`);
+      assert.equal(readings[0].access_type, 'range', `${label}: ${plan}`);
+      assert.equal(readings[0].using_index, true, `${label}: ${plan}`);
+      assert.equal(readings[0].key, 'ix_readings_device_recorded_temp', `${label}: ${plan}`);
+    }
+  });
+
+  test('is skipped when there are no Devices', () => {
+    assert.equal(selectDayMaxima([], [localDay('2026-10-05', 'UTC') as LocalDay], 6), null);
   });
 });
