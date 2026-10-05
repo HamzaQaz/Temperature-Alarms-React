@@ -15,7 +15,8 @@ import { Button } from '@/components/ui/button';
 import { hasWarningOrWorse, isWarningOrWorse, worstCondition } from '@/lib/conditions';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useNow } from '@/hooks/use-now';
+import { useElapsedNow } from '@/hooks/use-now';
+import { ageSeconds, monotonicNow } from '@/lib/elapsed';
 import { arrive, regroup, settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { useReadingStream } from '@/hooks/use-reading-stream';
@@ -116,7 +117,7 @@ export default function Dashboard() {
   );
 }
 
-/** A Device as loaded, plus when its `secondsSinceReading` was true so the age can tick from there. */
+/** A Device as loaded, plus when its `secondsSinceReading` was true, on the monotonic clock (lib/elapsed.ts), so the age can tick from there. */
 interface LiveDevice extends DashboardDevice {
   asOf: number;
 }
@@ -131,7 +132,7 @@ interface LoadedDashboard extends Omit<DashboardPayload, 'devices'> {
 
 async function loadDashboard(campus: string, order: DashboardOrder): Promise<LoadedDashboard> {
   const payload = await getDashboard(campus || undefined, order);
-  const asOf = Date.now();
+  const asOf = monotonicNow();
   return { ...payload, campus, order, devices: payload.devices.map((device) => ({ ...device, asOf })) };
 }
 
@@ -159,7 +160,7 @@ function applyReading(dashboard: LoadedDashboard, event: ReadingEvent): LoadedDa
   const device = dashboard.devices[index];
   if (device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt) return dashboard;
   const devices = dashboard.devices.slice();
-  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, secondsSinceReading: 0, asOf: Date.now() };
+  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, secondsSinceReading: 0, asOf: monotonicNow() };
   return { ...dashboard, devices };
 }
 
@@ -286,7 +287,7 @@ interface DeviceGridProps {
 }
 
 function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPastOffline, arriveOnMount, pending }: DeviceGridProps) {
-  const now = useNow();
+  const now = useElapsedNow();
   // After the first render, a card joining or leaving is the filter at work, not the page arriving.
   const [settled, setSettled] = useState(false);
   useEffect(() => setSettled(true), []);
@@ -297,7 +298,7 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
   const reduced = useReducedMotion() ?? false;
   // Each card ages from the moment its own data was true, so a live Reading resets only that card's age.
   const age = (device: LiveDevice): number | null =>
-    device.secondsSinceReading === null ? null : device.secondsSinceReading + Math.max(0, Math.floor((now - device.asOf) / 1000));
+    device.secondsSinceReading === null ? null : ageSeconds(device.secondsSinceReading, device.asOf, now);
 
   // Offline is the server's call, and the server only speaks when a Reading arrives. So when a
   // card shown Online has aged past the threshold, ask again: the answer carries Offline. The key

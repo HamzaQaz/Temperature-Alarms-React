@@ -9,6 +9,8 @@ import { conditionsFor, isOffline, LEVELS_WORST_FIRST, offlineAfterSeconds, wors
 import type { Config } from '../config';
 import { isTimeZone, localDay, serverTimeZone, todayIn, type LocalDay } from '../localDay';
 import type { ReadingPayload } from '../sse';
+import { MonotonicStore } from '../monotonicStore';
+import { LATEST_READING_ID, latestAllowed } from '../latestReading';
 import { broadcastIncidentChanges, deleteDeviceIncidents, recordReadingIncidents, type ChangedIncident } from '../incidentStore';
 
 interface DeviceIdRow extends RowDataPacket {
@@ -84,9 +86,11 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
   // A Device reports every Report interval, so a healthy one never approaches this. The key is the
   // hostname, not the address: every Device on a campus can sit behind one NAT, and one address's
   // twelve boards must not share one allowance. Only requests carrying the Device token get this far.
+  // Windows on the monotonic clock: a host clock step must not lock a Device out for its length.
   const writeLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 20,
+    store: new MonotonicStore(),
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => {
@@ -104,6 +108,7 @@ export function readingsRouter({ pool, config, sse }: RouteDeps): Router {
   const authFailureLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: DEVICE_AUTH_FAILURE_LIMIT,
+    store: new MonotonicStore(),
     standardHeaders: true,
     legacyHeaders: false,
     requestWasSuccessful: (_req, res) => res.statusCode !== 401,
@@ -174,25 +179,14 @@ interface DashboardRow extends RowDataPacket {
   recordedAt: Date | null;
 }
 
-/**
- * Every Device with its latest Reading, in one statement. The correlated subquery walks
- * ix_readings_device_recorded backwards one step per Device. The order starts with device_id,
- * a constant here, so MySQL sees the index gives it: ordered by recorded_at alone it walks
- * ix_readings_recorded (retention's) backwards instead, through every Reading since a silent
- * Device's last, and one Device off for a week cost the query seconds.
- */
+/** Every Device with its latest Reading, in one statement: one step back along the index per Device (latestReading.ts). */
 const SELECT_DASHBOARD = `
   SELECT d.id, d.hostname, d.closet,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode,
          r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt
   FROM devices d
   JOIN campuses c ON c.id = d.campus_id
-  LEFT JOIN readings r ON r.id = (
-    SELECT r2.id FROM readings r2
-    WHERE r2.device_id = d.id
-    ORDER BY r2.device_id DESC, r2.recorded_at DESC, r2.id DESC
-    LIMIT 1
-  )`;
+  LEFT JOIN readings r ON r.id = (${LATEST_READING_ID})`;
 const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
 
 function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules) {
@@ -247,8 +241,8 @@ export function dashboardRouter({ pool, config, sse, now = () => new Date() }: R
     // Shortcodes match in any case, as the old filter did.
     const [where, params] = campus === '' ? ['', []] : ['WHERE LOWER(c.shortcode) = LOWER(?)', [campus]];
     try {
-      const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, params);
       const at = now();
+      const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, [latestAllowed(at), ...params]);
       const devices = rows.map((row) => toDashboardDevice(row, at, rules));
       // Array sort is stable, so Devices at the same level keep the Campus and closet order of the query.
       if (order === 'worst') devices.sort((a, b) => severity(a.conditions) - severity(b.conditions));

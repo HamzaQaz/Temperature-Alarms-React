@@ -52,6 +52,7 @@ describe('migration runner', () => {
       '0003-legacy-readings',
       '0004-readings-recorded-at-index',
       '0005-incidents',
+      '0006-readings-covering-index',
     ]);
   });
 
@@ -59,7 +60,7 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 6);
+    assert.equal(rows[0].n, 7);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {
@@ -79,9 +80,11 @@ describe('migration runner', () => {
 
   // MySQL commits DDL as it goes, so a run can die after a schema change and before recording it.
   test('a migration whose change landed but was never recorded runs again cleanly', async () => {
-    await pool.query("DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents')");
+    await pool.query(
+      "DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index')",
+    );
     const applied = await runMigrations(pool);
-    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents']);
+    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index']);
     assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
     assert.deepEqual((await readingsIndexes()).get('ix_readings_recorded'), ['recorded_at']);
   });
@@ -220,5 +223,46 @@ describe('0004 readings recorded_at index', () => {
       [...byIndex.values()].some((cols) => cols.length === 1 && cols[0] === 'recorded_at'),
       `no (recorded_at) index; found ${JSON.stringify([...byIndex])}`,
     );
+  });
+});
+
+describe('0006 readings covering index', () => {
+  beforeEach(() => resetDatabase(pool));
+
+  test('the per-Device index carries id and temp_f, so a day maximum reads the index alone, and the old one is gone', async () => {
+    const byIndex = await readingsIndexes();
+    // id before temp_f: every latest-Reading query orders by (device_id, recorded_at, id), which must stay the index order.
+    assert.deepEqual(byIndex.get('ix_readings_device_recorded_temp'), ['device_id', 'recorded_at', 'id', 'temp_f']);
+    assert.equal(byIndex.has('ix_readings_device_recorded'), false, `found ${JSON.stringify([...byIndex])}`);
+  });
+
+  test('a run that died between adding the new index and dropping the old one finishes cleanly', async () => {
+    await pool.query("DELETE FROM schema_migrations WHERE id = '0006-readings-covering-index'");
+    await pool.query('ALTER TABLE readings ADD INDEX ix_readings_device_recorded (device_id, recorded_at)');
+    assert.deepEqual(await runMigrations(pool), ['0006-readings-covering-index']);
+    const byIndex = await readingsIndexes();
+    assert.equal(byIndex.has('ix_readings_device_recorded'), false);
+    assert.deepEqual(byIndex.get('ix_readings_device_recorded_temp'), ['device_id', 'recorded_at', 'id', 'temp_f']);
+  });
+
+  test('a database from before 0006 keeps its Readings and still cascades a Device delete', async () => {
+    await pool.query("DELETE FROM schema_migrations WHERE id = '0006-readings-covering-index'");
+    await pool.query(
+      'ALTER TABLE readings ADD INDEX ix_readings_device_recorded (device_id, recorded_at), DROP INDEX ix_readings_device_recorded_temp',
+    );
+    const campus = await insertCampus();
+    const device = await insertDevice(campus);
+    await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, 72, 40, ?), (?, 73, 41, ?)', [
+      device,
+      new Date('2026-10-01T00:00:00Z'),
+      device,
+      new Date('2026-10-01T00:00:30Z'),
+    ]);
+    assert.deepEqual(await runMigrations(pool), ['0006-readings-covering-index']);
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM readings');
+    assert.equal(rows[0].n, 2);
+    await pool.query('DELETE FROM devices WHERE id = ?', [device]);
+    const [after] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM readings');
+    assert.equal(after[0].n, 0);
   });
 });

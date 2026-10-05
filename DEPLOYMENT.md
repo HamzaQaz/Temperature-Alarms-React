@@ -79,7 +79,8 @@ CT settings:
 - **Template and features**: `debian-12-standard`, with `features: nesting=1,keyctl=1` (Options, Features: Nesting and keyctl). Nesting is what lets Docker run inside; Proxmox applies keyctl only to an unprivileged CT.
 - **Privileged or unprivileged**: the stand-in was privileged with the host's cgroup namespace, the closest match to a privileged CT, and everything passed. An unprivileged CT with nesting and keyctl is the usual community setup for Docker and is not proven here (see below). Proxmox's own documentation recommends a VM for application containers such as Docker; a small Debian VM runs this stack with the same commands and none of the caveats below.
 - **Storage**: Docker 29 on a fresh install keeps images in containerd's store with the `overlayfs` snapshotter (`docker info` shows `Storage Driver: overlayfs`, `driver-type: io.containerd.snapshotter.v1`). It worked with `/var/lib/docker` and `/var/lib/containerd` on ext4. It failed on a root that is itself overlayfs, at the first `docker run`: `failed to mount ... fstype: overlay ... err: invalid argument`. A CT root on LVM-thin or a directory store is ext4 and fine. On ZFS, overlayfs needs ZFS 2.2 or newer (Proxmox VE 8.1 and later); on older ZFS, give the CT a mount point on ext4 for `/var/lib/containerd` and `/var/lib/docker`. Neither fuse-overlayfs nor vfs was needed.
-- **Resources**: the running stack uses about 640 MiB (MySQL about 500, the API about 120, nginx about 10). The whole CT peaked at about 1.3 GiB during a first build with no cache. After the first deploy, Docker's stores held 3.4 GB (`/var/lib/containerd` 2.1 GB, `/var/lib/docker` 1.3 GB, of which 0.8 GB is build cache), on top of about 1.5 GB for Debian, Docker's packages, and the clone. Give the CT 2 GiB of memory, 512 MiB of swap, 2 cores, and a 16 GB disk, which leaves room for upgrades and `backups/`. A first build took 3 minutes on 12 cores; fewer cores take longer.
+- **Clock**: a CT has no clock of its own; it reads the Proxmox host's. Let the host slew its clock rather than step it: Proxmox VE runs chrony, so check that `/etc/chrony/chrony.conf` on the host has `makestep 1 3` (step only in the first three updates after boot) and nothing that steps later. In the load test a 5-hour step lasting 12 seconds stamped Readings 5 hours ahead. The stack now passes over Readings stamped more than 5 minutes ahead and times its rate limits and the browser's ages on monotonic clocks, so a step no longer freezes cards or locks Devices out, but the Readings stamped during it still carry the wrong time.
+- **Resources**: the running stack uses about 640 MiB on a new install (MySQL about 500, the API about 120, nginx about 10). MySQL grows to about 1 GiB as its 512 MB buffer pool fills, which at 100 Devices takes a few weeks of Readings (see [Database settings and sizing](#database-settings-and-sizing)). The whole CT peaked at about 1.3 GiB during a first build with no cache. After the first deploy, Docker's stores held 3.4 GB (`/var/lib/containerd` 2.1 GB, `/var/lib/docker` 1.3 GB, of which 0.8 GB is build cache), on top of about 1.5 GB for Debian, Docker's packages, and the clone. Give the CT 3 GiB of memory, 512 MiB of swap, 2 cores, and a 24 GB disk: a running stack of about 1.1 GiB plus an upgrade's build of about 1.3 GiB, and 90 days of Readings for 100 Devices (about 3 GB) plus a week of nightly backups (about 1 GB) on top of the 5 GB above, with room for upgrades. 2 GiB and 16 GB are enough for the first weeks. For 300 Devices, 4 GiB with `DB_BUFFER_POOL_SIZE=1G` and 32 GB. A first build took 3 minutes on 12 cores; fewer cores take longer.
 
 The exact sequence, as the CT's sudo user (`admin` here), from a fresh debian-12 CT:
 
@@ -206,6 +207,13 @@ docker image prune -f             # drop the previous images
 
 Compose rebuilds what changed and recreates only those containers. New schema migrations run on the first start of the new `api`, and the data on the volume is untouched. A change to `.env` needs `docker compose up -d` as well; Compose recreates the containers whose environment changed. Run every upgrade from the same folder, or with `COMPOSE_PROJECT_NAME` set as described above: a stack first started from a differently named folder keeps its old volume name, and `docker volume ls` shows which one holds the data.
 
+An upgrade that adds an index to `readings` takes `api` off the air while it builds, since migrations run before it listens: migration `0006-readings-covering-index` took 33 s at 26 M Readings (90 days of 100 Devices), so each Device misses about one Reading. To lose none, build it first by hand while the old `api` keeps serving; MySQL builds it online, ingest kept working throughout (all 201s, p99 0.36 s during the 32 s build), and the migration then finds it done:
+
+```bash
+set -a; source .env; set +a
+docker compose exec db mysql -uroot -p"$DB_PASSWORD" temperature_alarms -e "ALTER TABLE readings ADD INDEX ix_readings_device_recorded_temp (device_id, recorded_at, id, temp_f), DROP INDEX ix_readings_device_recorded, ALGORITHM=INPLACE, LOCK=NONE"
+```
+
 The migration runner holds a MySQL lock while it works, so a second runner, such as `npm run migrate:legacy` started while `api` is still converting a large old database, waits for the first to finish. After ten minutes it gives up with `Another migration run still holds the lock`; run it again once the first has finished.
 
 ### Backups and restore
@@ -243,6 +251,24 @@ docker compose start api
 ```
 
 To move to another machine, copy the repo, the `.env`, and a dump; `up -d --build` there, then restore. Keep `COMPOSE_PROJECT_NAME` in the copied `.env`, or clone into a folder of the same name, so the new machine's volume has the name the old one had.
+
+### Database settings and sizing
+
+`compose.yaml` starts MySQL with two settings of its own (the `command:` of `db`):
+
+- **`--disable-log-bin`: no binary log.** Nothing replicates from this database and there is no point-in-time recovery: the backups are the `mysqldump` files above, and a restore brings back the moment of the dump, no later. MySQL 8.4 writes a binary log by default and keeps 30 days of it; nothing here read it, yet each Reading paid a second fsync for it (a commit took 3.75 ms with it and 1.72 ms without), and it held about 3 GB at 100 Devices, plus a full copy of every restored dump. `deploy.sh backup` and `restore` work the same without it (they use `mysqldump --single-transaction`, which needs no binary log). If you ever add a replica or want point-in-time recovery, remove the flag and plan the disk for the log.
+- **`--innodb-buffer-pool-size=512M`**, where MySQL's default is 128 MB. The Campuses overview reads a week of every Device's Readings; with 128 MB that week did not stay in memory and the page took seconds at 90 days. 512 MB holds it for 100 Devices with room to spare. Set `DB_BUFFER_POOL_SIZE` in `.env` (for example `1G` for 300 Devices or more, on a CT with 4 GiB) and run `docker compose up -d` to apply it.
+
+What to plan for, measured with 100 Devices posting every 30 seconds and 90 days kept (26 M Readings):
+
+| | 100 Devices | Each further 100 |
+|---|---|---|
+| MySQL memory | about 470 MiB on a new install, growing to about 1 GiB as the buffer pool fills | the same with 512M; raise `DB_BUFFER_POOL_SIZE` past 300 |
+| `readings` on disk at 90 days | about 3.0 GB (table 1.2 GB, indexes 1.8 GB) | about 3 GB |
+| One backup (`backups/*.sql.gz`) | about 150 MB, taking 30 s | about 150 MB |
+| Restore of that backup | about 4.5 minutes, the api down throughout | proportionally longer |
+
+Readings keep arriving for the first 90 days and then level off, since the retention job removes what is older.
 
 ### Migrating an old database in
 
@@ -323,7 +349,7 @@ No Device needs to change at certificate renewal: one with an `https://` server 
 
 Behind the proxy, every browser and every Device reaches the stack's nginx from the proxy's one address. Per-address limits then count the whole district as one client:
 
-- the cap of 20 open live streams, one per open dashboard tab, which both nginx and the backend apply. The 21st tab open anywhere gets a 429 for its stream, shows Reconnecting, and tries again every 5 seconds until another tab closes.
+- the cap of 60 open live streams per address, one per open Dashboard or Campuses tab, which both nginx and the backend apply (and 400 in all, in the backend). The 61st tab open anywhere gets a 429 for its stream, shows Reconnecting, and tries again every 5 seconds until another tab closes. The load test held 60 streams with the stream adding 1 to 2 ms to each Reading's delivery.
 - the general limits per 15 minutes: 6,000 reads (GET), which about 30 open tabs stay well under (a Campuses tab, the busiest, makes about 90), and 500 changes (everything else; Readings have their own per-Device limit and are not counted). An office of browsers behind one NAT address shares these too, with or without the proxy.
 - the cap of 100 wrong Device tokens per 15 minutes. Past it, every Reading from that address is refused, even with the right token. A few boards still flashed with an old token would then stop every Device behind the proxy from recording.
 

@@ -2,6 +2,7 @@ import express, { type Express, type NextFunction, type Request, type Response }
 import rateLimit from 'express-rate-limit';
 import type { AppDeps, RouteDeps } from './deps';
 import { createBroadcaster } from './sse';
+import { MonotonicStore } from './monotonicStore';
 import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
 import { campusesRouter } from './routes/campuses';
@@ -34,12 +35,14 @@ export function createApp(appDeps: AppDeps): Express {
   // up to every 10 s, about 90 requests per 15 minutes, so an office behind one NAT, or every
   // browser behind a TLS proxy without TRUST_PROXY, would exhaust a shared 500 with a handful of
   // tabs and see blank pages. Changes come from people at Settings and stay tight.
+  // Both count on the monotonic clock, so a host clock step neither locks browsers out nor lets them off (monotonicStore.ts).
   const isRead = (req: Request) => req.method === 'GET' || req.method === 'HEAD';
   app.use(
     '/api/',
     rateLimit({
       windowMs: 15 * 60 * 1000,
       max: READ_LIMIT,
+      store: new MonotonicStore(),
       standardHeaders: true,
       legacyHeaders: false,
       message: { error: 'Too many requests from this IP, please try again later.' },
@@ -52,6 +55,7 @@ export function createApp(appDeps: AppDeps): Express {
     rateLimit({
       windowMs: 15 * 60 * 1000,
       max: WRITE_LIMIT,
+      store: new MonotonicStore(),
       standardHeaders: true,
       legacyHeaders: false,
       message: { error: 'Too many requests from this IP, please try again later.' },

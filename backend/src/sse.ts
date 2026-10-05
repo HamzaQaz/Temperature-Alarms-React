@@ -90,10 +90,12 @@ export interface BroadcasterOptions {
 const DEFAULT_HEARTBEAT_MS = 25_000;
 /**
  * A browser holds at most six HTTP/1.1 connections to one origin, so one technician's tabs fit with
- * room to spare, as do a few screens behind one address. Each stream is a socket here and two in
- * nginx, whose 1024 worker connections are the tighter bound, so the total stays well under that.
+ * room to spare. Per address, room for a wall of screens behind one NAT, or every browser behind a
+ * TLS proxy before TRUST_PROXY is set: the load test held 60 streams with SSE adding 1 to 2 ms
+ * (.scratch/prodtest/load.md). nginx's limit_conn matches it. Each stream is a socket here and two
+ * in nginx, whose 1024 worker connections are the tighter bound, so the total stays well under that.
  */
-export const DEFAULT_MAX_STREAMS_PER_ADDRESS = 20;
+export const DEFAULT_MAX_STREAMS_PER_ADDRESS = 60;
 export const DEFAULT_MAX_STREAMS = 400;
 
 export function createBroadcaster({

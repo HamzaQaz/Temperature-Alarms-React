@@ -14,6 +14,11 @@ services:
   db:
     image: mysql:8.4
     restart: unless-stopped
+    # No binary log: nothing replicates from it and there is no point-in-time recovery; backups are
+    # deploy.sh's mysqldump files. The log cost a second fsync per Reading and about 3 GB on disk at
+    # 100 Devices. A 512 MB buffer pool holds the week the Campuses overview reads; MySQL's 128 MB
+    # default made it 3.5 times slower at 90 days (DEPLOYMENT.md, Sizing).
+    command: ["--disable-log-bin", "--innodb-buffer-pool-size=${DB_BUFFER_POOL_SIZE:-512M}"]
     environment:
       MYSQL_DATABASE: temperature_alarms
       MYSQL_USER: temperature

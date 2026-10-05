@@ -190,6 +190,17 @@ describe('incidents', () => {
       assert.deepEqual(closed.segments, [{ level: 'warning', start: offline.start, end: back.reading.recordedAt }]);
     });
 
+    test('a Reading stamped in the future by a clock step does not hide the silence from the sweep', async () => {
+      const device = await registerDevice();
+      const last = new Date(Math.floor((Date.now() - 5 * MINUTE) / 1000) * 1000);
+      await readingAt(device.id, last, 71, 44);
+      await readingAt(device.id, new Date(Date.now() + 60 * MINUTE), 71, 44);
+      assert.equal(await sweep(), 1);
+      const offline = await only();
+      assert.equal(offline.condition, 'Offline');
+      assert.equal(offline.peak.recordedAt, last.toISOString(), 'the last real Reading, not the future one');
+    });
+
     test('a Device back before the sweep caught its silence still gets the Offline stretch, already closed', async () => {
       const device = await registerDevice();
       // Offline began 9 seconds ago, inside the sweep's period, and no pass has run since.

@@ -212,6 +212,7 @@ describe('upgrading a production database', () => {
       '0003-legacy-readings',
       '0004-readings-recorded-at-index',
       '0005-incidents',
+      '0006-readings-covering-index',
     ]);
   });
 });

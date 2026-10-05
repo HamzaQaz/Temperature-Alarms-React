@@ -5,7 +5,7 @@ import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, TEST_ADMIN_TOKEN, type RunningServer } from './helpers/server';
 import { api, asAdmin, asDevice, json, type Campus, type Dashboard, type Device } from './helpers/api';
 import { subscribe, type SseClient } from './helpers/sse';
-import { createBroadcaster } from '../src/sse';
+import { createBroadcaster, DEFAULT_MAX_STREAMS, DEFAULT_MAX_STREAMS_PER_ADDRESS } from '../src/sse';
 import { DEVICE_AUTH_FAILURE_LIMIT } from '../src/routes/readings';
 
 /** As nginx forwards it: the address it saw is the last X-Forwarded-For entry (app.ts trusts one hop). */
@@ -237,6 +237,19 @@ describe('security', () => {
       open[0].close();
       await until(() => sse.clientCount === 3);
       assert.equal((await listen('192.0.2.1')).response.status, 200);
+    });
+
+    // A wall of Campuses and Dashboard screens behind one NAT: the load test held 60 streams at no measurable cost (.scratch/prodtest/load.md).
+    test('by default one address may hold 60 streams and the server 400', async () => {
+      assert.equal(DEFAULT_MAX_STREAMS_PER_ADDRESS, 60);
+      assert.equal(DEFAULT_MAX_STREAMS, 400);
+      await sseServer.close();
+      sse = createBroadcaster({ heartbeatMs: 60_000 });
+      sseServer = await startServer(pool, testConfig(), { sse });
+      const statuses = await Promise.all(Array.from({ length: 60 }, async () => (await listen('192.0.2.1')).response.status));
+      assert.deepEqual(new Set(statuses), new Set([200]));
+      assert.equal((await listen('192.0.2.1')).response.status, 429);
+      assert.equal((await listen('192.0.2.2')).response.status, 200);
     });
 
     test('the server holds no more than its total number of streams, whatever the addresses', async () => {

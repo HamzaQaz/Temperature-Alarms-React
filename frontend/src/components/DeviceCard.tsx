@@ -21,7 +21,7 @@ interface DeviceCardProps {
   device: DashboardDevice;
   /** Seconds since the latest Reading, ticking in the browser; null when there is none. */
   secondsSinceReading: number | null;
-  /** When the latest Reading's age was zero, in this browser's clock; null when there is none. */
+  /** When the latest Reading's age was zero, on the browser's monotonic clock (lib/elapsed.ts); null when there is none. */
   anchorMs: number | null;
   reportIntervalSeconds: number;
 }

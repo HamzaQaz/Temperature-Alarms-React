@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { usePageVisible } from '@/hooks/use-page-visible';
+import { monotonicNow } from '@/lib/elapsed';
 import { cn } from '@/lib/utils';
 
 export type ReportState = 'due' | 'late' | 'offline' | 'none';
 
 interface ReportHairlineProps {
   state: ReportState;
-  /** When the latest Reading's age was zero, in this browser's clock (from the server's age, not the board's clock). */
+  /** When the latest Reading's age was zero, on the browser's monotonic clock (lib/elapsed.ts), from the server's age. */
   anchorMs: number | null;
   reportIntervalSeconds: number;
 }
@@ -41,7 +42,7 @@ export function ReportHairline({ state, anchorMs, reportIntervalSeconds }: Repor
 
 function Depletion({ anchorMs, intervalMs }: { anchorMs: number; intervalMs: number }) {
   // Fixed at mount: where in the interval this Reading already is. A later render does not move it.
-  const [delayMs] = useState(() => -Math.max(0, Date.now() - anchorMs));
+  const [delayMs] = useState(() => -Math.max(0, monotonicNow() - anchorMs));
   return (
     <span
       className="report-depletion absolute inset-x-0 -top-px h-px origin-left bg-muted-foreground/20"
