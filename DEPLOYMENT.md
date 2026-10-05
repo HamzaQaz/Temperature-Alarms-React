@@ -23,7 +23,7 @@ deploy/deploy.sh deploy --yes          # port 80, default thresholds, no questio
 deploy/deploy.sh schedule-backup       # optional: a backup every night at 02:00, a week kept
 ```
 
-`deploy/deploy.sh` with no action shows a menu instead. `bootstrap` supports Ubuntu, Debian, RHEL, Rocky Linux, AlmaLinux, CentOS Stream, and Fedora. On a server without git yet (a minimal RHEL-family install), `sudo dnf install git` first, or run `bootstrap` from another machine with `--host` (below), which needs no checkout. Elsewhere, install Docker with the Compose v2 plugin yourself: Docker Desktop on macOS and Windows, Docker running Linux containers on Windows Server. On Windows:
+`deploy/deploy.sh` with no action shows a menu instead. `bootstrap` supports Ubuntu, Debian, RHEL, Rocky Linux, AlmaLinux, CentOS Stream, and Fedora. On a server without git yet, install it first: `sudo apt-get update && sudo apt-get install -y git` on a minimal Debian or Ubuntu (a Proxmox CT template has none), `sudo dnf install git` on a minimal RHEL-family install; or run `bootstrap` from another machine with `--host` (below), which needs no checkout. Elsewhere, install Docker with the Compose v2 plugin yourself: Docker Desktop on macOS and Windows, Docker running Linux containers on Windows Server. On Windows:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File deploy\deploy.ps1                 # Windows PowerShell 5.1
@@ -44,7 +44,7 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 | `restore` | Replaces the database with a backup (`--file`, or pick from a list). Asks you to type the project name, and backs up the current database first |
 | `migrate-legacy` | Backs up, then runs `npm run migrate:legacy` in `api` (see [Migrating an old database in](#migrating-an-old-database-in)) |
 | `info` | The dashboard URL, the three secrets masked (`--reveal` to print them), and the two `config.h` lines for the firmware |
-| `stop`, `uninstall` | `docker compose stop`; `docker compose down` and the built images. `--wipe` also deletes the database volume, behind the typed project name |
+| `stop`, `uninstall` | `docker compose stop`; `docker compose down` and the built images, and the `schedule-backup` crontab line if there is one. `--wipe` also deletes the database volume, behind the typed project name. `.env` and `backups/` stay |
 
 Running `deploy` twice is safe: an unchanged checkout leaves the containers running, and a changed one rebuilds and recreates only what changed. The destructive actions take `--confirm <project>` in place of typing the name, so they can be scripted too. The database volume is named after the Compose project, `<project>_db-data`, and the project is Compose's own default, the checkout's folder name. On first install the script writes that name into `.env` as `COMPOSE_PROJECT_NAME`, so renaming or moving the folder later still finds the same volume; it never rewrites the line. Pass `-p` only for a second stack on the same machine, and never to an existing install. An install made by hand before the script has no such line and keeps using the folder name; see [Docker Compose by hand](#docker-compose-by-hand) to pin it.
 
@@ -69,6 +69,40 @@ On each server it connects with plain `ssh`, clones the repo into `~/temperature
 `bootstrap` with `--host` or `--servers` copies `deploy.sh` to each server on its own and runs it there, so a server with no git and no checkout can be prepared from here. `deploy --bootstrap` runs `bootstrap` and then the deploy on each server; each is its own ssh login, so the deploy already has the new `docker` group. `sudo` on the server asks for your password when you run from a terminal; unattended (`--yes` from a script or an agent), the login needs passwordless sudo, and without it `bootstrap` stops and says so.
 
 Apart from `bootstrap`, the servers need git, Docker with Compose v2, and a login that can run `docker` (in the `docker` group), which is what `bootstrap` sets up. Key-based ssh saves typing a password per server; extra ssh options go in `--ssh-opts "-p 2222 -i ~/.ssh/district"` or `DEPLOY_SSH_OPTS`. `deploy.ps1` takes the same `--host`, `--servers`, and `--bootstrap` flags and uses the OpenSSH client built into Windows. The remote side is always `deploy.sh`, so the targets are Linux or macOS servers; for a Windows server, run `deploy.ps1` on it.
+
+### Proxmox LXC
+
+The deploy script runs in a Proxmox container (CT) the same way as on any Debian server, provided the CT can run Docker. This was tested end to end on a stand-in, not on Proxmox itself: a `debian:12` container with systemd as PID 1, run privileged under Docker Desktop (WSL2 kernel 6.18, cgroup v2). Everything below the "Not proven" list is what that run showed.
+
+CT settings:
+
+- **Template and features**: `debian-12-standard`, with `features: nesting=1,keyctl=1` (Options, Features: Nesting and keyctl). Nesting is what lets Docker run inside; Proxmox applies keyctl only to an unprivileged CT.
+- **Privileged or unprivileged**: the stand-in was privileged with the host's cgroup namespace, the closest match to a privileged CT, and everything passed. An unprivileged CT with nesting and keyctl is the usual community setup for Docker and is not proven here (see below). Proxmox's own documentation recommends a VM for application containers such as Docker; a small Debian VM runs this stack with the same commands and none of the caveats below.
+- **Storage**: Docker 29 on a fresh install keeps images in containerd's store with the `overlayfs` snapshotter (`docker info` shows `Storage Driver: overlayfs`, `driver-type: io.containerd.snapshotter.v1`). It worked with `/var/lib/docker` and `/var/lib/containerd` on ext4. It failed on a root that is itself overlayfs, at the first `docker run`: `failed to mount ... fstype: overlay ... err: invalid argument`. A CT root on LVM-thin or a directory store is ext4 and fine. On ZFS, overlayfs needs ZFS 2.2 or newer (Proxmox VE 8.1 and later); on older ZFS, give the CT a mount point on ext4 for `/var/lib/containerd` and `/var/lib/docker`. Neither fuse-overlayfs nor vfs was needed.
+- **Resources**: the running stack uses about 640 MiB (MySQL about 500, the API about 120, nginx about 10). The whole CT peaked at about 1.3 GiB during a first build with no cache. After the first deploy, Docker's stores held 3.4 GB (`/var/lib/containerd` 2.1 GB, `/var/lib/docker` 1.3 GB, of which 0.8 GB is build cache), on top of about 1.5 GB for Debian, Docker's packages, and the clone. Give the CT 2 GiB of memory, 512 MiB of swap, 2 cores, and a 16 GB disk, which leaves room for upgrades and `backups/`. A first build took 3 minutes on 12 cores; fewer cores take longer.
+
+The exact sequence, as the CT's sudo user (`admin` here), from a fresh debian-12 CT:
+
+```bash
+sudo apt-get update && sudo apt-get install -y git
+git clone https://github.com/HamzaQaz/Temperature-Alarms-React.git temperature-alarms
+cd temperature-alarms
+deploy/deploy.sh bootstrap             # Docker 29 from Docker's apt repository, cron, the docker group
+exit                                   # log in again, so the docker group applies
+cd temperature-alarms
+deploy/deploy.sh deploy --yes          # port 80
+deploy/deploy.sh info                  # the URL and config.h lines; --reveal for the tokens
+deploy/deploy.sh schedule-backup --yes # nightly at 02:00, a week kept
+```
+
+What the run showed: `bootstrap` installs and enables Docker, containerd, and cron, and a second run changes nothing. A restart of the CT brings the stack back on its own, healthy and with its data, in about 12 seconds, because `docker` is enabled and every service restarts unless stopped. The cron line fires and writes a backup. `deploy.sh demo --web-port 8091` runs beside the real install on its own volume without touching it. `--at` is the CT's local time, and a fresh CT's clock is UTC, so the default 02:00 is 02:00 UTC; set the zone first (`sudo timedatectl set-timezone America/Chicago && sudo systemctl restart cron`) for a local 02:00. The stack itself runs in UTC either way. `info` reports the CT's own address, the one Devices and browsers use when the CT is on a bridge to the LAN.
+
+Not proven by the stand-in, so check these on the real CT:
+
+- An unprivileged CT. Its uid mapping and AppArmor confinement are where Docker inside LXC most often fails. If `docker run` fails there with `permission denied` from AppArmor or on a sysctl, the stand-in, which had no AppArmor, could not have shown it; try a privileged CT, or ask before relaxing the CT's AppArmor profile.
+- ZFS or LVM-thin storage, and the snapshotter on them (the stand-in's Docker stores were on ext4 volumes).
+- The Proxmox kernel, the Proxmox firewall, and the bridge: the stand-in published port 80 through Docker, not through `vmbr0`. Check `http://<CT address>/api/health` from another machine on the LAN.
+- Starting with the Proxmox host: set the CT to start at boot (`onboot: 1`); the stand-in only restarted the CT, not a host.
 
 ## Ask your Claude agent
 
@@ -220,7 +254,7 @@ A database from the PHP era or the first Node backend holds `devices`, `location
    ```
 
 1. Dump the old database on the old server: `mysqldump temperature_alarms > old.sql`.
-2. In `.env`, set `LEGACY_TIME_ZONE=America/Chicago`, the zone the old writer used. The container's own zone is UTC, so the default would parse every old timestamp six hours wrong. (`deploy/deploy.sh install --yes --set LEGACY_TIME_ZONE=America/Chicago` writes a new `.env` with it.)
+2. In `.env`, set `LEGACY_TIME_ZONE=America/Chicago`, the zone the old writer used. The container's own zone is UTC, so the default would parse every old timestamp six hours wrong. (`deploy/deploy.sh install --yes --set LEGACY_TIME_ZONE=America/Chicago` writes a new `.env` with it; when `.env` already exists, add `--reconfigure`, which sets that one line and keeps the secrets.)
 3. Start only the database and restore into it:
 
    ```bash

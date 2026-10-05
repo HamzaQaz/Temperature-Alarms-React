@@ -359,7 +359,7 @@ The Compose stack from the quick start is the deployment too, and deploying it i
 - **The deploy script.** On the server, `deploy/deploy.sh deploy --yes` (Linux, macOS) or `deploy\deploy.ps1 deploy --yes` (Windows Server) writes `.env` with generated secrets, builds and starts the stack, and checks it is healthy. Run either with no action for a menu that also upgrades, backs up, schedules a nightly backup, restores, shows the tokens and the `config.h` lines, and removes the stack. From one machine, `--host admin@server` (repeatable) or `--servers deploy/servers.txt` does the same on each server over ssh, each keeping its own `.env` and backups.
 - **Ask your Claude agent.** In Claude Code in this repo, say "set up the new server admin@server", "deploy this to admin@server", "upgrade", or "back up nightly"; the `deploy` skill drives the script, keeps the secrets out of the chat, and ends on the health check.
 
-A fresh Linux server (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora) needs only git and sudo:
+A fresh Linux server (Ubuntu, Debian, RHEL, Rocky, AlmaLinux, CentOS Stream, Fedora) needs only git and sudo (on a minimal Debian or Ubuntu, such as a Proxmox CT, `sudo apt-get install -y git` first; see [Proxmox LXC](DEPLOYMENT.md#proxmox-lxc)):
 
 ```bash
 git clone <repo-url> temperature-alarms && cd temperature-alarms

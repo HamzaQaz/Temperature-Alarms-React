@@ -364,7 +364,7 @@ function Invoke-Preflight {
     $drive = (Get-Item -LiteralPath $RepoDir).PSDrive
     if ($drive -and $drive.Free) {
         $mb = [int]($drive.Free / 1MB)
-        if ($mb -lt 1024) { Bad "only $mb MB free on $($drive.Root); the first build needs about 2 GB"; $failed = $true }
+        if ($mb -lt 1024) { Bad "only $mb MB free on $($drive.Root); the first build needs about 3.5 GB"; $failed = $true }
         elseif ($mb -lt 5120) { Warn "$mb MB free on $($drive.Root); 5 GB leaves room for images and backups" }
         else { Ok "$mb MB free on $($drive.Root)" }
     }
@@ -594,6 +594,11 @@ function Invoke-Uninstall {
         Invoke-Dc down --rmi local --remove-orphans
         if ($LASTEXITCODE -ne 0) { Fail 'docker compose down failed' }
         Ok 'containers and built images removed; the database volume stays (--wipe deletes it)'
+    }
+    # A nightly backup of a removed stack fails every night; the task is the operator's to delete.
+    if ($IsWindows -ne $false -and (Get-Command schtasks.exe -ErrorAction SilentlyContinue)) {
+        schtasks.exe /Query /TN 'Temperature Alarms backup' *> $null
+        if ($LASTEXITCODE -eq 0) { Warn 'the nightly backup task is still scheduled; remove it with: schtasks /Delete /F /TN "Temperature Alarms backup"' }
     }
     Write-Host "  .env and backups\ are left in $RepoDir."
 }

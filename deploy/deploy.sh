@@ -129,7 +129,7 @@ Remote (runs this script on each server over ssh; each keeps its own .env and ba
 EOF
 }
 
-need_value() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
+need_value() { if [ $# -lt 2 ] || [ -z "$2" ]; then die "$1 needs a value"; fi; }
 
 parse_args() {
   while [ $# -gt 0 ]; do
@@ -381,11 +381,11 @@ do_preflight() {
   fi
 
   for dir in "$REPO_DIR" "$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"; do
-    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    if [ -z "$dir" ] || [ ! -d "$dir" ]; then continue; fi
     avail=$(df -Pk "$dir" 2>/dev/null | awk 'NR==2 {print int($4/1024)}')
     [ -n "$avail" ] || continue
     root=$dir
-    if [ "$avail" -lt 1024 ]; then bad "only ${avail} MB free on $root; the first build needs about 2 GB"; failed=1
+    if [ "$avail" -lt 1024 ]; then bad "only ${avail} MB free on $root; the first build needs about 3.5 GB"; failed=1
     elif [ "$avail" -lt 5120 ]; then warn "${avail} MB free on $root; 5 GB leaves room for images and backups"
     else ok "${avail} MB free on $root"; fi
   done
@@ -551,7 +551,7 @@ pick_backup() {
   interactive || die "restore needs --file FILE"
   for f in "${files[@]}"; do say "  $i) $f"; i=$((i + 1)); done
   choice=$(ask "Restore which" 1)
-  [ "$choice" -ge 1 ] 2>/dev/null && [ "$choice" -le ${#files[@]} ] || die "no such backup"
+  if ! { [ "$choice" -ge 1 ] && [ "$choice" -le ${#files[@]} ]; } 2>/dev/null; then die "no such backup"; fi
   FILE=${files[$((choice - 1))]}
 }
 
@@ -625,6 +625,11 @@ do_uninstall() {
   else
     dc down --rmi local --remove-orphans || die "docker compose down failed"
     ok "containers and built images removed; the database volume stays (--wipe deletes it)"
+  fi
+  # A nightly backup of a removed stack fails every night, so its crontab line goes too.
+  if ! is_windows_shell && command -v crontab >/dev/null 2>&1 && crontab -l 2>/dev/null | grep -qF "$(cron_marker)"; then
+    crontab -l 2>/dev/null | without_marker | write_crontab
+    ok "removed the nightly backup from $(id -un)'s crontab (schedule-backup puts it back)"
   fi
   say "  .env and $BACKUP_DIR/ are left in $REPO_DIR."
 }
