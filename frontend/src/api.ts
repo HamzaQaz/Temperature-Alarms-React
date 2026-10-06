@@ -1,4 +1,4 @@
-import type { Device, Campus, Dashboard, DashboardOrder, History, Incidents, Overview } from './types';
+import type { Device, DeviceRotation, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incidents, Overview } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -32,6 +32,10 @@ export function describeError(error: unknown): string {
 interface RequestOptions {
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
   body?: unknown;
+  /** A read only the admin may make: it carries the Admin token too. */
+  admin?: boolean;
+  /** A file sent as it is (application/octet-stream) instead of a JSON body. */
+  raw?: Blob;
 }
 
 async function errorMessage(response: Response): Promise<string> {
@@ -45,13 +49,14 @@ async function errorMessage(response: Response): Promise<string> {
 }
 
 /**
- * The one place requests are made. Reads carry no token; anything else carries
+ * The one place requests are made. Reads carry no token (unless `admin`); anything else carries
  * the stored Admin token and turns a 401 into an UnauthorisedError.
  */
-async function request<T>(path: string, { method = 'GET', body }: RequestOptions = {}): Promise<T> {
+async function request<T>(path: string, { method = 'GET', body, admin = false, raw }: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers['Content-Type'] = 'application/json';
-  if (method !== 'GET') {
+  if (raw !== undefined) headers['Content-Type'] = 'application/octet-stream';
+  if (method !== 'GET' || admin) {
     const token = getAdminToken();
     if (token) headers.Authorization = `Bearer ${token}`;
   }
@@ -61,7 +66,7 @@ async function request<T>(path: string, { method = 'GET', body }: RequestOptions
     response = await fetch(`${API_BASE_URL}${path}`, {
       method,
       headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
     });
   } catch (error) {
     throw new ApiError(0, 'Could not reach the server', { cause: error });
@@ -105,6 +110,19 @@ export const editDevice = (id: number, changes: DeviceEdit): Promise<Device> =>
   request(`/api/devices/${id}`, { method: 'PATCH', body: changes });
 
 export const deleteDevice = (id: number): Promise<void> => request(`/api/devices/${id}`, { method: 'DELETE' });
+
+/** The published firmware release and the version each Device last reported. Needs the Admin token. */
+export const getFirmwareStatus = (): Promise<FirmwareStatus> => request('/api/firmware/status', { admin: true });
+
+/** Publish a signed build (the .bin.signed) to every Device, or only to `only`. Needs the Admin token. */
+export const publishFirmware = (image: Blob, only: string[] = []): Promise<FirmwareRelease> =>
+  request(`/api/firmware${only.length > 0 ? `?${new URLSearchParams({ only: only.join(',') })}` : ''}`, { method: 'POST', raw: image });
+
+/** Stop offering the published build; boards keep what they run. Needs the Admin token. */
+export const withdrawFirmware = (): Promise<void> => request('/api/firmware', { method: 'DELETE' });
+
+/** Which Devices still report with the previous Device token during a rotation. Needs the Admin token. */
+export const getDeviceRotation = (): Promise<DeviceRotation> => request('/api/devices/rotation', { admin: true });
 
 // ==================== DASHBOARD ====================
 

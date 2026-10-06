@@ -246,7 +246,7 @@ REPORT_CREATED = "report: 201 created"
 
 STOP_BINARY = "the Device token in the binary is not the server's DEVICE_TOKEN: fix config.h and export the binary again"
 STOP_WIFI = "the first board never joined WiFi: fix the SSID or password in config.h and export the binary again (or start with another board, if this one is suspect)"
-STOP_SERVER = "the server is unreachable from the bench WiFi: fix the server (or SERVER_URL in the binary)"
+STOP_SERVER = "the server is unreachable from the bench WiFi: fix the server (or SERVER_URL in the binary; over https, a certificate that does not chain to a Let's Encrypt root or name SERVER_URL's host, or no time from the server yet, fails the same way)"
 # A report status that stops the batch, and what it says to fix. Neither is the board's fault.
 BATCH_STOP_STATUSES = {"401": STOP_BINARY, "failed": STOP_SERVER}
 

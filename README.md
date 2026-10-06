@@ -22,7 +22,7 @@ You need Docker (Docker Desktop on a laptop, Docker Engine with the Compose plug
 ```bash
 git clone https://github.com/HamzaQaz/Temperature-Alarms-React.git
 cd Temperature-Alarms-React
-cp .env.example .env        # set ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD (openssl rand -hex 32 each)
+cp .env.example .env        # set ADMIN_TOKEN, DEVICE_TOKEN, DB_PASSWORD, DB_ROOT_PASSWORD (openssl rand -hex 32 each)
 docker compose up -d --build
 ```
 
@@ -207,7 +207,12 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | `POST /api/devices` | Admin | `{hostname, campusId, closet}` → 201 Device; hostname must be `ESP_` plus six hex digits; 409 when it exists; 422 when the Campus does not |
 | `PATCH /api/devices/:id` | Admin | `{closet?, campusId?}` → the updated Device. The hostname never changes: a replaced board is a new Device, and a body carrying `hostname` is 422 |
 | `DELETE /api/devices/:id` | Admin | 204; the Device's Readings and incidents go with it |
-| `POST /api/readings` | Device | `{device, temp, humidity}` from the board (`device` is its hostname, `temp` in °F) → 201 `{device, reading: {tempF, humidity, recordedAt}}`; 404 when no Device has that hostname; 422 when a number is missing, `temp` is outside -40 to 200 °F, or `humidity` is outside 0 to 100 (a sensor fault, not a Reading). Limited to 20 Readings a minute per Device, then 429 |
+| `GET /api/firmware` | Device | The boards' hourly update check (ADR 0007): the Device token as Basic credentials `device:<token>` (or a Bearer header), with the ESP8266 update library's `x-ESP8266-STA-MAC` and `x-ESP8266-version` headers. 304 when there is nothing newer for that board, otherwise 200 with the signed image (`application/octet-stream`, `x-MD5`). Records the version the board reported. 400 without a MAC, 404 for an unregistered board. Shares the Readings route's wrong-token limit |
+| `POST /api/firmware?only=ESP_A,ESP_B` | Admin | Publishes a signed build, the request body as `application/octet-stream` (up to 1 MB), to every Device or only those named → 201 `{version, size, md5, publishedAt, only}`. 422 for an unsigned image, one without a version marker, or a version lower than the published one (the same version again changes who it is offered to) |
+| `DELETE /api/firmware` | Admin | 204; no build is offered until the next publish |
+| `GET /api/firmware/status` | Admin | `{release, devices}`: the published build (or null) and every Device with the `firmwareVersion` and `checkedAt` of its last update check (null until it first checks) |
+| `GET /api/devices/rotation` | Admin | `{active, since, previous, unheard}` for a Device token rotation: `active` is true while `DEVICE_TOKEN_PREVIOUS` is set; `previous` lists the Devices whose latest Reading came with the previous token, and `unheard` those not heard at all since `since`, when api started (both empty when not `active`). Settings shows it; `deploy.sh rotate-device-token --finish` waits for both to be empty |
+| `POST /api/readings` | Device | The Device token, or during a rotation the previous one too. `{device, temp, humidity}` from the board (`device` is its hostname, `temp` in °F) → 201 `{device, reading: {tempF, humidity, recordedAt}}`; 404 when no Device has that hostname; 422 when a number is missing, `temp` is outside -40 to 200 °F, or `humidity` is outside 0 to 100 (a sensor fault, not a Reading). Limited to 20 Readings a minute per Device, then 429 |
 | `GET /api/dashboard?campus=SHORTCODE&order=worst\|campus` | none | `{reportIntervalSeconds, offlineAfterSeconds, devices}`: every Device (or only that Campus's), worst first by default (critical, high, warning with Offline among it, moderate, then none; ties by Campus name then closet), or by Campus name then closet with `order=campus`; any other order is 422. Each Device comes with `latestReading`, `online`, `secondsSinceReading`, and its `conditions` worst first |
 | `GET /api/dashboard/stream` | none | Server-Sent Events: one message per Reading ingested, `{type: "reading", device, reading, online, conditions}`; one per incident that opens, changes level, or closes, `{type: "incident", change: "opened" \| "level" \| "closed", incident}` with the incident as `/api/incidents` sends it; plus a heartbeat comment every 25 seconds to keep proxies from closing the stream. Every message is unnamed: tell them apart by `type` |
 | `GET /api/incidents?from=<ISO>&to=<ISO>` | none | `{from, to, incidents}`: every incident that overlaps the window, ongoing ones included, oldest first. Each is `{id, device: {id, hostname, closet, campus}, condition, level, start, end, peak: {value, tempF, humidity, recordedAt}, segments: [{level, start, end}]}`: `level` is the worst reached, `end` is null while ongoing, `peak.value` is °F for Hot and Cold, percent for Dry and Mold risk, and null for Offline (whose peak is the last Reading before it). `from` and `to` are ISO instants with a zone; 422 unless `from` is before `to` and the window is at most 8 days. An incident is a Condition at warning or worse; see ADR 0006 for when one opens and closes |
@@ -280,6 +285,8 @@ The sketch in [`arduino/TemperatureAlarms/`](arduino/TemperatureAlarms/) is the 
 | `network.h/.cpp` | Join WiFi at boot, reconnect from the loop without a reboot, name the Device |
 | `sensor.h/.cpp` | Read the DHT11, skip a NaN sample and say so on serial |
 | `reporter.h/.cpp` | Build the JSON Reading and POST it with the Device token, log the HTTP status |
+| `server.h/.cpp`, `roots.h/.cpp` | Where `SERVER_URL` is; over `https://`, a TLS client that accepts only a Let's Encrypt certificate for that name, with the time taken from the server |
+| `updater.h/.cpp`, `version.h` | Over-the-air updates: every hour, install a newer signed build if the server offers one; `FIRMWARE_VERSION` is this build's number |
 | `config.example.h` | Template for the gitignored `config.h`: SSID, password, server URL, Device token, interval, sensor pin |
 
 There is no on-device web server, no retry loop, and no per-Device setting. Your router's DHCP list shows the same six digits as `ESP-xxxxxx`.
@@ -298,7 +305,7 @@ Board settings, under Tools: board **NodeMCU 1.0 (ESP-12E Module)**, upload spee
 
 ### Flashing
 
-1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials (leave the password `""` for an open network that admits Devices by MAC allowlist, and see [Secrets on the board](#secrets-on-the-board) first), and the server URL without a trailing slash (the sketch appends `/api/readings`): `http://<host>` where the stack runs, with a port only if `WEB_PORT` was changed, or `https://YOUR_DOMAIN` once TLS sits in front of it. A Device flashed with `http://<host>` keeps reporting after TLS goes in front, by hostname or by address, but only through the plain-HTTP Readings route that DEPLOYMENT.md's TLS proxy keeps; the Device cannot follow a redirect to HTTPS. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
+1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials (leave the password `""` for an open network that admits Devices by MAC allowlist, and see [Secrets on the board](#secrets-on-the-board) first), and the server URL without a trailing slash (the sketch appends `/api/readings`). For production boards that is `https://YOUR_DOMAIN`, the same name the dashboard is served at, HTTPS, checked against Let's Encrypt's roots like a browser checks it, is the transport the district chose (see [Transport for production boards](#transport-for-production-boards) below, and run its checks first). On a desk or a lab network, `http://<host>` works too. A Device flashed with `http://<host>` keeps reporting after TLS goes in front, by hostname or by address, but only through the plain-HTTP Readings route that DEPLOYMENT.md's TLS proxy keeps; the Device cannot follow a redirect to HTTPS. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
 2. Open `TemperatureAlarms.ino` in the Arduino IDE, choose the board setting above and the port the NodeMCU appears on, and click Upload.
 3. Open the serial monitor at 115200 and watch the Device join WiFi.
 
@@ -313,18 +320,39 @@ arduino-cli upload  --fqbn esp8266:esp8266:nodemcuv2 -p /dev/ttyUSB0 arduino/Tem
 arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
 ```
 
-An `https://` server URL is sent over TLS without certificate checking, since a pinned certificate would need a reflash at every renewal. The Device token therefore trusts DNS on the closet's network; ADR 0003 records the trade-off.
+Over an `https://` server URL the board checks the server's certificate as a browser does: it must chain to one of Let's Encrypt's roots, built into the firmware (`roots.cpp`: ISRG Root X1, X2, YE, and YR), and name `SERVER_URL`'s host. Checking dates needs the time, which the board takes from the server's own `Date` header (a GET of `/api/health`, with no token); until it has it, it sends nothing (serial says `no time from the server yet`). Renewals, a new server key, or a rebuilt server never need a reflash. ADR 0001 records the decision.
+
+### Transport for production boards
+
+Decided 2026-10-06 (ADR 0001): production boards post over **HTTPS to `https://YOUR_DOMAIN`**, the name the dashboard is reached at too, and check its certificate against **Let's Encrypt's roots**, built into the firmware. The token is encrypted on the wire and goes only to a server with a valid certificate for that name: a spoofed DNS answer, a rogue access point, or any other host fails the handshake before the request goes out, and the board logs `report: failed` and records nothing. Nothing about the server's key is in the boards, so certbot's renewals, a new key, or a rebuilt server need no reflash, and anything that does change is an [over-the-air update](#updating-boards-over-the-air), not a visit to every closet.
+
+Before flashing day:
+
+- [ ] **The server has a Let's Encrypt certificate for `YOUR_DOMAIN`** (DEPLOYMENT.md, step 6), renewing on its own. If the name is not reachable from the internet, issue it with a DNS challenge rather than `--nginx`.
+- [ ] **The device network** resolves `YOUR_DOMAIN` to the server and lets the boards reach it on TCP 443, and nothing else besides its DNS resolver. Give the boards an SSID and VLAN of their own with client isolation (if the SSID is open, by MAC allowlist, it is this VLAN). The board takes the time from the server, so no time server is needed.
+- [ ] **Checked from a machine on the device network:** `nslookup YOUR_DOMAIN` gives the server's address; `curl -i https://YOUR_DOMAIN/api/health` answers `200` (curl checks the certificate the same way); `openssl s_client -connect YOUR_DOMAIN:443 -servername YOUR_DOMAIN -verify_return_error </dev/null 2>&1 | grep 'Verify return code'` prints `Verify return code: 0 (ok)`.
+- [ ] **The signing keys exist** and are in the sketch folder ([Updating boards over the air](#updating-boards-over-the-air), one-time setup), so the boards flashed over USB on flashing day are the last ones anyone flashes by hand.
+- [ ] **One board on the bench first:** serial shows `server: https, 4 roots, time from the server` and `update: on, signed builds only, hourly` at boot, then `report: 201 created`. That also proves the board has the heap for TLS.
+
+What is accepted: anyone able to get a Let's Encrypt certificate for `YOUR_DOMAIN` (that is, whoever controls its DNS) could stand in for the server, as for any browser. The roots last until 2035 (X1) to 2045 (YE, YR), the firmware does not check a root's own expiry, and new roots can be shipped over the air. Anyone holding a board can still read the token from its flash (next section).
 
 ### Secrets on the board
 
 Every board carries the WiFi password and the Device token in plain text: in `config.h`, in the exported `.bin`, and in the board's flash, where anyone holding the board reads them back over USB with `esptool read_flash`. The ESP8266 has no flash encryption or secure boot, so no build setting changes that. Treat a board like a key to the closet network.
 
 - **What the Device token allows.** Posting Readings, and nothing else: it cannot read anything the dashboard does not already show, or change Campuses or Devices. A Reading is accepted only for a hostname registered in Settings (the dashboard lists them), at most 20 a minute per hostname, so a stolen token can send false temperatures for any registered Device: open false incidents, or hide a real one by posting normal values over it. Every board shares the one token, so one lost board exposes all of them.
-- **What the WiFi password allows.** Joining the Devices' network. Give the boards an SSID and VLAN of their own that reaches only the server's port 80 (or 443), with client isolation, so the password opens nothing else.
+- **What the WiFi password allows.** Joining the Devices' network. Give the boards an SSID and VLAN of their own that reaches only the server's port 443, with client isolation, so the password opens nothing else.
 - **An open network** (`WIFI_PASSWORD ""`) is only for an SSID that admits Devices by MAC allowlist, and a MAC allowlist stops nobody determined: the MACs are on the inventory sheet and in every frame the boards send. Use it only on that same isolated VLAN.
 - **Serial.** The firmware never prints the token or the WiFi password; serial shows the SSID, the server URL, the hostname, and each report's status. A refused report prints at most 120 printable characters of the server's answer, so the bench log carries no secret, and a server cannot write a line of its own into it.
-- **Where the token goes.** Only to `SERVER_URL`: the firmware never follows a redirect (a 3xx is logged as `report: 3xx` and nothing is recorded). Over `http://`, anyone who can see the traffic reads the token, hence the isolated VLAN above. Over `https://` it is encrypted, but without a certificate check a machine that answers for the server's name (a spoofed DNS answer, an ARP spoof on the VLAN) can still take it.
-- **A lost or stolen board**, or a token seen in the wrong place: rotate the token. Set a new `DEVICE_TOKEN` in the stack's `.env` (`deploy.sh` or by hand) and restart `api`; from then every board still on the old token is refused with a 401 and records nothing, so plan the rotation as a flashing day. Put the new token in `config.h`, export once, and reflash every board with the watcher, which takes boards already registered (`already`) without moving them from their Campus and Closet and stops the batch at once if the binary carries the wrong token. Behind a proxy without `TRUST_PROXY`, boards still on the old token also trip the wrong-token limit for everyone behind it (DEPLOYMENT.md, TLS); unplug them until they are reflashed.
+- **Where the token goes.** Only to `SERVER_URL`: the firmware never follows a redirect (a 3xx is logged as `report: 3xx` and nothing is recorded). Over `http://`, anyone who can see the traffic reads the token. Over `https://`, as production boards are flashed, it is encrypted and sent only after the server shows a valid certificate for its name, so a machine that answers for the server's name (a spoofed DNS answer, an ARP spoof, a rogue access point) gets a failed handshake, not the token.
+- **A lost or stolen board**, or a token seen in the wrong place: rotate the token, without a dark fleet. The backend accepts the previous token next to the new one until you say the rotation is over:
+  1. On the server, `deploy/deploy.sh rotate-device-token` (or `deploy.ps1`). It moves the current token to `DEVICE_TOKEN_PREVIOUS`, generates a new `DEVICE_TOKEN`, restarts `api` with both, and prints the new `config.h` line, masked; `deploy.sh info --reveal` prints it in full. Boards on either token keep reporting.
+  2. Put the new token in `config.h`, raise `FIRMWARE_VERSION`, export once, and [publish it over the air](#updating-boards-over-the-air): boards download it with the token they still carry, which the server accepts until step 4. A board that does not update (offline, or flashed before over-the-air updates) is reflashed with the watcher, which takes boards already registered (`already`) without moving them from their Campus and Closet.
+  3. Watch Settings: while a rotation is under way it lists every Device whose latest Reading still came with the previous token, and any Device the server has not heard since it last restarted. `api`'s log also names each Device still on the previous token, once an hour, by hostname.
+  4. When the list is empty, `deploy/deploy.sh rotate-device-token --finish` clears the previous token, and only the new one is accepted from then on. It refuses while any Device is listed; a Device that is gone for good can be deleted in Settings, or `--finish --force` (with a typed confirmation) ends the rotation anyway, and the boards left on the old token stop reporting until they are reflashed.
+
+  A lost board's token stays valid until `--finish`, so for a stolen board finish as soon as the fleet is reflashed. One rotation at a time: a second `rotate-device-token` is refused until the first is finished.
+- **The signing key is a secret too.** `private.key` (next section) signs every build the boards will install; whoever holds it and can reach the server's Admin token could install their own firmware on every board. Keep it on the build laptop and in one offline backup, never in the repo (`.gitignore` covers it).
 - **The exported `.bin` is a secret.** Keep it under the sketch's `build/` (gitignored, as is any `.bin` under `arduino/`), never copy it to a share or a ticket, and delete it when the batch is done.
 
 ### Bench checklist
@@ -364,6 +392,31 @@ pip install esptool pyserial
 5. **Clean up.** Delete the exported `.bin` (it holds the WiFi password and the Device token), close the window that holds `ADMIN_TOKEN`, and keep the sheet where only technicians can read it.
 
 The watcher has run one batch of 92 boards (91 passed, one bad sensor). Its logic is unit-tested without hardware (see Tests and checks); a real board on the bench is the acceptance test for any change to it.
+
+### Updating boards over the air
+
+Every board checks the server once an hour (the first time a minute after boot) and installs a newer build if one is published, then restarts; nobody visits a closet. Only builds signed with the district's key are installed: the board checks the signature itself before it boots the new build, so not even someone who takes over the server can put their own firmware on the boards. The server offers a build only to Devices that present the Device token, since the image holds the WiFi password and the token. ADR 0007 has the design.
+
+**One-time setup, before flashing day.** On the build laptop, in the sketch folder (`arduino\TemperatureAlarms`), with OpenSSL (Git for Windows has it in `C:\Program Files\Git\usr\bin`):
+
+```bash
+openssl genrsa -out private.key 2048
+openssl rsa -in private.key -pubout -out public.key
+```
+
+With `public.key` there, every build turns updates on and refuses anything unsigned; with `private.key` there, every build also writes a signed copy, `TemperatureAlarms.ino.bin.signed`, next to the `.bin`. Both files are gitignored. Copy `private.key` to one offline place (a password manager, an encrypted USB key in a safe): if it is lost, boards keep running, but the next update means USB for every board (with new keys); if it leaks, rotate it the same way. The boards flashed over USB on flashing day must be built with the keys present, or they never check for updates (serial says `update: off, this build is not signed`).
+
+**Every update after that:**
+
+1. Make the change (code, `config.h`, a new Device token), and raise `FIRMWARE_VERSION` in `version.h` by one. A board installs a build only if its number is higher than its own.
+2. Export the binary (Sketch, Export Compiled Binary). Use `TemperatureAlarms.ino.bin.signed` from `build/`; the server refuses the unsigned `.bin`.
+3. **One board first.** In Settings, on the Firmware tab, choose the `.signed` file, type one bench board's hostname under "Only these Devices", and Publish. Within the hour that board downloads it, restarts, and reports; the tab shows it on the new version. On its serial: `update: ...` lines, a restart, `firmware: TA-FIRMWARE-VERSION=<new>`, then `report: 201 created`.
+4. **Then every board.** Publish the same file again with "Only these Devices" empty. Over the next hour every board takes it; the tab counts them and names any still on an older build, and any that never checked in.
+5. Delete the exported files (they hold the WiFi password and the Device token).
+
+The same from the server's shell: `deploy/deploy.sh publish-firmware --file TemperatureAlarms.ino.bin.signed --only ESP_A1B2C3`, then again without `--only`; `deploy/deploy.sh firmware-status`; `deploy/deploy.sh withdraw-firmware` stops offering a build (boards keep what they run).
+
+**What can go wrong.** A build that cannot join WiFi or reach the server can never be fixed over the air, since the update check needs both: that is what step 3 is for. The ESP8266 does not roll back to the previous build on its own; a board stuck on a bad build is a USB flash. A download cut short is simply retried at the next check (the board verifies the image's MD5 and signature before switching to it, and keeps running the old build until then). A board flashed before over-the-air updates, or built without the keys, shows as "never checked" on the Firmware tab and needs one USB flash.
 
 ## Deployment
 

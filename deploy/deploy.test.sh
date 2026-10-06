@@ -55,4 +55,151 @@ out=$(bash "$here/deploy.sh" status --yes --servers "$work/servers.txt" 2>&1) &&
 [ -e "$marker" ] && fail "servers file -oProxyCommand: ssh ran the ProxyCommand"
 printf '%s' "$out" | grep -q 'not a host' || fail "servers file -oProxyCommand: no 'not a host' message: $out"
 
+# --- Actions against a fake docker -------------------------------------------------------------
+# A copy of the checkout with docker and curl replaced: docker logs its arguments (and any stdin to
+# db) and answers what the action asks; curl answers the health check. Nothing reaches a real daemon.
+repo="$work/repo"; bin="$work/bin"
+mkdir -p "$repo/deploy" "$bin"
+cp "$here/deploy.sh" "$repo/deploy/deploy.sh"
+cp "$here/../compose.yaml" "$here/../.env.example" "$repo/"
+cat > "$bin/docker" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_DIR:?}/docker.log"
+case "$*" in
+  "compose version --short") echo "2.30.0"; exit 0 ;;
+  "info --format {{.OSType}}") echo "linux"; exit 0 ;;
+  *"volume ls"*) cat "$FAKE_DIR/volumes" 2>/dev/null; exit 0 ;;
+  *"compose"*" config"*) echo "name: ta-test"; exit 0 ;;
+  *"compose"*" ps "*) echo "c0ffee"; exit 0 ;;
+  *"exec -T api node dist/firmwareCli.js"*) { echo "--- $*"; cat; } >> "$FAKE_DIR/fw.stdin"; exit "$(cat "$FAKE_DIR/fw.rc" 2>/dev/null || echo 0)" ;;
+  *"exec -T api node -e"*) cat "$FAKE_DIR/rotation.out" 2>/dev/null; exit "$(cat "$FAKE_DIR/rotation.rc" 2>/dev/null || echo 0)" ;;
+  *"exec -T db sh -c"*"mysqldump"*) printf -- '-- dump\n-- Dump completed\n'; exit 0 ;;
+  *"exec -T db sh -c"*) { echo "--- $*"; cat; } >> "$FAKE_DIR/db.stdin"; exit "$(cat "$FAKE_DIR/db.rc" 2>/dev/null || echo 0)" ;;
+esac
+exit 0
+FAKE
+cat > "$bin/curl" <<'FAKE'
+#!/usr/bin/env bash
+echo '{"status":"ok"}'
+FAKE
+chmod +x "$bin/docker" "$bin/curl"
+export FAKE_DIR="$work"
+run_fake() { (cd "$repo" && PATH="$bin:$PATH" bash deploy/deploy.sh "$@" --yes 2>&1); }
+renv() { grep -E "^$1=" "$repo/.env" | tail -n 1 | cut -d= -f2-; }
+set_env() { sed -i "s/^$1=.*/$1=$2/" "$repo/.env"; }
+hex64() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'; }
+reset_fake() { rm -f "$work/docker.log" "$work/db.stdin" "$work/rotation.out" "$work/rotation.rc" "$work/db.rc" "$work/volumes"; }
+
+# install: four secrets from the CSPRNG, all different; info masks every one of them.
+reset_fake
+out=$(run_fake install --web-port 18098) || fail "install: exit $?: $out"
+for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do hex64 "$(renv $k)" || fail "install: $k is not 64 hex characters"; done
+[ "$(for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do renv $k; echo; done | sort -u | grep -c .)" = 4 ] || fail "install: the four secrets are not all different"
+out=$(run_fake info)
+for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do
+  printf '%s' "$out" | grep -qF "$(renv $k)" && fail "info: $k printed in full without --reveal"
+done
+printf '%s' "$out" | grep -q 'DB root' || fail "info: no DB root line: $out"
+
+# rotate-device-token: the current token moves to DEVICE_TOKEN_PREVIOUS, a new one is generated,
+# the stack is recreated, and the config.h line is masked unless --reveal.
+reset_fake
+old=$(renv DEVICE_TOKEN)
+out=$(run_fake rotate-device-token) || fail "rotate: exit $?: $out"
+new=$(renv DEVICE_TOKEN)
+[ "$(renv DEVICE_TOKEN_PREVIOUS)" = "$old" ] || fail "rotate: DEVICE_TOKEN_PREVIOUS is not the old token"
+{ hex64 "$new" && [ "$new" != "$old" ]; } || fail "rotate: DEVICE_TOKEN is not a new 64-hex token"
+grep -q ' up -d' "$work/docker.log" || fail "rotate: the stack was not recreated"
+printf '%s' "$out" | grep -q '#define DEVICE_TOKEN "' || fail "rotate: no config.h line: $out"
+printf '%s' "$out" | grep -qF "$new" && fail "rotate: the new token printed without --reveal"
+printf '%s' "$out" | grep -q 'rotate-device-token --finish' || fail "rotate: the steps do not say how to finish"
+grep -qF "$old" "$work/docker.log" && fail "rotate: the old token is on a docker command line"
+grep -qF "$new" "$work/docker.log" && fail "rotate: the new token is on a docker command line"
+
+# A second rotation before --finish would strand the boards on the oldest token.
+out=$(run_fake rotate-device-token --reveal) && fail "rotate twice: exit 0"
+{ [ "$(renv DEVICE_TOKEN)" = "$new" ] && [ "$(renv DEVICE_TOKEN_PREVIOUS)" = "$old" ]; } || fail "rotate twice: .env changed"
+printf '%s' "$out" | grep -q 'already under way' || fail "rotate twice: no explanation: $out"
+
+# --finish refuses while api lists Devices on the previous token, naming them.
+reset_fake
+printf 'previous ESP_00000A\nunheard ESP_00000C\n' > "$work/rotation.out"; echo 3 > "$work/rotation.rc"
+out=$(run_fake rotate-device-token --finish) && fail "finish with Devices left: exit 0"
+[ "$(renv DEVICE_TOKEN_PREVIOUS)" = "$old" ] || fail "finish with Devices left: the previous token was cleared"
+{ printf '%s' "$out" | grep -q 'ESP_00000A' && printf '%s' "$out" | grep -q 'ESP_00000C'; } || fail "finish with Devices left: not named: $out"
+grep -q ' up -d' "$work/docker.log" && fail "finish with Devices left: the stack was recreated"
+# --force needs the typed confirmation.
+out=$(run_fake rotate-device-token --finish --force) && fail "finish --force without --confirm: exit 0"
+[ "$(renv DEVICE_TOKEN_PREVIOUS)" = "$old" ] || fail "finish --force without --confirm: cleared"
+out=$(run_fake rotate-device-token --finish --force --confirm ta-test) || fail "finish --force --confirm: exit $?: $out"
+[ -z "$(renv DEVICE_TOKEN_PREVIOUS)" ] || fail "finish --force --confirm: not cleared"
+
+# --finish once the list is empty clears it and recreates the stack; the token stays the new one.
+set_env DEVICE_TOKEN_PREVIOUS "$old"
+reset_fake; : > "$work/rotation.out"; echo 0 > "$work/rotation.rc"
+out=$(run_fake rotate-device-token --finish) || fail "finish: exit $?: $out"
+[ -z "$(renv DEVICE_TOKEN_PREVIOUS)" ] || fail "finish: DEVICE_TOKEN_PREVIOUS not cleared"
+[ "$(renv DEVICE_TOKEN)" = "$new" ] || fail "finish: DEVICE_TOKEN changed"
+grep -q ' up -d' "$work/docker.log" || fail "finish: the stack was not recreated"
+grep -q 'exec -T api node -e' "$work/docker.log" || fail "finish: api was not asked for the list"
+grep -qF "$(renv ADMIN_TOKEN)" "$work/docker.log" && fail "finish: the Admin token is on a docker command line"
+# api unreachable: never cleared on a guess.
+set_env DEVICE_TOKEN_PREVIOUS "$old"
+reset_fake; echo 'GET /api/devices/rotation answered 500' > "$work/rotation.out"; echo 1 > "$work/rotation.rc"
+out=$(run_fake rotate-device-token --finish) && fail "finish with api failing: exit 0"
+[ "$(renv DEVICE_TOKEN_PREVIOUS)" = "$old" ] || fail "finish with api failing: cleared"
+set_env DEVICE_TOKEN_PREVIOUS ""
+
+# An install from before DB_ROOT_PASSWORD (its volume made by master): install leaves root's password
+# alone, other actions still work, deploy explains and needs the typed confirmation, then moves root
+# over with the SQL and the new password on stdin.
+reset_fake
+sed -i '/^DB_ROOT_PASSWORD=/d' "$repo/.env"
+echo ta-test_db-data > "$work/volumes"
+out=$(run_fake install) || fail "legacy install: exit $?: $out"
+[ -z "$(renv DB_ROOT_PASSWORD)" ] || fail "legacy install: generated a DB_ROOT_PASSWORD the volume does not have"
+out=$(run_fake backup) || fail "legacy backup: exit $?: $out"
+printf '%s' "$out" | grep -q 'still shares DB_PASSWORD' || fail "legacy backup: no warning: $out"
+rm -rf "$repo/backups"
+out=$(run_fake deploy --no-pull) && fail "legacy deploy without --confirm: exit 0"
+printf '%s' "$out" | grep -qF "DROP USER IF EXISTS 'root'@'%'" || fail "legacy deploy: no explanation: $out"
+[ -z "$(renv DB_ROOT_PASSWORD)" ] || fail "legacy deploy without --confirm: .env changed"
+[ -e "$work/db.stdin" ] && fail "legacy deploy without --confirm: ran SQL"
+echo 1 > "$work/db.rc"
+out=$(run_fake deploy --no-pull --confirm ta-test) && fail "legacy deploy, MySQL refusing: exit 0"
+[ -z "$(renv DB_ROOT_PASSWORD)" ] || fail "legacy deploy, MySQL refusing: .env keeps a password root does not have"
+reset_fake; echo ta-test_db-data > "$work/volumes"
+out=$(run_fake deploy --no-pull --confirm ta-test) || fail "legacy deploy: exit $?: $out"
+root=$(renv DB_ROOT_PASSWORD)
+hex64 "$root" || fail "legacy deploy: DB_ROOT_PASSWORD not written"
+[ "$root" != "$(renv DB_PASSWORD)" ] || fail "legacy deploy: root still shares DB_PASSWORD"
+grep -qF "DROP USER IF EXISTS 'root'@'%';" "$work/db.stdin" || fail "legacy deploy: root@'%' not dropped"
+grep -qF "ALTER USER 'root'@'localhost' IDENTIFIED BY '$root';" "$work/db.stdin" || fail "legacy deploy: root's password not set"
+grep -qF "$root" "$work/docker.log" && fail "legacy deploy: the root password is on a docker command line"
+grep -q 'mysqldump' "$work/docker.log" || fail "legacy deploy: no backup before the change"
+# And once moved over, deploy leaves it alone.
+reset_fake; echo ta-test_db-data > "$work/volumes"
+out=$(run_fake deploy --no-pull) || fail "deploy after the move: exit $?: $out"
+[ -e "$work/db.stdin" ] && fail "deploy after the move: ran SQL again"
+[ "$(renv DB_ROOT_PASSWORD)" = "$root" ] || fail "deploy after the move: DB_ROOT_PASSWORD changed"
+
+# publish-firmware: the image reaches api as base64 on stdin, never as a file path or an argument;
+# --only is passed through and checked; status and withdraw call the same tool.
+reset_fake; rm -f "$work/fw.stdin" "$work/fw.rc"
+head -c 4096 /dev/urandom > "$work/fw.bin.signed"
+out=$(run_fake publish-firmware) && fail "publish-firmware without --file: exit 0"
+printf '%s' "$out" | grep -q -- '--file' || fail "publish-firmware without --file: no hint: $out"
+out=$(run_fake publish-firmware --file "$work/fw.bin.signed" --only 'ESP_A1B2C3;id') && fail "publish-firmware with a bad --only: exit 0"
+[ -e "$work/fw.stdin" ] && fail "publish-firmware with a bad --only: sent the image"
+out=$(run_fake publish-firmware --file "$work/fw.bin.signed" --only ESP_A1B2C3,ESP_D4E5F6) || fail "publish-firmware: exit $?: $out"
+grep -q -- '--- compose exec -T api node dist/firmwareCli.js publish --only ESP_A1B2C3,ESP_D4E5F6' "$work/fw.stdin" || fail "publish-firmware: wrong command: $(head -n 1 "$work/fw.stdin")"
+sed '1d' "$work/fw.stdin" | base64 -d | cmp -s - "$work/fw.bin.signed" || fail "publish-firmware: the image did not arrive intact on stdin"
+printf '%s' "$out" | grep -q 'without --only' || fail "publish-firmware --only: no next step"
+echo 1 > "$work/fw.rc"
+out=$(run_fake publish-firmware --file "$work/fw.bin.signed") && fail "publish-firmware refused by api: exit 0"
+rm -f "$work/fw.stdin" "$work/fw.rc"
+run_fake firmware-status > /dev/null || fail "firmware-status: exit $?"
+run_fake withdraw-firmware > /dev/null || fail "withdraw-firmware: exit $?"
+{ grep -q 'firmwareCli.js status' "$work/fw.stdin" && grep -q 'firmwareCli.js withdraw' "$work/fw.stdin"; } || fail "status/withdraw: not run in api"
+
 if [ "$fails" -eq 0 ]; then echo "deploy.test.sh: all passed"; else echo "deploy.test.sh: $fails failed"; exit 1; fi

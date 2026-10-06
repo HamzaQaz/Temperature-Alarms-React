@@ -37,6 +37,14 @@ The single shared secret that authorises changes to Devices, Campuses, and histo
 **Device token**:
 The single shared secret every Device sends with each Reading.
 
+**Device token rotation**:
+Replacing the Device token without a dark fleet: for a while the server accepts the **previous Device token** as well as the new one, lists which Devices still report with the previous token (and which it has not heard since it started), and stops accepting the previous one when the rotation is finished. One at a time (docs/adr/0003).
+_Avoid_: Key rollover, token refresh, re-keying
+
+**Firmware release**:
+The one signed firmware build the server offers to Devices over the air, with its version and, while it is staged, the Devices it is offered to. A Device installs it when its version is higher than the Device's own (docs/adr/0007).
+_Avoid_: OTA image, update, push
+
 **Condition**:
 A named state a Device's latest Reading is in, computed on the server from global thresholds set once in the backend configuration: Hot, Cold, Dry, Mold risk, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
 _Avoid_: Alert, alarm, risk, status

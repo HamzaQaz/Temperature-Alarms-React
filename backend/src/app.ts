@@ -3,6 +3,8 @@ import rateLimit from 'express-rate-limit';
 import type { AppDeps, RouteDeps } from './deps';
 import { createBroadcaster } from './sse';
 import { createIngestHealth } from './ingestHealth';
+import { createTokenRotation } from './tokenRotation';
+import { createDeviceAuth } from './deviceAuth';
 import { MonotonicStore } from './monotonicStore';
 import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
@@ -11,6 +13,7 @@ import { campusOverviewRouter } from './routes/campusOverview';
 import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
 import { incidentsRouter } from './routes/incidents';
+import { firmwareRouter } from './routes/firmware';
 
 /**
  * Per address per 15 minutes on /api/. Reads: 30 Campuses tabs, the busiest page, make about
@@ -27,6 +30,8 @@ export function createApp(appDeps: AppDeps): Express {
     sse: appDeps.sse ?? createBroadcaster(),
     // Two Report intervals: long enough that a failure is seen by the next healthcheck, short enough to clear on its own.
     ingest: appDeps.ingest ?? createIngestHealth(2 * appDeps.config.reportIntervalSeconds * 1000),
+    rotation: appDeps.rotation ?? createTokenRotation(),
+    deviceAuth: createDeviceAuth(appDeps.config),
   };
   const app = express();
   // Naming the framework only helps someone matching it to an advisory.
@@ -80,6 +85,7 @@ export function createApp(appDeps: AppDeps): Express {
   app.use('/api/readings', readingsRouter(deps));
   app.use('/api/dashboard', dashboardRouter(deps));
   app.use('/api/incidents', incidentsRouter(deps));
+  app.use('/api/firmware', firmwareRouter(deps));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });

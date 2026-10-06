@@ -93,6 +93,23 @@ describe('loadConfig', () => {
     );
   });
 
+  test('DEVICE_TOKEN_PREVIOUS is optional, and read when set (a rotation under way)', () => {
+    assert.equal(loadConfig(complete).deviceTokenPrevious, undefined);
+    assert.equal(loadConfig({ ...complete, DEVICE_TOKEN_PREVIOUS: '  ' }).deviceTokenPrevious, undefined);
+    assert.equal(loadConfig({ ...complete, DEVICE_TOKEN_PREVIOUS: 'old-device-secret' }).deviceTokenPrevious, 'old-device-secret');
+  });
+
+  test('refuses a DEVICE_TOKEN_PREVIOUS equal to the Device token or the Admin token, never printing it', () => {
+    assert.throws(
+      () => loadConfig({ ...complete, DEVICE_TOKEN_PREVIOUS: 'device-secret' }),
+      (err: unknown) => err instanceof ConfigError && /DEVICE_TOKEN_PREVIOUS/.test(err.message) && /DEVICE_TOKEN\b/.test(err.message) && !/device-secret/.test(err.message),
+    );
+    assert.throws(
+      () => loadConfig({ ...complete, DEVICE_TOKEN_PREVIOUS: 'admin-secret' }),
+      (err: unknown) => err instanceof ConfigError && /DEVICE_TOKEN_PREVIOUS/.test(err.message) && /ADMIN_TOKEN/.test(err.message) && !/admin-secret/.test(err.message),
+    );
+  });
+
   test('warns about a token too short to resist guessing, naming it but never printing it', () => {
     const strong = 'a'.repeat(MIN_TOKEN_LENGTH);
     assert.deepEqual(tokenWarnings(loadConfig({ ...complete, ADMIN_TOKEN: strong, DEVICE_TOKEN: `b${strong}` })), []);
@@ -101,6 +118,9 @@ describe('loadConfig', () => {
     assert.match(warnings[0], /ADMIN_TOKEN/);
     assert.match(warnings[1], /DEVICE_TOKEN/);
     for (const warning of warnings) assert.ok(!warning.includes('admin-secret') && !warning.includes('device-secret'), warning);
+    const rotating = tokenWarnings(loadConfig({ ...complete, ADMIN_TOKEN: strong, DEVICE_TOKEN: `b${strong}`, DEVICE_TOKEN_PREVIOUS: 'old' }));
+    assert.equal(rotating.length, 1);
+    assert.match(rotating[0], /DEVICE_TOKEN_PREVIOUS/);
   });
 
   test('rejects a non-numeric or non-positive number', () => {

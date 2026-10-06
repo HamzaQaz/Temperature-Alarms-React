@@ -15,7 +15,7 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 ENV_FILE=".env"
 BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
-SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD"
+SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD"
 TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE"
 # The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
 DEMO_PROJECT="temperature-alarms-demo"
@@ -47,6 +47,11 @@ KEEP_DAYS=""
 AT="02:00"
 BOOTSTRAP=0
 DOWN=0
+FINISH=0
+FORCE=0
+ONLY=""
+# 1 for an install from before DB_ROOT_PASSWORD, whose root password is still DB_PASSWORD (legacy_root_env).
+LEGACY_ROOT=0
 DC_ARGS=()
 HOSTS=()
 SERVERS_FILE=""
@@ -93,6 +98,16 @@ With no action and a terminal, shows a menu. Actions:
   restore [FILE]     Replace the database with a backup (typed confirmation; backs up first)
   migrate-legacy     Back up, then run `npm run migrate:legacy` in api
   info               The URL, the tokens (masked unless --reveal), and the config.h lines
+  rotate-device-token  Start a Device token rotation: the current token becomes
+                     DEVICE_TOKEN_PREVIOUS, still accepted, and a new DEVICE_TOKEN is generated;
+                     prints the new config.h line (masked unless --reveal). Reflash the boards,
+                     then --finish clears the previous token once Settings lists no Device on it
+                     (--force finishes anyway, with a typed confirmation).
+  publish-firmware   Offer a signed firmware build to the boards over the air: --file the
+                     TemperatureAlarms.ino.bin.signed from the build, --only ESP_A,ESP_B to offer
+                     it to those Devices first (publish again without --only for every Device)
+  firmware-status    The published build and the version each Device runs
+  withdraw-firmware  Stop offering the published build; boards keep what they run
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
                      (typed confirmation). .env and backups/ stay.
@@ -115,6 +130,8 @@ Options:
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
       --wipe            uninstall also deletes the database volume
       --down            demo: remove the demo instead of starting it
+      --finish, --force rotate-device-token: end the rotation (--force: even with Devices left)
+      --only HOSTNAMES  publish-firmware: only these Devices, comma-separated
       --file FILE       Backup file for restore
       --keep-days N     backup and schedule-backup: delete this project's backups older than N days
       --at HH:MM        schedule-backup: the time of day (default 02:00)
@@ -147,6 +164,9 @@ parse_args() {
       --confirm) need_value "$@"; CONFIRM=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --wipe) WIPE=1; PASS_ARGS+=("$1") ;;
       --down) DOWN=1; PASS_ARGS+=("$1") ;;
+      --finish) FINISH=1; PASS_ARGS+=("$1") ;;
+      --force) FORCE=1; PASS_ARGS+=("$1") ;;
+      --only) need_value "$@"; ONLY=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --file) need_value "$@"; FILE=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --follow|-f) FOLLOW=1; PASS_ARGS+=("$1") ;;
       --service) need_value "$@"; SERVICE=$2; PASS_ARGS+=("$1" "$2"); shift ;;
@@ -379,6 +399,8 @@ prompt_tunables() {
 fill_missing_secrets() {
   local k filled=""
   for k in $SECRETS; do
+    # An older install's root already has a password, DB_PASSWORD; deploy moves it over (migrate_root_password).
+    if [ "$k" = DB_ROOT_PASSWORD ] && [ "$LEGACY_ROOT" -eq 1 ]; then continue; fi
     if [ -z "$(env_get "$k")" ]; then
       env_set "$k" "$(gen_secret)"; filled="$filled $k"
     fi
@@ -542,9 +564,71 @@ maybe_pull() {
   ok "code already up to date"
 }
 
+# The project's database volume, if Compose has made one.
+db_volume_exists() {
+  [ -n "$(docker volume ls -q --filter "label=com.docker.compose.project=$(project_name)" --filter "label=com.docker.compose.volume=db-data" 2>/dev/null)" ]
+}
+
+# An install from before DB_ROOT_PASSWORD keeps root's password, DB_PASSWORD, in its volume: MySQL
+# takes MYSQL_ROOT_PASSWORD only when the volume is first created. Until deploy moves root over, every
+# action runs Compose with DB_ROOT_PASSWORD set to that, from this process's environment, so backups
+# keep working; compose.yaml refuses to start without it otherwise.
+legacy_root_env() {
+  # Called again for the demo's own .env.demo: the real install's value must not carry over.
+  [ "$LEGACY_ROOT" -eq 1 ] && unset DB_ROOT_PASSWORD
+  LEGACY_ROOT=0
+  [ -f "$ENV_FILE" ] || return 0
+  [ -z "$(env_get DB_ROOT_PASSWORD)" ] && [ -n "$(env_get DB_PASSWORD)" ] || return 0
+  DB_ROOT_PASSWORD=$(env_get DB_PASSWORD); export DB_ROOT_PASSWORD
+  if db_volume_exists; then
+    LEGACY_ROOT=1
+    case "$ACTION" in deploy|upgrade|install) ;; *) warn "MySQL root still shares DB_PASSWORD (an install from before DB_ROOT_PASSWORD); deploy.sh deploy gives it its own" ;; esac
+  else
+    unset DB_ROOT_PASSWORD
+  fi
+}
+
+# One time, on an install from before DB_ROOT_PASSWORD: drop root's network login, if the volume
+# predates MYSQL_ROOT_HOST, and give root a password of its own, which api never holds.
+migrate_root_password() {
+  [ "$LEGACY_ROOT" -eq 1 ] || return 0
+  step "Give MySQL root its own password (DB_ROOT_PASSWORD)"
+  say "  This install's database was created when MySQL root shared DB_PASSWORD with api, and older"
+  say "  volumes also let root log in over the network. Once, this:"
+  say "    1. starts db and backs up the database"
+  say "    2. runs, as root inside db:  DROP USER IF EXISTS 'root'@'%';"
+  say "                                 ALTER USER 'root'@'localhost' IDENTIFIED BY '<new password>';"
+  say "    3. writes the new password to .env as DB_ROOT_PASSWORD; api never sees it"
+  say "  To do it by hand instead, see DEPLOYMENT.md, \"Separate MySQL root password\"."
+  typed_confirm "This changes MySQL root's password on the $(project_name) database."
+  dc up -d --wait --wait-timeout 600 db || die "db did not start; nothing was changed"
+  do_backup
+  local new
+  new=$(gen_secret)
+  # .env first, so the new password is never only inside MySQL; put back if MySQL refuses it.
+  env_set DB_ROOT_PASSWORD "$new"
+  # On stdin, so the password is on no command line. DROP first: a failure stops before the ALTER,
+  # leaving root as it was. The password is hex, so needs no quoting in SQL.
+  # shellcheck disable=SC2016 # $MYSQL_ROOT_PASSWORD expands inside the db container
+  printf "DROP USER IF EXISTS 'root'@'%%';\nALTER USER 'root'@'localhost' IDENTIFIED BY '%s';\n" "$new" \
+    | dc exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot'
+  # Whatever mysql said, believe only a login with the new password.
+  # shellcheck disable=SC2016 # $p is read inside the db container
+  if ! printf '%s\n' "$new" | dc exec -T db sh -c 'read -r p; MYSQL_PWD="$p" exec mysql -uroot -e "SELECT 1"' >/dev/null; then
+    env_set DB_ROOT_PASSWORD ""
+    die "MySQL refused the new root password; root is unchanged and .env is as it was. The backup is $LAST_BACKUP"
+  fi
+  unset DB_ROOT_PASSWORD
+  LEGACY_ROOT=0
+  ok "root has its own password (DB_ROOT_PASSWORD in .env) and logs in only inside db"
+}
+
 check_secrets() {
   local k
-  for k in $SECRETS; do [ -n "$(env_get "$k")" ] || die "$k is empty in .env; run: deploy.sh install"; done
+  for k in $SECRETS; do
+    [ "$k" = DB_ROOT_PASSWORD ] && [ "$LEGACY_ROOT" -eq 1 ] && continue
+    [ -n "$(env_get "$k")" ] || die "$k is empty in .env; run: deploy.sh install"
+  done
 }
 
 health() {
@@ -576,6 +660,8 @@ site_url() {
 
 do_deploy() {
   [ -f "$ENV_FILE" ] || do_install
+  migrate_root_password
+  fill_missing_secrets
   check_secrets
   maybe_pull
   do_preflight || die "preflight failed; fix the [FAIL] lines above"
@@ -709,7 +795,9 @@ do_info() {
   say "  Dashboard     $url"
   say "  Admin token   $(mask "$(env_get ADMIN_TOKEN)")   (Settings page)"
   say "  Device token  $(mask "$(env_get DEVICE_TOKEN)")"
+  [ -n "$(env_get DEVICE_TOKEN_PREVIOUS)" ] && say "  Previous      $(mask "$(env_get DEVICE_TOKEN_PREVIOUS)")   (still accepted: rotate-device-token --finish ends that)"
   say "  DB password   $(mask "$(env_get DB_PASSWORD)")"
+  say "  DB root       $(mask "$(env_get DB_ROOT_PASSWORD)")"
   say ""
   say "  For arduino/TemperatureAlarms/config.h:"
   say "    #define SERVER_URL \"$server\""
@@ -717,6 +805,112 @@ do_info() {
   [ -n "$interval" ] && [ "$interval" != 30 ] && say "    #define REPORT_INTERVAL_SECONDS $interval"
   [ "$REVEAL" -eq 0 ] && say "  ${C_DIM}Masked. Add --reveal to print them in full.${C_OFF}"
   return 0
+}
+
+# --- Device token rotation (docs/adr/0003) ---------------------------------------------
+# Asks api, inside its own container, which Devices still report with the previous token: the
+# Admin token comes from api's environment, so it is on no command line. Prints one line per
+# Device ("previous HOSTNAME" or "unheard HOSTNAME") and exits 0 when there are none, 3 otherwise.
+# Template literals only: no quote characters, which Windows PowerShell 5.1 would mangle on the way.
+# shellcheck disable=SC2016 # JavaScript, run by node inside api
+ROTATION_JS='fetch(`http://127.0.0.1:3001/api/devices/rotation`,{headers:{authorization:`Bearer ${process.env.ADMIN_TOKEN}`}}).then(async(r)=>{if(!r.ok)throw new Error(`GET /api/devices/rotation answered ${r.status}`);const b=await r.json();for(const d of b.previous)console.log(`previous ${d.hostname}`);for(const d of b.unheard)console.log(`unheard ${d.hostname}`);process.exit(b.previous.length+b.unheard.length===0?0:3)}).catch((e)=>{console.error(e.message);process.exit(1)})'
+
+# Recreates whatever the changed .env touches (api for the tokens) and waits for health.
+apply_env() {
+  step "Apply .env (docker compose up -d --wait)"
+  dc up -d --remove-orphans --wait --wait-timeout 600 && health 30
+}
+
+do_rotate_device_token() {
+  [ -f "$ENV_FILE" ] || die "not installed here yet (no .env); run: deploy.sh deploy"
+  check_secrets
+  if [ "$FINISH" -eq 1 ]; then finish_rotation; return; fi
+  step "Rotate the Device token"
+  if [ -n "$(env_get DEVICE_TOKEN_PREVIOUS)" ]; then
+    die "a rotation is already under way; finish it first (deploy.sh rotate-device-token --finish), or the boards still on its previous token would stop reporting"
+  fi
+  running api || die "api is not running; start the stack first (deploy.sh deploy)"
+  confirm "Generate a new Device token? Boards keep reporting with the current one until --finish." y || die "not rotated; nothing was changed"
+  local old
+  old=$(env_get DEVICE_TOKEN)
+  env_set DEVICE_TOKEN_PREVIOUS "$old"
+  env_set DEVICE_TOKEN "$(gen_secret)"
+  ok "DEVICE_TOKEN is new; the old one is DEVICE_TOKEN_PREVIOUS, accepted until --finish"
+  if ! apply_env; then
+    env_set DEVICE_TOKEN "$old"
+    env_set DEVICE_TOKEN_PREVIOUS ""
+    apply_env
+    die "api did not come back with both tokens; .env is back to the old token alone"
+  fi
+  say ""
+  say "  For arduino/TemperatureAlarms/config.h, from now on:"
+  say "    #define DEVICE_TOKEN \"$(mask "$(env_get DEVICE_TOKEN)")\""
+  [ "$REVEAL" -eq 0 ] && say "  ${C_DIM}Masked. deploy.sh info --reveal prints it in full.${C_OFF}"
+  say ""
+  say "  Next:"
+  say "    1. Put the new token in config.h, export a binary, and reflash every board (README,"
+  say "       \"Flashing a batch\"). Until step 3, boards on either token keep reporting."
+  say "    2. Watch Settings: its rotation line lists every Device still on the previous token,"
+  say "       and any not heard since api restarted. Reflash those."
+  say "    3. When that list is empty: deploy.sh rotate-device-token --finish"
+}
+
+finish_rotation() {
+  step "Finish the Device token rotation"
+  if [ -z "$(env_get DEVICE_TOKEN_PREVIOUS)" ]; then
+    ok "no rotation is under way (DEVICE_TOKEN_PREVIOUS is empty)"; return 0
+  fi
+  running api || die "api is not running; start the stack first (deploy.sh deploy)"
+  local out rc=0
+  out=$(dc exec -T api node -e "$ROTATION_JS" 2>&1) || rc=$?
+  case "$rc" in
+    0) ok "every Device has reported with the new token since api started" ;;
+    3)
+      printf '%s\n' "$out" | sed -n 's/^previous /  still on the previous token: /p; s/^unheard /  not heard since api started: /p'
+      if [ "$FORCE" -eq 0 ]; then
+        die "$(printf '%s\n' "$out" | grep -cE '^(previous|unheard) ') Devices may still hold the previous token. Reflash them (or delete in Settings a Device that is gone), wait a Report interval, and run --finish again; --force finishes anyway"
+      fi
+      typed_confirm "The Devices above stop reporting until they are reflashed with the new token."
+      ;;
+    *) die "could not read the rotation list from api: $out" ;;
+  esac
+  env_set DEVICE_TOKEN_PREVIOUS ""
+  apply_env || die "api did not come back healthy; see: deploy.sh logs --service api"
+  ok "the previous Device token is no longer accepted"
+}
+
+# --- Over-the-air firmware (docs/adr/0007) ----------------------------------------------
+# The image goes into api as base64 on stdin and is stored in the database; boards fetch it with the
+# Device token. backend/src/firmwareCli.ts checks it is a signed build with a higher version.
+firmware_cli() {
+  running api || die "api is not running; start the stack first (deploy.sh deploy)"
+  dc exec -T api node dist/firmwareCli.js "$@"
+}
+
+do_publish_firmware() {
+  step "Publish firmware"
+  [ -n "$FILE" ] || die "publish-firmware needs --file PATH: the TemperatureAlarms.ino.bin.signed the build writes"
+  [ -f "$FILE" ] || die "$FILE does not exist"
+  local args=(publish)
+  if [ -n "$ONLY" ]; then
+    case "$ONLY" in *[!A-Za-z0-9_,-]*) die "--only takes Device hostnames, comma-separated (ESP_A1B2C3,ESP_D4E5F6)" ;; esac
+    args+=(--only "$ONLY")
+  fi
+  base64 < "$FILE" | firmware_cli "${args[@]}" || die "not published; see the line above"
+  if [ -n "$ONLY" ]; then
+    say "  Next: watch those Devices (deploy.sh firmware-status, or Settings) for an hour; then publish the"
+    say "  same file again without --only to offer it to every Device."
+  fi
+}
+
+do_firmware_status() {
+  step "Firmware"
+  firmware_cli status
+}
+
+do_withdraw_firmware() {
+  step "Withdraw firmware"
+  firmware_cli withdraw
 }
 
 do_stop() {
@@ -748,6 +942,8 @@ do_uninstall() {
 use_demo() {
   ENV_FILE=$DEMO_ENV
   DC_ARGS=(-p "$DEMO_PROJECT" --env-file "$DEMO_ENV" -f compose.yaml -f compose.demo.yaml)
+  # A demo from before DB_ROOT_PASSWORD keeps root on DB_PASSWORD; it is throwaway, so it stays so.
+  legacy_root_env
 }
 
 write_demo_env() {
@@ -1033,6 +1229,10 @@ run_action() {
     restore) do_restore ;;
     migrate-legacy) do_migrate_legacy ;;
     info) do_info ;;
+    rotate-device-token) do_rotate_device_token ;;
+    publish-firmware) do_publish_firmware ;;
+    firmware-status) do_firmware_status ;;
+    withdraw-firmware) do_withdraw_firmware ;;
     stop) do_stop ;;
     uninstall) do_uninstall ;;
     demo) do_demo ;;
@@ -1051,19 +1251,23 @@ menu() {
     say "   5) Logs                     12) Bootstrap this server (Docker, git, cron)"
     say "   6) Back up the database     13) Schedule a nightly backup"
     say "   7) Restore the database     14) Unschedule the nightly backup"
-    say "  15) Demo, no hardware needed  q) Quit"
+    say "  15) Demo, no hardware needed 16) Rotate the Device token"
+    say "  17) Finish the Device token rotation    18) Firmware status"
+    say "  19) Publish firmware (asks for the file)  q) Quit"
     read -r -p "  Choose: " choice || exit 0
     case "$choice" in
       1) action=preflight ;; 2) action=install ;; 3) action=deploy ;; 4) action=status ;;
       5) action=logs ;; 6) action=backup ;; 7) action=restore ;; 8) action=migrate-legacy ;;
       9) action=info ;; 10) action=stop ;; 11) action=uninstall ;; 12) action=bootstrap ;;
       13) action=schedule-backup ;; 14) action=unschedule-backup ;; 15) action=demo ;;
+      16) action=rotate-device-token ;; 17) action=rotate-device-token; FINISH=1 ;;
+      18) action=firmware-status ;; 19) action=publish-firmware; FILE=$(ask "The .bin.signed to publish" "") ;;
       q|Q|quit|exit) exit 0 ;;
       *) warn "no such choice"; continue ;;
     esac
     # A subshell, so a failed action returns to the menu instead of exiting it.
-    ( run_action "$action" ) || warn "$action did not finish"
-    FILE=""; REVEAL=0; WIPE=0
+    ( legacy_root_env; run_action "$action" ) || warn "$action did not finish"
+    FILE=""; REVEAL=0; WIPE=0; FINISH=0
   done
 }
 
@@ -1167,6 +1371,7 @@ main() {
     interactive || { usage; exit 1; }
     menu
   fi
+  legacy_root_env
   run_action "$ACTION"
 }
 

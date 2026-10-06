@@ -14,6 +14,33 @@ export interface Device {
   campus: Campus;
 }
 
+/**
+ * A Device token rotation (GET /api/devices/rotation, Admin token): while the previous token is
+ * still accepted, the Devices whose latest Reading used it, and those not heard since `since`.
+ */
+export interface DeviceRotation {
+  active: boolean;
+  since: string;
+  previous: Device[];
+  unheard: Device[];
+}
+
+/** The firmware build on offer to Devices over the air (docs/adr/0007). */
+export interface FirmwareRelease {
+  version: number;
+  size: number;
+  md5: string;
+  publishedAt: string;
+  /** The Devices it is offered to, or null for every Device. */
+  only: string[] | null;
+}
+
+/** GET /api/firmware/status (Admin token): the release and the version each Device last reported. */
+export interface FirmwareStatus {
+  release: FirmwareRelease | null;
+  devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null }>;
+}
+
 /** One temperature and humidity sample sent by a Device at a single moment. */
 export interface Reading {
   tempF: number;

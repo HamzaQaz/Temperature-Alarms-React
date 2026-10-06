@@ -24,6 +24,9 @@ async function main(): Promise<void> {
   }
 
   for (const warning of tokenWarnings(config)) console.warn(`Warning: ${warning}`);
+  if (config.deviceTokenPrevious !== undefined) {
+    console.log('Device token rotation under way: Readings with DEVICE_TOKEN_PREVIOUS are accepted until it is cleared (Settings lists the Devices still on it)');
+  }
 
   const pool = createPool(config.database);
   const applied = await runMigrations(pool, { context: migrationContext(config) });

@@ -1,4 +1,4 @@
-# The whole system on one port (docs/adr/0005): `cp .env.example .env`, fill in the three
+# The whole system on one port (docs/adr/0005): `cp .env.example .env`, fill in the four
 # secrets, then `docker compose up -d --build`. The database is a named volume, so data
 # survives `down`; `down -v` wipes it. See DEPLOYMENT.md.
 #
@@ -23,10 +23,13 @@ services:
       MYSQL_DATABASE: temperature_alarms
       MYSQL_USER: temperature
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env (openssl rand -hex 32)}
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
-      # root only through the socket inside this container (deploy.sh's backups and restores, the
-      # commands in DEPLOYMENT.md), never over the network: the root password is DB_PASSWORD, which
-      # api holds too. The image's default is root@'%'. Applies when the volume is first created.
+      # Root has its own password, which api never holds: a code-execution bug in api reaches the
+      # app's own database, not MySQL root. Used by deploy.sh's backups and restores and the
+      # commands in DEPLOYMENT.md, through the socket inside this container. Like MYSQL_ROOT_HOST,
+      # the image applies it only when the volume is first created; deploy.sh deploy moves an older
+      # volume over once (DEPLOYMENT.md, Separate MySQL root password).
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env (openssl rand -hex 32); for an install older than it, run deploy.sh deploy once, which moves root over (DEPLOYMENT.md)}
+      # root only through that socket, never over the network. The image's default is root@'%'.
       MYSQL_ROOT_HOST: localhost
     volumes:
       - db-data:/var/lib/mysql
@@ -60,6 +63,8 @@ services:
       DB_NAME: temperature_alarms
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env (openssl rand -hex 32)}
       DEVICE_TOKEN: ${DEVICE_TOKEN:?Set DEVICE_TOKEN in .env (openssl rand -hex 32)}
+      # Set only during a Device token rotation (deploy.sh rotate-device-token, docs/adr/0003).
+      DEVICE_TOKEN_PREVIOUS: ${DEVICE_TOKEN_PREVIOUS:-}
       REPORT_INTERVAL_SECONDS: ${REPORT_INTERVAL_SECONDS:-30}
       RETENTION_DAYS: ${RETENTION_DAYS:-90}
       HOT_WARNING_F: ${HOT_WARNING_F:-82}

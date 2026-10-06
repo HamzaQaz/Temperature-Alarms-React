@@ -49,4 +49,158 @@ try {
 }
 finally { Remove-Item -LiteralPath $EnvPath -ErrorAction SilentlyContinue }
 
+# --- Actions against a fake docker -------------------------------------------------------------
+# Every function and top-level setting of deploy.ps1, in a scope of their own, with docker, the
+# health check, and the backup replaced: the fake logs each docker call (and what is piped to db)
+# and answers what the action asks. Nothing reaches a real daemon.
+$work = Join-Path ([System.IO.Path]::GetTempPath()) "deploy-test-$PID"
+New-Item -ItemType Directory -Path $work -Force | Out-Null
+$fake = @{ Log = @(); DbStdin = @(); FwStdin = @(); FwRc = 0; RotationOut = @(); RotationRc = 0; DbRc = 0; Volume = $false }
+$run = {
+    param([string[]]$Arguments)
+    $script:ast = $ast
+    foreach ($statement in $ast.EndBlock.Statements) {
+        # The paths come from the script's own location, which a script block has not; they are set below.
+        if ($statement -is [System.Management.Automation.Language.AssignmentStatementAst]) { try { . ([scriptblock]::Create($statement.Extent.Text)) } catch { } }
+    }
+    foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+    $RepoDir = $work; $EnvPath = Join-Path $work '.env'; $ExamplePath = Join-Path $PSScriptRoot '..\.env.example'
+    $BackupDir = Join-Path $work 'backups'; $UseColour = $false
+    function Invoke-Dc {
+        $line = "$args"; $fake.Log += $line
+        $global:LASTEXITCODE = 0
+        if ($line -like 'exec -T api node dist/firmwareCli.js*') { $fake.FwStdin += @($input | ForEach-Object { "$_" }); $global:LASTEXITCODE = $fake.FwRc; return }
+        if ($line -like 'exec -T api node -e*') { $fake.RotationOut; $global:LASTEXITCODE = $fake.RotationRc; return }
+        if ($line -like 'exec -T db sh -c*') { $fake.DbStdin += @($input | ForEach-Object { "$_" }); $global:LASTEXITCODE = $fake.DbRc; return }
+    }
+    function Invoke-DcStdin { $input | Invoke-Dc @args }
+    function Test-Running { return $true }
+    function Get-ProjectName { return 'ta-test' }
+    function Test-Health { return $true }
+    function Test-DbVolume { return $fake.Volume }
+    function Invoke-Preflight { return $true }
+    function Invoke-MaybePull { }
+    function Invoke-Backup { $fake.Log += 'backup'; $script:LastBackup = 'backups\ta-test.sql.gz' }
+    function Write-Host { $fake.Out += @("$args") }
+    $fake.Out = @()
+    Read-Args $Arguments
+    $O.Yes = $true
+    try { Set-LegacyRootEnv; Invoke-Action $O.Action; return $true }
+    catch { $fake.Out += "Error: $($_.Exception.Message)"; return $false }
+}
+function Invoke-Fake([string[]]$Arguments) {
+    $fake.Log = @(); $fake.DbStdin = @()
+    return (& $run $Arguments)
+}
+$envFile = Join-Path $work '.env'
+function EnvOf([string]$Key) {
+    $value = ''
+    foreach ($line in (Read-Lines $envFile)) { if ($line.StartsWith("$Key=")) { $value = $line.Substring($Key.Length + 1) } }
+    return $value
+}
+function SetEnvLine([string]$Key, [string]$Value) {
+    Set-Content -LiteralPath $envFile -Value @(Read-Lines $envFile | ForEach-Object { if ($_.StartsWith("$Key=")) { "$Key=$Value" } else { $_ } })
+}
+function Hex64([string]$Value) { return $Value -cmatch '\A[0-9a-f]{64}\z' }
+$said = { ($fake.Out -join "`n") }
+$secretNames = 'ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD'
+
+try {
+    # install: four secrets from the CSPRNG, all different; info masks every one of them.
+    Expect (Invoke-Fake @('install', '--web-port', '18098')) $true "install failed: $(& $said)"
+    foreach ($k in $secretNames) { Expect (Hex64 (EnvOf $k)) $true "install: $k is not 64 hex characters" }
+    Expect (@($secretNames | ForEach-Object { EnvOf $_ } | Sort-Object -Unique).Count -eq 4) $true 'install: the four secrets are not all different'
+    Expect (Invoke-Fake @('info')) $true 'info failed'
+    foreach ($k in $secretNames) { Expect ((& $said).Contains((EnvOf $k))) $false "info: $k printed in full without --reveal" }
+    Expect ((& $said) -match 'DB root') $true 'info: no DB root line'
+
+    # rotate-device-token
+    $old = EnvOf 'DEVICE_TOKEN'
+    Expect (Invoke-Fake @('rotate-device-token')) $true "rotate failed: $(& $said)"
+    $new = EnvOf 'DEVICE_TOKEN'
+    Expect ((EnvOf 'DEVICE_TOKEN_PREVIOUS') -eq $old) $true 'rotate: DEVICE_TOKEN_PREVIOUS is not the old token'
+    Expect ((Hex64 $new) -and $new -ne $old) $true 'rotate: DEVICE_TOKEN is not a new 64-hex token'
+    Expect (@($fake.Log | Where-Object { $_ -like 'up -d*' }).Count -gt 0) $true 'rotate: the stack was not recreated'
+    Expect ((& $said) -match '#define DEVICE_TOKEN "') $true 'rotate: no config.h line'
+    Expect ((& $said).Contains($new)) $false 'rotate: the new token printed without --reveal'
+    Expect ((& $said) -match 'rotate-device-token --finish') $true 'rotate: the steps do not say how to finish'
+    Expect (($fake.Log -join "`n").Contains($old) -or ($fake.Log -join "`n").Contains($new)) $false 'rotate: a token is on a docker command line'
+
+    Expect (Invoke-Fake @('rotate-device-token', '--reveal')) $false 'rotate twice: succeeded'
+    Expect ((EnvOf 'DEVICE_TOKEN') -eq $new -and (EnvOf 'DEVICE_TOKEN_PREVIOUS') -eq $old) $true 'rotate twice: .env changed'
+    Expect ((& $said) -match 'already under way') $true 'rotate twice: no explanation'
+
+    # --finish refuses while api lists Devices on the previous token, naming them.
+    $fake.RotationOut = @('previous ESP_00000A', 'unheard ESP_00000C'); $fake.RotationRc = 3
+    Expect (Invoke-Fake @('rotate-device-token', '--finish')) $false 'finish with Devices left: succeeded'
+    Expect ((EnvOf 'DEVICE_TOKEN_PREVIOUS') -eq $old) $true 'finish with Devices left: the previous token was cleared'
+    Expect ((& $said) -match 'ESP_00000A' -and (& $said) -match 'ESP_00000C') $true 'finish with Devices left: not named'
+    Expect (@($fake.Log | Where-Object { $_ -like 'up -d*' }).Count -eq 0) $true 'finish with Devices left: the stack was recreated'
+    Expect (Invoke-Fake @('rotate-device-token', '--finish', '--force')) $false 'finish --force without --confirm: succeeded'
+    Expect ((EnvOf 'DEVICE_TOKEN_PREVIOUS') -eq $old) $true 'finish --force without --confirm: cleared'
+    Expect (Invoke-Fake @('rotate-device-token', '--finish', '--force', '--confirm', 'ta-test')) $true "finish --force --confirm failed: $(& $said)"
+    Expect ((EnvOf 'DEVICE_TOKEN_PREVIOUS') -eq '') $true 'finish --force --confirm: not cleared'
+
+    SetEnvLine 'DEVICE_TOKEN_PREVIOUS' $old
+    $fake.RotationOut = @(); $fake.RotationRc = 0
+    Expect (Invoke-Fake @('rotate-device-token', '--finish')) $true "finish failed: $(& $said)"
+    Expect ((EnvOf 'DEVICE_TOKEN_PREVIOUS') -eq '') $true 'finish: DEVICE_TOKEN_PREVIOUS not cleared'
+    Expect ((EnvOf 'DEVICE_TOKEN') -eq $new) $true 'finish: DEVICE_TOKEN changed'
+    Expect (@($fake.Log | Where-Object { $_ -like 'up -d*' }).Count -gt 0) $true 'finish: the stack was not recreated'
+    Expect (($fake.Log -join "`n").Contains((EnvOf 'ADMIN_TOKEN'))) $false 'finish: the Admin token is on a docker command line'
+    SetEnvLine 'DEVICE_TOKEN_PREVIOUS' $old
+    $fake.RotationOut = @('GET /api/devices/rotation answered 500'); $fake.RotationRc = 1
+    Expect (Invoke-Fake @('rotate-device-token', '--finish')) $false 'finish with api failing: succeeded'
+    Expect ((EnvOf 'DEVICE_TOKEN_PREVIOUS') -eq $old) $true 'finish with api failing: cleared'
+    SetEnvLine 'DEVICE_TOKEN_PREVIOUS' ''
+
+    # An install from before DB_ROOT_PASSWORD (its volume made by master).
+    Set-Content -LiteralPath $envFile -Value @(Read-Lines $envFile | Where-Object { -not $_.StartsWith('DB_ROOT_PASSWORD=') })
+    $fake.Volume = $true
+    Expect (Invoke-Fake @('install')) $true 'legacy install failed'
+    Expect ((EnvOf 'DB_ROOT_PASSWORD') -eq '') $true 'legacy install: generated a DB_ROOT_PASSWORD the volume does not have'
+    Expect (Invoke-Fake @('info')) $true 'legacy info failed'
+    Expect ((& $said) -match 'still shares DB_PASSWORD') $true 'legacy info: no warning'
+    Expect (Invoke-Fake @('deploy', '--no-pull')) $false 'legacy deploy without --confirm: succeeded'
+    Expect ((& $said) -match "DROP USER IF EXISTS 'root'@'%'") $true 'legacy deploy: no explanation'
+    Expect ((EnvOf 'DB_ROOT_PASSWORD') -eq '') $true 'legacy deploy without --confirm: .env changed'
+    Expect ($fake.DbStdin.Count -eq 0) $true 'legacy deploy without --confirm: ran SQL'
+    $fake.DbRc = 1
+    Expect (Invoke-Fake @('deploy', '--no-pull', '--confirm', 'ta-test')) $false 'legacy deploy, MySQL refusing: succeeded'
+    Expect ((EnvOf 'DB_ROOT_PASSWORD') -eq '') $true 'legacy deploy, MySQL refusing: .env keeps a password root does not have'
+    $fake.DbRc = 0
+    Expect (Invoke-Fake @('deploy', '--no-pull', '--confirm', 'ta-test')) $true "legacy deploy failed: $(& $said)"
+    $root = EnvOf 'DB_ROOT_PASSWORD'
+    Expect (Hex64 $root) $true 'legacy deploy: DB_ROOT_PASSWORD not written'
+    Expect ($root -ne (EnvOf 'DB_PASSWORD')) $true 'legacy deploy: root still shares DB_PASSWORD'
+    Expect (($fake.DbStdin -join "`n").Contains("DROP USER IF EXISTS 'root'@'%'; ALTER USER 'root'@'localhost' IDENTIFIED BY '$root';")) $true 'legacy deploy: SQL not sent on stdin'
+    Expect (($fake.Log -join "`n").Contains($root)) $false 'legacy deploy: the root password is on a docker command line'
+    Expect ($fake.Log -contains 'backup') $true 'legacy deploy: no backup before the change'
+    Expect (Invoke-Fake @('deploy', '--no-pull')) $true 'deploy after the move failed'
+    Expect ($fake.DbStdin.Count -eq 0) $true 'deploy after the move: ran SQL again'
+    Expect ((EnvOf 'DB_ROOT_PASSWORD') -eq $root) $true 'deploy after the move: DB_ROOT_PASSWORD changed'
+
+    # publish-firmware: the image reaches api as base64 on stdin; --only is passed through and checked.
+    $bin = Join-Path $work 'fw.bin.signed'
+    $bytes = New-Object byte[] 4096; (New-Object Random 7).NextBytes($bytes); [IO.File]::WriteAllBytes($bin, $bytes)
+    Expect (Invoke-Fake @('publish-firmware')) $false 'publish-firmware without --file: succeeded'
+    Expect ((& $said) -match '--file') $true 'publish-firmware without --file: no hint'
+    Expect (Invoke-Fake @('publish-firmware', '--file', $bin, '--only', 'ESP_A1B2C3;id')) $false 'publish-firmware with a bad --only: succeeded'
+    Expect ($fake.FwStdin.Count -eq 0) $true 'publish-firmware with a bad --only: sent the image'
+    $fake.FwStdin = @()
+    Expect (Invoke-Fake @('publish-firmware', '--file', $bin, '--only', 'ESP_A1B2C3,ESP_D4E5F6')) $true "publish-firmware failed: $(& $said)"
+    Expect (@($fake.Log | Where-Object { $_ -eq 'exec -T api node dist/firmwareCli.js publish --only ESP_A1B2C3,ESP_D4E5F6' }).Count -eq 1) $true 'publish-firmware: wrong command'
+    Expect ([Convert]::ToBase64String($bytes) -eq ($fake.FwStdin -join '')) $true 'publish-firmware: the image did not arrive intact on stdin'
+    Expect ((& $said) -match 'without --only') $true 'publish-firmware --only: no next step'
+    $fake.FwRc = 1
+    Expect (Invoke-Fake @('publish-firmware', '--file', $bin)) $false 'publish-firmware refused by api: succeeded'
+    $fake.FwRc = 0
+    Expect (Invoke-Fake @('firmware-status')) $true 'firmware-status failed'
+    Expect (Invoke-Fake @('withdraw-firmware')) $true 'withdraw-firmware failed'
+}
+finally {
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue
+}
+
 if ($fails -eq 0) { Write-Output 'deploy.test.ps1: all passed' } else { Write-Output "deploy.test.ps1: $fails failed"; exit 1 }

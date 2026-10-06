@@ -12,6 +12,11 @@ export interface Config {
   adminToken: string;
   /** Shared secret every Device sends with each Reading. */
   deviceToken: string;
+  /**
+   * The Device token before a rotation, still accepted until every board is reflashed with the
+   * new one (docs/adr/0003). Undefined when no rotation is under way.
+   */
+  deviceTokenPrevious: string | undefined;
   /** How often a healthy Device sends a Reading. */
   reportIntervalSeconds: number;
   /** How long raw Readings are kept before the retention job deletes them. */
@@ -94,6 +99,14 @@ export function loadConfig(env: Env = process.env): Config {
     // Every board's flash holds the Device token, so it must not also open Settings.
     throw new ConfigError('ADMIN_TOKEN and DEVICE_TOKEN must differ: every Device carries the Device token');
   }
+  const previous = present(env, 'DEVICE_TOKEN_PREVIOUS');
+  if (previous !== undefined && previous === required(env, 'DEVICE_TOKEN')) {
+    throw new ConfigError('DEVICE_TOKEN_PREVIOUS must differ from DEVICE_TOKEN: it is the token being retired, so clear it when no rotation is under way');
+  }
+  if (previous !== undefined && previous === required(env, 'ADMIN_TOKEN')) {
+    // Every board still on it carries it in its flash, so it must not also open Settings.
+    throw new ConfigError('DEVICE_TOKEN_PREVIOUS and ADMIN_TOKEN must differ: every Device still on it carries it');
+  }
   return {
     port: positiveInteger(env, 'PORT', 3001),
     corsOrigin: present(env, 'CORS_ORIGIN'),
@@ -106,6 +119,7 @@ export function loadConfig(env: Env = process.env): Config {
     },
     adminToken: required(env, 'ADMIN_TOKEN'),
     deviceToken: required(env, 'DEVICE_TOKEN'),
+    deviceTokenPrevious: previous,
     reportIntervalSeconds: positiveInteger(env, 'REPORT_INTERVAL_SECONDS', 30),
     retentionDays: positiveInteger(env, 'RETENTION_DAYS', 90),
     thresholds: thresholds(env),
@@ -117,13 +131,17 @@ export function loadConfig(env: Env = process.env): Config {
 export const MIN_TOKEN_LENGTH = 32;
 
 /** A line for the log about each token shorter than MIN_TOKEN_LENGTH, naming it but never printing it. */
-export function tokenWarnings({ adminToken, deviceToken }: Pick<Config, 'adminToken' | 'deviceToken'>): string[] {
-  return (
-    [
-      ['ADMIN_TOKEN', adminToken],
-      ['DEVICE_TOKEN', deviceToken],
-    ] as const
-  )
-    .filter(([, token]) => token.length < MIN_TOKEN_LENGTH)
+export function tokenWarnings({
+  adminToken,
+  deviceToken,
+  deviceTokenPrevious,
+}: Pick<Config, 'adminToken' | 'deviceToken'> & Partial<Pick<Config, 'deviceTokenPrevious'>>): string[] {
+  const tokens: Array<[string, string | undefined]> = [
+    ['ADMIN_TOKEN', adminToken],
+    ['DEVICE_TOKEN', deviceToken],
+    ['DEVICE_TOKEN_PREVIOUS', deviceTokenPrevious],
+  ];
+  return tokens
+    .filter((entry): entry is [string, string] => entry[1] !== undefined && entry[1].length < MIN_TOKEN_LENGTH)
     .map(([name, token]) => `${name} is ${token.length} characters; use at least ${MIN_TOKEN_LENGTH} (openssl rand -hex 32)`);
 }

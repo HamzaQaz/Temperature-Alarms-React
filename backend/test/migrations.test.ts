@@ -43,7 +43,7 @@ describe('migration runner', () => {
   beforeEach(() => resetDatabase(pool));
 
   test('creates the schema tables and records the applied migrations', async () => {
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
     assert.deepEqual(rows.map((r) => r.id), [
       '0000-legacy-tables-aside',
@@ -53,6 +53,7 @@ describe('migration runner', () => {
       '0004-readings-recorded-at-index',
       '0005-incidents',
       '0006-readings-covering-index',
+      '0007-firmware',
     ]);
   });
 
@@ -60,7 +61,7 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 7);
+    assert.equal(rows[0].n, 8);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {
@@ -85,7 +86,7 @@ describe('migration runner', () => {
     );
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index']);
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
     assert.deepEqual((await readingsIndexes()).get('ix_readings_recorded'), ['recorded_at']);
   });
 });

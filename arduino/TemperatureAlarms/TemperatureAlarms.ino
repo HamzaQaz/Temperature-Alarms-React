@@ -5,11 +5,15 @@
 //   network.*  connect to WiFi, reconnect in the loop, know the Device hostname
 //   sensor.*   read the DHT11 and skip bad samples
 //   reporter.* build the JSON Reading and POST it, logging the HTTP status
+//   server.*   where SERVER_URL is, and a TLS client that checks its certificate (roots.*)
+//   updater.*  check hourly for a newer signed build and install it (over the air)
 
 #include "config.h"
 #include "network.h"
 #include "reporter.h"
 #include "sensor.h"
+#include "server.h"
+#include "updater.h"
 
 static_assert(REPORT_INTERVAL_SECONDS >= 2, "The DHT11 cannot be read more often than every 2 seconds");
 
@@ -31,7 +35,9 @@ void setup() {
   Serial.println(F("Temperature Alarms Device"));
   sensorBegin();
   networkBegin();
+  serverBegin();
   reporterBegin();
+  updaterBegin();
 }
 
 void loop() {
@@ -39,6 +45,7 @@ void loop() {
     delay(100);
     return;
   }
+  updaterLoop();
   if (!reportDue()) return;
   // One attempt per interval. A failed read or POST waits for the next interval; nothing retries.
   attemptedOnce = true;

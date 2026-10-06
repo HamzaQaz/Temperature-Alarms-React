@@ -17,6 +17,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     database: testDatabaseConfig(),
     adminToken: TEST_ADMIN_TOKEN,
     deviceToken: TEST_DEVICE_TOKEN,
+    deviceTokenPrevious: undefined,
     reportIntervalSeconds: 30,
     retentionDays: 90,
     thresholds: DEFAULT_THRESHOLDS,

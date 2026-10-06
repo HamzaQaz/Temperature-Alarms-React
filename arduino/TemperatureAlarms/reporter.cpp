@@ -6,6 +6,7 @@
 #include <WiFiClientSecure.h>
 
 #include "config.h"
+#include "server.h"
 
 static const char READINGS_PATH[] = "/api/readings";
 static const unsigned long HTTP_TIMEOUT_MS = 10 * 1000UL;
@@ -18,10 +19,6 @@ static const unsigned long RESPONSE_READ_MS = 2 * 1000UL;
 // SERVER_URL plus the readings path, built once in reporterBegin() so no String is
 // rebuilt on the heap every interval.
 static String readingsUrl;
-
-static bool usesTls() {
-  return readingsUrl.startsWith("https://");
-}
 
 static String readingJson(const char* hostname, const Sample& sample) {
   String json;
@@ -70,9 +67,7 @@ static int post(WiFiClient& client, const String& body, String& response) {
 }
 
 void reporterBegin() {
-  readingsUrl = SERVER_URL;
-  if (readingsUrl.endsWith("/")) readingsUrl.remove(readingsUrl.length() - 1);  // forgive the common typo
-  readingsUrl += READINGS_PATH;
+  readingsUrl = serverUrl(READINGS_PATH);
   Serial.print(F("report: every "));
   Serial.print(REPORT_INTERVAL_SECONDS);
   Serial.print(F(" s to "));
@@ -83,12 +78,15 @@ void reportReading(const char* hostname, const Sample& sample) {
   String body = readingJson(hostname, sample);
   String response;
   int status;
-  if (usesTls()) {
-    // No certificate check: a pinned fingerprint would need a reflash at every renewal
-    // (docs/adr/0003). The default 16 KB receive buffer stays: a smaller one only works
-    // when the server negotiates MFLN, which nginx does not, and the heap has room.
+  if (serverUsesTls()) {
     BearSSL::WiFiClientSecure client;
-    client.setInsecure();
+    const __FlashStringHelper* problem = serverSecure(client);
+    if (problem != nullptr) {
+      Serial.print(F("report: failed, "));
+      Serial.print(problem);
+      Serial.println(F(", token not sent"));
+      return;
+    }
     status = post(client, body, response);
   } else {
     WiFiClient client;

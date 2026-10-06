@@ -19,7 +19,7 @@ $EnvPath = Join-Path $RepoDir '.env'
 $ExamplePath = Join-Path $RepoDir '.env.example'
 $BackupDir = Join-Path $RepoDir 'backups'
 $DbName = 'temperature_alarms'
-$Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD')
+$Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD')
 $Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE')
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
 # repeated deploy leaves the running containers alone instead of recreating them.
@@ -29,6 +29,8 @@ $DemoProject = 'temperature-alarms-demo'
 $DemoPort = '8080'
 # Extra arguments for every docker compose call; the demo sets its project and files here.
 $DcArgs = @()
+# True for an install from before DB_ROOT_PASSWORD, whose root password is still DB_PASSWORD (Set-LegacyRootEnv).
+$LegacyRoot = $false
 
 $OnWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or $IsWindows
 $UseColour = (-not [Console]::IsOutputRedirected) -and (-not $env:NO_COLOR)
@@ -38,6 +40,7 @@ $O = @{
     Reveal = $false; Reconfigure = $false; Wipe = $false; Confirm = ''; Follow = $false; Tail = '200'
     Service = ''; Hosts = @(); Servers = ''; Dir = 'temperature-alarms'; Repo = ''; Branch = ''
     SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'; Down = $false
+    Finish = $false; Force = $false; Only = ''
 }
 $OrigArgs = @($args | ForEach-Object { "$_" })
 
@@ -70,6 +73,16 @@ With no action at a console, shows a menu. Actions:
   restore [FILE]     Replace the database with a backup (typed confirmation; backs up first)
   migrate-legacy     Back up, then run `npm run migrate:legacy` in api
   info               The URL, the tokens (masked unless --reveal), and the config.h lines
+  rotate-device-token  Start a Device token rotation: the current token becomes
+                     DEVICE_TOKEN_PREVIOUS, still accepted, and a new DEVICE_TOKEN is generated;
+                     prints the new config.h line (masked unless --reveal). Reflash the boards,
+                     then --finish clears the previous token once Settings lists no Device on it
+                     (--force finishes anyway, with a typed confirmation).
+  publish-firmware   Offer a signed firmware build to the boards over the air: --file the
+                     TemperatureAlarms.ino.bin.signed from the build, --only ESP_A,ESP_B to offer
+                     it to those Devices first (publish again without --only for every Device)
+  firmware-status    The published build and the version each Device runs
+  withdraw-firmware  Stop offering the published build; boards keep what they run
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
                      (typed confirmation). .env and backups\ stay.
@@ -92,6 +105,8 @@ Options:
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
       --wipe            uninstall also deletes the database volume
       --down            demo: remove the demo instead of starting it
+      --finish, --force rotate-device-token: end the rotation (--force: even with Devices left)
+      --only HOSTNAMES  publish-firmware: only these Devices, comma-separated
       --file FILE       Backup file for restore
       --follow, --service NAME, --tail N   For logs
 Remote Linux servers (runs deploy.sh there over ssh; each keeps its own .env and backups):
@@ -129,6 +144,9 @@ function Read-Args([string[]]$List) {
                 'confirm' { $takesValue = $true; $O.Confirm = $next; $O.Pass += @('--confirm', $next) }
                 'wipe' { $O.Wipe = $true; $O.Pass += '--wipe' }
                 'down' { $O.Down = $true; $O.Pass += '--down' }
+                'finish' { $O.Finish = $true; $O.Pass += '--finish' }
+                'force' { $O.Force = $true; $O.Pass += '--force' }
+                'only' { $takesValue = $true; $O.Only = $next; $O.Pass += @('--only', $next) }
                 'file' { $takesValue = $true; $O.File = $next; $O.Pass += @('--file', $next) }
                 { $_ -in 'f', 'follow' } { $O.Follow = $true; $O.Pass += '--follow' }
                 'service' { $takesValue = $true; $O.Service = $next; $O.Pass += @('--service', $next) }
@@ -362,6 +380,8 @@ function Read-Tunables {
 function Add-MissingSecrets {
     $filled = @()
     foreach ($k in $Secrets) {
+        # An older install's root already has a password, DB_PASSWORD; deploy moves it over (Invoke-MigrateRootPassword).
+        if ($k -eq 'DB_ROOT_PASSWORD' -and $script:LegacyRoot) { continue }
         if (-not (Get-EnvValue $k)) { Set-EnvValue $k (New-Secret); $filled += $k }
     }
     if ($filled.Count -gt 0) { Ok "Generated $($filled -join ' ') (never printed; see: deploy.ps1 info --reveal)" }
@@ -405,6 +425,8 @@ function Test-GatewayExposed {
 }
 
 function Invoke-Dc { & docker compose @DcArgs @args }
+# The same, with this function's pipeline input on docker's stdin (a function does not pass it on by itself).
+function Invoke-DcStdin { $input | & docker compose @DcArgs @args }
 
 function Test-Running([string]$Service) {
     $id = & docker compose @DcArgs ps --status running -q $Service 2>$null
@@ -517,7 +539,68 @@ function Invoke-MaybePull {
 }
 
 function Assert-Secrets {
-    foreach ($k in $Secrets) { if (-not (Get-EnvValue $k)) { Fail "$k is empty in .env; run: deploy.ps1 install" } }
+    foreach ($k in $Secrets) {
+        if ($k -eq 'DB_ROOT_PASSWORD' -and $script:LegacyRoot) { continue }
+        if (-not (Get-EnvValue $k)) { Fail "$k is empty in .env; run: deploy.ps1 install" }
+    }
+}
+
+# The project's database volume, if Compose has made one.
+function Test-DbVolume {
+    $id = & docker volume ls -q --filter "label=com.docker.compose.project=$(Get-ProjectName)" --filter 'label=com.docker.compose.volume=db-data' 2>$null
+    return [bool]$id
+}
+
+# An install from before DB_ROOT_PASSWORD keeps root's password, DB_PASSWORD, in its volume: MySQL
+# takes MYSQL_ROOT_PASSWORD only when the volume is first created. Until deploy moves root over, every
+# action runs Compose with DB_ROOT_PASSWORD set to that, from this process's environment, so backups
+# keep working; compose.yaml refuses to start without it otherwise.
+function Set-LegacyRootEnv {
+    # Called again for the demo's own .env.demo: the real install's value must not carry over.
+    if ($script:LegacyRoot) { Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue }
+    $script:LegacyRoot = $false
+    if (-not (Test-Path -LiteralPath $EnvPath)) { return }
+    if ((Get-EnvValue 'DB_ROOT_PASSWORD') -or -not (Get-EnvValue 'DB_PASSWORD')) { return }
+    $env:DB_ROOT_PASSWORD = Get-EnvValue 'DB_PASSWORD'
+    if (Test-DbVolume) {
+        $script:LegacyRoot = $true
+        if ($O.Action -notin @('deploy', 'upgrade', 'install')) { Warn 'MySQL root still shares DB_PASSWORD (an install from before DB_ROOT_PASSWORD); deploy.ps1 deploy gives it its own' }
+    }
+    else { Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue }
+}
+
+# One time, on an install from before DB_ROOT_PASSWORD: drop root's network login, if the volume
+# predates MYSQL_ROOT_HOST, and give root a password of its own, which api never holds.
+function Invoke-MigrateRootPassword {
+    if (-not $script:LegacyRoot) { return }
+    Step 'Give MySQL root its own password (DB_ROOT_PASSWORD)'
+    Write-Host '  This install''s database was created when MySQL root shared DB_PASSWORD with api, and older'
+    Write-Host '  volumes also let root log in over the network. Once, this:'
+    Write-Host '    1. starts db and backs up the database'
+    Write-Host '    2. runs, as root inside db:  DROP USER IF EXISTS ''root''@''%'';'
+    Write-Host '                                 ALTER USER ''root''@''localhost'' IDENTIFIED BY ''<new password>'';'
+    Write-Host '    3. writes the new password to .env as DB_ROOT_PASSWORD; api never sees it'
+    Write-Host '  To do it by hand instead, see DEPLOYMENT.md, "Separate MySQL root password".'
+    Confirm-Typed "This changes MySQL root's password on the $(Get-ProjectName) database."
+    Invoke-Dc up -d --wait --wait-timeout 600 db
+    if ($LASTEXITCODE -ne 0) { Fail 'db did not start; nothing was changed' }
+    Invoke-Backup
+    $new = New-Secret
+    # .env first, so the new password is never only inside MySQL; put back if MySQL refuses it.
+    Set-EnvValue 'DB_ROOT_PASSWORD' $new
+    # On stdin, so the password is on no command line; one line, with the CR PowerShell adds removed.
+    # DROP first: a failure stops before the ALTER, leaving root as it was. Hex needs no SQL quoting.
+    "DROP USER IF EXISTS 'root'@'%'; ALTER USER 'root'@'localhost' IDENTIFIED BY '$new';" |
+        Invoke-DcStdin exec -T db sh -c 'tr -d ''\r'' | MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysql -uroot'
+    # Whatever mysql said, believe only a login with the new password.
+    $new | Invoke-DcStdin exec -T db sh -c 'read -r p; p=$(printf %s $p | tr -d ''\r''); MYSQL_PWD=$p exec mysql -uroot -e ''SELECT 1''' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Set-EnvValue 'DB_ROOT_PASSWORD' ''
+        Fail "MySQL refused the new root password; root is unchanged and .env is as it was. The backup is $script:LastBackup"
+    }
+    Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue
+    $script:LegacyRoot = $false
+    Ok 'root has its own password (DB_ROOT_PASSWORD in .env) and logs in only inside db'
 }
 
 function Test-Health([int]$Tries) {
@@ -541,6 +624,8 @@ function Get-SiteUrl {
 
 function Invoke-Deploy {
     if (-not (Test-Path -LiteralPath $EnvPath)) { Invoke-Install }
+    Invoke-MigrateRootPassword
+    Add-MissingSecrets
     Assert-Secrets
     Invoke-MaybePull
     if (-not (Invoke-Preflight)) { Fail 'preflight failed; fix the [FAIL] lines above' }
@@ -673,13 +758,126 @@ function Invoke-Info {
     Write-Host "  Dashboard     $url"
     Write-Host "  Admin token   $(Hide-Secret (Get-EnvValue 'ADMIN_TOKEN'))   (Settings page)"
     Write-Host "  Device token  $(Hide-Secret (Get-EnvValue 'DEVICE_TOKEN'))"
+    $previous = Get-EnvValue 'DEVICE_TOKEN_PREVIOUS'
+    if ($previous) { Write-Host "  Previous      $(Hide-Secret $previous)   (still accepted: rotate-device-token --finish ends that)" }
     Write-Host "  DB password   $(Hide-Secret (Get-EnvValue 'DB_PASSWORD'))"
+    Write-Host "  DB root       $(Hide-Secret (Get-EnvValue 'DB_ROOT_PASSWORD'))"
     Write-Host ''
     Write-Host '  For arduino/TemperatureAlarms/config.h:'
     Write-Host "    #define SERVER_URL `"$($url.TrimEnd('/'))`""
     Write-Host "    #define DEVICE_TOKEN `"$(Hide-Secret (Get-EnvValue 'DEVICE_TOKEN'))`""
     if ($interval -and $interval -ne '30') { Write-Host "    #define REPORT_INTERVAL_SECONDS $interval" }
     if (-not $O.Reveal) { Write-Line '  Masked. Add --reveal to print them in full.' 'DarkGray' }
+}
+
+# --- Device token rotation (docs/adr/0003) ---------------------------------------------
+# Asks api, inside its own container, which Devices still report with the previous token: the
+# Admin token comes from api's environment, so it is on no command line. Prints one line per
+# Device ("previous HOSTNAME" or "unheard HOSTNAME") and exits 0 when there are none, 3 otherwise.
+# Template literals only: no quote characters, which Windows PowerShell 5.1 would mangle on the way.
+$RotationJs = 'fetch(`http://127.0.0.1:3001/api/devices/rotation`,{headers:{authorization:`Bearer ${process.env.ADMIN_TOKEN}`}}).then(async(r)=>{if(!r.ok)throw new Error(`GET /api/devices/rotation answered ${r.status}`);const b=await r.json();for(const d of b.previous)console.log(`previous ${d.hostname}`);for(const d of b.unheard)console.log(`unheard ${d.hostname}`);process.exit(b.previous.length+b.unheard.length===0?0:3)}).catch((e)=>{console.error(e.message);process.exit(1)})'
+
+# Recreates whatever the changed .env touches (api for the tokens) and waits for health.
+function Invoke-ApplyEnv {
+    Step 'Apply .env (docker compose up -d --wait)'
+    Invoke-Dc up -d --remove-orphans --wait --wait-timeout 600 | Out-Host
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return (Test-Health 30)
+}
+
+function Invoke-RotateDeviceToken {
+    if (-not (Test-Path -LiteralPath $EnvPath)) { Fail 'not installed here yet (no .env); run: deploy.ps1 deploy' }
+    Assert-Secrets
+    if ($O.Finish) { Invoke-FinishRotation; return }
+    Step 'Rotate the Device token'
+    if (Get-EnvValue 'DEVICE_TOKEN_PREVIOUS') {
+        Fail 'a rotation is already under way; finish it first (deploy.ps1 rotate-device-token --finish), or the boards still on its previous token would stop reporting'
+    }
+    if (-not (Test-Running 'api')) { Fail 'api is not running; start the stack first (deploy.ps1 deploy)' }
+    if (-not (Confirm-Choice 'Generate a new Device token? Boards keep reporting with the current one until --finish.' $true)) { Fail 'not rotated; nothing was changed' }
+    $old = Get-EnvValue 'DEVICE_TOKEN'
+    Set-EnvValue 'DEVICE_TOKEN_PREVIOUS' $old
+    Set-EnvValue 'DEVICE_TOKEN' (New-Secret)
+    Ok 'DEVICE_TOKEN is new; the old one is DEVICE_TOKEN_PREVIOUS, accepted until --finish'
+    if (-not (Invoke-ApplyEnv)) {
+        Set-EnvValue 'DEVICE_TOKEN' $old
+        Set-EnvValue 'DEVICE_TOKEN_PREVIOUS' ''
+        [void](Invoke-ApplyEnv)
+        Fail 'api did not come back with both tokens; .env is back to the old token alone'
+    }
+    Write-Host ''
+    Write-Host '  For arduino/TemperatureAlarms/config.h, from now on:'
+    Write-Host "    #define DEVICE_TOKEN `"$(Hide-Secret (Get-EnvValue 'DEVICE_TOKEN'))`""
+    if (-not $O.Reveal) { Write-Line '  Masked. deploy.ps1 info --reveal prints it in full.' 'DarkGray' }
+    Write-Host ''
+    Write-Host '  Next:'
+    Write-Host '    1. Put the new token in config.h, export a binary, and reflash every board (README,'
+    Write-Host '       "Flashing a batch"). Until step 3, boards on either token keep reporting.'
+    Write-Host '    2. Watch Settings: its rotation line lists every Device still on the previous token,'
+    Write-Host '       and any not heard since api restarted. Reflash those.'
+    Write-Host '    3. When that list is empty: deploy.ps1 rotate-device-token --finish'
+}
+
+function Invoke-FinishRotation {
+    Step 'Finish the Device token rotation'
+    if (-not (Get-EnvValue 'DEVICE_TOKEN_PREVIOUS')) { Ok 'no rotation is under way (DEVICE_TOKEN_PREVIOUS is empty)'; return }
+    if (-not (Test-Running 'api')) { Fail 'api is not running; start the stack first (deploy.ps1 deploy)' }
+    $out = @(Invoke-Dc exec -T api node -e $RotationJs 2>&1 | ForEach-Object { "$_" })
+    $rc = $LASTEXITCODE
+    if ($rc -eq 0) { Ok 'every Device has reported with the new token since api started' }
+    elseif ($rc -eq 3) {
+        $left = @($out | Where-Object { $_ -match '^(previous|unheard) ' })
+        foreach ($line in $left) {
+            Write-Host ($line -replace '^previous ', '  still on the previous token: ' -replace '^unheard ', '  not heard since api started: ')
+        }
+        if (-not $O.Force) {
+            Fail "$($left.Count) Devices may still hold the previous token. Reflash them (or delete in Settings a Device that is gone), wait a Report interval, and run --finish again; --force finishes anyway"
+        }
+        Confirm-Typed 'The Devices above stop reporting until they are reflashed with the new token.'
+    }
+    else { Fail "could not read the rotation list from api: $($out -join ' ')" }
+    Set-EnvValue 'DEVICE_TOKEN_PREVIOUS' ''
+    if (-not (Invoke-ApplyEnv)) { Fail 'api did not come back healthy; see: deploy.ps1 logs --service api' }
+    Ok 'the previous Device token is no longer accepted'
+}
+
+# --- Over-the-air firmware (docs/adr/0007) ----------------------------------------------
+# The image goes into api as base64 on stdin, text that a PowerShell pipeline carries intact, and is
+# stored in the database. backend/src/firmwareCli.ts checks it is a signed build with a higher version.
+function Assert-ApiRunning { if (-not (Test-Running 'api')) { Fail 'api is not running; start the stack first (deploy.ps1 deploy)' } }
+
+function Invoke-PublishFirmware {
+    Step 'Publish firmware'
+    if (-not $O.File) { Fail 'publish-firmware needs --file PATH: the TemperatureAlarms.ino.bin.signed the build writes' }
+    $path = $O.File
+    if (-not [IO.Path]::IsPathRooted($path)) { $path = Join-Path (Get-Location) $path }
+    if (-not (Test-Path -LiteralPath $path)) { Fail "$($O.File) does not exist" }
+    $a = @('exec', '-T', 'api', 'node', 'dist/firmwareCli.js', 'publish')
+    if ($O.Only) {
+        if ($O.Only -notmatch '\A[A-Za-z0-9_,-]+\z') { Fail '--only takes Device hostnames, comma-separated (ESP_A1B2C3,ESP_D4E5F6)' }
+        $a += @('--only', $O.Only)
+    }
+    Assert-ApiRunning
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Invoke-DcStdin @a
+    if ($LASTEXITCODE -ne 0) { Fail 'not published; see the line above' }
+    if ($O.Only) {
+        Write-Host '  Next: watch those Devices (deploy.ps1 firmware-status, or Settings) for an hour; then publish the'
+        Write-Host '  same file again without --only to offer it to every Device.'
+    }
+}
+
+function Invoke-FirmwareStatus {
+    Step 'Firmware'
+    Assert-ApiRunning
+    Invoke-Dc exec -T api node dist/firmwareCli.js status
+    if ($LASTEXITCODE -ne 0) { Fail 'could not read the firmware status' }
+}
+
+function Invoke-WithdrawFirmware {
+    Step 'Withdraw firmware'
+    Assert-ApiRunning
+    Invoke-Dc exec -T api node dist/firmwareCli.js withdraw
+    if ($LASTEXITCODE -ne 0) { Fail 'could not withdraw the firmware' }
 }
 
 function Invoke-Stop {
@@ -716,6 +914,8 @@ function Invoke-Uninstall {
 function Use-Demo {
     $script:EnvPath = Join-Path $RepoDir '.env.demo'
     $script:DcArgs = @('-p', $DemoProject, '--env-file', '.env.demo', '-f', 'compose.yaml', '-f', 'compose.demo.yaml')
+    # A demo from before DB_ROOT_PASSWORD keeps root on DB_PASSWORD; it is throwaway, so it stays so.
+    Set-LegacyRootEnv
 }
 
 function New-DemoEnv {
@@ -789,6 +989,10 @@ function Invoke-Action([string]$Name) {
         'restore' { Invoke-Restore }
         'migrate-legacy' { Invoke-MigrateLegacy }
         'info' { Invoke-Info }
+        'rotate-device-token' { Invoke-RotateDeviceToken }
+        'publish-firmware' { Invoke-PublishFirmware }
+        'firmware-status' { Invoke-FirmwareStatus }
+        'withdraw-firmware' { Invoke-WithdrawFirmware }
         'stop' { Invoke-Stop }
         'uninstall' { Invoke-Uninstall }
         'demo' { Invoke-Demo }
@@ -800,7 +1004,8 @@ function Invoke-Action([string]$Name) {
 
 function Show-Menu {
     $map = @{ '1' = 'preflight'; '2' = 'install'; '3' = 'deploy'; '4' = 'status'; '5' = 'logs'; '6' = 'backup'
-        '7' = 'restore'; '8' = 'migrate-legacy'; '9' = 'info'; '10' = 'stop'; '11' = 'uninstall'; '12' = 'demo' }
+        '7' = 'restore'; '8' = 'migrate-legacy'; '9' = 'info'; '10' = 'stop'; '11' = 'uninstall'; '12' = 'demo'
+        '13' = 'rotate-device-token'; '14' = 'rotate-device-token'; '15' = 'firmware-status'; '16' = 'publish-firmware' }
     while ($true) {
         Write-Host ''
         Write-Line "Temperature Alarms deploy  $RepoDir  (project $(Get-ProjectName), port $(Get-WebPortSetting))" 'Cyan'
@@ -810,14 +1015,18 @@ function Show-Menu {
         Write-Host '   4) Status                   10) Stop'
         Write-Host '   5) Logs                     11) Uninstall'
         Write-Host '   6) Back up the database     12) Demo, no hardware needed'
+        Write-Host '  13) Rotate the Device token  14) Finish the Device token rotation'
+        Write-Host '  15) Firmware status          16) Publish firmware (asks for the file)'
         Write-Host '                                q) Quit'
         $choice = Read-Host '  Choose'
         if ($null -eq $choice -or $choice -in @('q', 'quit', 'exit')) { return }
         if (-not $map.ContainsKey($choice.Trim())) { Warn 'no such choice'; continue }
         $action = $map[$choice.Trim()]
-        try { Invoke-Action $action }
+        $O.Finish = ($choice.Trim() -eq '14')
+        if ($choice.Trim() -eq '16') { $O.File = Ask 'The .bin.signed to publish' '' }
+        try { Set-LegacyRootEnv; Invoke-Action $action }
         catch { Write-Line "Error: $($_.Exception.Message)" 'Red'; Warn "$action did not finish" }
-        $O.File = ''; $O.Reveal = $false; $O.Wipe = $false; $O.Down = $false
+        $O.File = ''; $O.Reveal = $false; $O.Wipe = $false; $O.Down = $false; $O.Finish = $false; $O.Only = ''
         # The demo points these at its own project and .env.demo; the next action gets the real ones.
         $script:EnvPath = Join-Path $RepoDir '.env'; $script:DcArgs = @()
     }
@@ -929,6 +1138,7 @@ try {
         Show-Menu
         exit 0
     }
+    Set-LegacyRootEnv
     Invoke-Action $O.Action
     exit 0
 }

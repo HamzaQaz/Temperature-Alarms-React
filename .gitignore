@@ -27,8 +27,16 @@ deploy/servers.txt
 *.bench.csv
 *.csv.tmp
 
-# Firmware secrets (copy config.example.h to config.h)
+# Firmware secrets (copy config.example.h to config.h), and any exported firmware binary, which
+# holds the WiFi password and the Device token in plain text, wherever it is copied
 arduino/**/config.h
+*.bin
+*.bin.signed
+*.legacy_sig
+# The over-the-air signing keys (README, "Updating boards over the air"). private.key signs every
+# build the boards will install, so it never leaves the build laptop and its offline backup.
+arduino/**/private.key
+arduino/**/public.key
 
 # OS files
 .DS_Store

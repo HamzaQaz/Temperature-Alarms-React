@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireAdminToken } from '../auth';
-import type { AppDeps } from '../deps';
+import type { RouteDeps } from '../deps';
 import { isDuplicateKey, isMissingForeignRow } from '../db';
 import { parseDevice, parseDeviceEdit } from '../deviceInput';
 
@@ -25,8 +25,8 @@ export function toDevice({ id, hostname, closet, campusId, campusName, campusSho
   return { id, hostname, closet, campus: { id: campusId, name: campusName, shortcode: campusShortcode } };
 }
 
-/** Device routes: anyone may list; adding, editing, and deleting need the Admin token. */
-export function devicesRouter({ pool, config }: AppDeps): Router {
+/** Device routes: anyone may list; adding, editing, deleting, and the rotation list need the Admin token. */
+export function devicesRouter({ pool, config, rotation }: RouteDeps): Router {
   const router = Router();
   const adminOnly = requireAdminToken(config);
 
@@ -34,6 +34,26 @@ export function devicesRouter({ pool, config }: AppDeps): Router {
     try {
       const [rows] = await pool.query<DeviceRow[]>(`${SELECT_DEVICES} ORDER BY c.name, d.closet, d.hostname`);
       res.json(rows.map(toDevice));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // During a Device token rotation (DEVICE_TOKEN_PREVIOUS set): the Devices whose latest Reading
+  // came with the previous token, and those not heard at all since the api started. Both lists
+  // must be empty before the previous token is cleared (deploy.sh rotate-device-token --finish).
+  router.get('/rotation', adminOnly, async (_req, res, next) => {
+    const active = config.deviceTokenPrevious !== undefined;
+    try {
+      const [rows] = active ? await pool.query<DeviceRow[]>(`${SELECT_DEVICES} ORDER BY c.name, d.closet, d.hostname`) : [[]];
+      const onPrevious = rotation.onPrevious();
+      const heard = rotation.heardSince();
+      res.json({
+        active,
+        since: rotation.since.toISOString(),
+        previous: rows.filter((row) => onPrevious.has(row.hostname)).map(toDevice),
+        unheard: rows.filter((row) => !heard.has(row.hostname)).map(toDevice),
+      });
     } catch (error) {
       next(error);
     }
