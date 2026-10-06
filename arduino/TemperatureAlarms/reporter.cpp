@@ -9,6 +9,11 @@
 
 static const char READINGS_PATH[] = "/api/readings";
 static const unsigned long HTTP_TIMEOUT_MS = 10 * 1000UL;
+// How much of a refusal's body is read for the log, and for how long in all. HTTPClient's own
+// getString() reads everything the server sends, waiting up to the timeout per byte, so a server
+// that trickles a byte at a time would hold the loop for good.
+static const size_t RESPONSE_LOG_MAX = 120;
+static const unsigned long RESPONSE_READ_MS = 2 * 1000UL;
 
 // SERVER_URL plus the readings path, built once in reporterBegin() so no String is
 // rebuilt on the heap every interval.
@@ -31,7 +36,26 @@ static String readingJson(const char* hostname, const Sample& sample) {
   return json;
 }
 
+// The start of the response body, printable ASCII only, so a server cannot write a line of its own
+// (a fake `report: 201 created`, say) into the serial log the bench reads.
+static String responseStart(WiFiClient& client) {
+  String text;
+  text.reserve(RESPONSE_LOG_MAX);
+  unsigned long startedAt = millis();
+  while (text.length() < RESPONSE_LOG_MAX && millis() - startedAt < RESPONSE_READ_MS) {
+    int c = client.read();
+    if (c < 0) {
+      if (!client.connected()) break;
+      delay(10);
+      continue;
+    }
+    if (c >= 0x20 && c < 0x7f) text += (char)c;
+  }
+  return text;
+}
+
 // One POST over the given client. Returns the HTTP status, or a negative HTTPClient error.
+// Redirects stay off (HTTPClient's default): the token goes only to SERVER_URL.
 static int post(WiFiClient& client, const String& body, String& response) {
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
@@ -40,7 +64,7 @@ static int post(WiFiClient& client, const String& body, String& response) {
   http.addHeader(F("Content-Type"), F("application/json"));
   http.addHeader(F("Authorization"), String(F("Bearer ")) + DEVICE_TOKEN);
   int status = http.POST(body);
-  response = http.getString();
+  if (status > 0 && status != HTTP_CODE_CREATED) response = responseStart(client);
   http.end();
   return status;
 }

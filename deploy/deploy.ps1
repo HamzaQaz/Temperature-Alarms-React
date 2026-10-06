@@ -239,17 +239,63 @@ function Protect-EnvFile {
 }
 
 # TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
-# Never /0: trusting every address would let any client write its own X-Forwarded-For.
-# frontend/real-ip.sh checks the same at container start.
+# Never a prefix of 0, however spelled (/0, /00): trusting every address would let any client
+# write its own X-Forwarded-For. frontend/real-ip.sh and deploy.sh check the same, the same way.
+function Test-IPv4([string]$Value) {
+    if ($Value -notmatch '\A[0-9]{1,3}(\.[0-9]{1,3}){3}\z') { return $false }
+    foreach ($octet in $Value.Split('.')) { if ([int]$octet -gt 255) { return $false } }
+    return $true
+}
+
+# Groups of up to four hex digits, eight of them, or fewer around one `::`; the last two may be
+# a dotted IPv4 address. No zone (%eth0) and no brackets: nginx takes neither.
+function Test-IPv6([string]$Value) {
+    $a = $Value
+    if ($a -notmatch ':' -or $a -match '[^0-9A-Fa-f:.]' -or $a.Contains(':::') -or ($a -split '::').Count -gt 2) { return $false }
+    if ($a.Contains('.')) {
+        $last = $a.LastIndexOf(':')
+        if (-not (Test-IPv4 $a.Substring($last + 1))) { return $false }
+        $a = $a.Substring(0, $last) + ':0:0'
+    }
+    if ($a.Contains('.')) { return $false }
+    $compressed = $a.Contains('::')
+    $groups = 0
+    foreach ($group in $a.Split(':')) {
+        if ($group -eq '') { if (-not $compressed) { return $false }; continue }
+        if ($group.Length -gt 4) { return $false }
+        $groups++
+    }
+    if ($compressed) { return $groups -le 7 }
+    return $groups -eq 8
+}
+
+# An address, or ADDRESS/PREFIX with the prefix 1 to 32 (IPv4) or 1 to 128 (IPv6).
+function Test-Address([string]$Value) {
+    $parts = $Value.Split('/')
+    if ($parts.Count -gt 2) { return $false }
+    if (Test-IPv4 $parts[0]) { $max = 32 }
+    elseif (Test-IPv6 $parts[0]) { $max = 128 }
+    else { return $false }
+    if ($parts.Count -eq 1) { return $true }
+    if ($parts[1] -notmatch '\A[0-9]{1,3}\z') { return $false }
+    return ([int]$parts[1] -ge 1) -and ([int]$parts[1] -le $max)
+}
+
 function Test-TrustProxy([string]$Value) {
     if (-not $Value) { return $true }
-    if ($Value -notmatch '^[0-9A-Za-z.:/, ]*$') { return $false }
+    # \z, not $: one line only, so the value cannot carry a second line into .env.
+    if ($Value -notmatch '\A[0-9A-Za-z.:/, ]*\z') { return $false }
     foreach ($entry in ($Value -split '[, ]+' | Where-Object { $_ })) {
-        if ($entry -match '/0$') { return $false }
         if ($entry -eq 'gateway') { continue }
-        if ($entry -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$') { return $false }
+        if (-not (Test-Address $entry)) { return $false }
     }
     return $true
+}
+
+# USER@SERVER, SERVER, or an ssh config alias. Never starting with `-`, which ssh would take as an
+# option (-oProxyCommand=... runs a command here), and nothing ssh would read as syntax.
+function Test-SshHost([string]$Value) {
+    return $Value -cmatch '\A[A-Za-z0-9_.@:%+][A-Za-z0-9_.@:%+-]*\z'
 }
 
 function Test-Setting([string]$Key, [string]$Value) {
@@ -347,6 +393,17 @@ function Get-WebHost {
 }
 function Get-WebPortNumber { $wp = Get-WebPortSetting; return $wp.Substring($wp.LastIndexOf(':') + 1) }
 
+# TRUST_PROXY=gateway believes X-Forwarded-For from the Docker network's gateway. A proxy on this
+# host arrives from there, but so does whatever Docker's userland proxy forwards: every IPv6 client
+# (web listens on IPv4 only), and on hosts without iptables NAT every client. With web published on
+# every address, any of them could claim to be anyone. True when that is the setup.
+function Test-GatewayExposed {
+    $entries = @((Get-EnvValue 'TRUST_PROXY') -split '[, ]+' | Where-Object { $_ })
+    if ($entries -notcontains 'gateway') { return $false }
+    $wp = Get-WebPortSetting
+    return -not ($wp -match '\A(127\.[0-9.]+|\[::1\]|localhost):[0-9]+\z')
+}
+
 function Invoke-Dc { & docker compose @DcArgs @args }
 
 function Test-Running([string]$Service) {
@@ -379,6 +436,11 @@ function Invoke-Preflight {
 
     if ((Test-Path -LiteralPath (Join-Path $RepoDir 'compose.yaml')) -and (Test-Path -LiteralPath $ExamplePath)) { Ok "compose.yaml and .env.example in $RepoDir" }
     else { Bad "compose.yaml or .env.example missing in $RepoDir"; $failed = $true }
+
+    if (Test-GatewayExposed) {
+        Bad "TRUST_PROXY=gateway with WEB_PORT=$(Get-WebPortSetting): any client reaching the port could claim any address. Keep it on the loopback: --set WEB_PORT=127.0.0.1:$(Get-WebPortNumber) --reconfigure"
+        $failed = $true
+    }
 
     $port = [int](Get-WebPortNumber); $webHost = Get-WebHost
     $client = New-Object System.Net.Sockets.TcpClient
@@ -824,6 +886,9 @@ function Invoke-Remote {
         }
     }
     if ($O.Hosts.Count -eq 0) { Fail "no hosts in $($O.Servers)" }
+    foreach ($h in $O.Hosts) {
+        if (-not (Test-SshHost $h)) { Fail "'$h' is not a host: give USER@SERVER (ssh options go in --ssh-opts)" }
+    }
     if (-not $O.Action -and $O.Hosts.Count -gt 1) { Fail 'give an action for more than one host' }
     if (-not $O.Action -and -not (Test-Interactive)) { Fail 'give an action, or run interactively for the menu' }
     if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) { Fail 'ssh is not installed here (Windows: Settings > Optional features > OpenSSH Client)' }

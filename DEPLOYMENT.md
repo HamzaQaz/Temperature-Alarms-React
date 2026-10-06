@@ -210,19 +210,17 @@ Compose rebuilds what changed and recreates only those containers. New schema mi
 An upgrade that adds an index to `readings` takes `api` off the air while it builds, since migrations run before it listens: migration `0006-readings-covering-index` took 33 s at 26 M Readings (90 days of 100 Devices), so each Device misses about one Reading. To lose none, build it first by hand while the old `api` keeps serving; MySQL builds it online, ingest kept working throughout (all 201s, p99 0.36 s during the 32 s build), and the migration then finds it done:
 
 ```bash
-set -a; source .env; set +a
-docker compose exec db mysql -uroot -p"$DB_PASSWORD" temperature_alarms -e "ALTER TABLE readings ADD INDEX ix_readings_device_recorded_temp (device_id, recorded_at, id, temp_f), DROP INDEX ix_readings_device_recorded, ALGORITHM=INPLACE, LOCK=NONE"
+docker compose exec db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms -e "ALTER TABLE readings ADD INDEX ix_readings_device_recorded_temp (device_id, recorded_at, id, temp_f), DROP INDEX ix_readings_device_recorded, ALGORITHM=INPLACE, LOCK=NONE"'
 ```
 
 The migration runner holds a MySQL lock while it works, so a second runner, such as `npm run migrate:legacy` started while `api` is still converting a large old database, waits for the first to finish. After ten minutes it gives up with `Another migration run still holds the lock`; run it again once the first has finished.
 
 ### Backups and restore
 
-Everything lives in the `db-data` volume. Dump it through the `db` container:
+Everything lives in the `db-data` volume. Dump it through the `db` container. Every command in this guide hands MySQL its password inside the container, from the container's own `MYSQL_ROOT_PASSWORD`, so it is never on a command line that the host's `ps` or your shell history would show; the single quotes keep your shell from expanding it:
 
 ```bash
-set -a; source .env; set +a
-docker compose exec db mysqldump -uroot -p"$DB_PASSWORD" temperature_alarms | gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz
+(umask 077; docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction temperature_alarms' | gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz)
 ```
 
 For a nightly copy on a server, put that line in a script and run it from cron, keeping the last week:
@@ -231,23 +229,22 @@ For a nightly copy on a server, put that line in a script and run it from cron, 
 sudo tee /usr/local/bin/backup-temperature-db.sh >/dev/null <<'EOS'
 #!/bin/bash
 cd /path/to/temperature-alarms || exit 1
-set -a; source .env; set +a
+umask 077
 DIR=/var/backups/temperature-alarms
 mkdir -p "$DIR"
-docker compose exec -T db mysqldump -uroot -p"$DB_PASSWORD" temperature_alarms | gzip > "$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction temperature_alarms' | gzip > "$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
 find "$DIR" -name 'backup_*.sql.gz' -mtime +7 -delete
 EOS
 sudo chmod +x /usr/local/bin/backup-temperature-db.sh
 # crontab -e:  0 2 * * * /usr/local/bin/backup-temperature-db.sh
 ```
 
-Restore into a running stack (the `-T` matters, it lets the file stream in). Every command here that names `$DB_PASSWORD` needs `.env` loaded into the shell first, or MySQL is sent an empty password and refuses; `deploy/deploy.sh backup` and `restore` do all of this for you:
+Restore into a running stack (the `-T` matters, it lets the file stream in). `deploy/deploy.sh backup` and `restore` do all of this for you, and `restore` backs up first:
 
 ```bash
-set -a; source .env; set +a
 docker compose stop api
-docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" -e 'DROP DATABASE temperature_alarms; CREATE DATABASE temperature_alarms'
-gunzip -c backup_20260909_020000.sql.gz | docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" temperature_alarms
+docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "DROP DATABASE temperature_alarms; CREATE DATABASE temperature_alarms"'
+gunzip -c backup_20260909_020000.sql.gz | docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms'
 docker compose start api
 ```
 
@@ -288,9 +285,8 @@ A database from the PHP era or the first Node backend holds `devices`, `location
 3. Start only the database and restore into it:
 
    ```bash
-   set -a; source .env; set +a
    docker compose up -d --wait db
-   docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" temperature_alarms < old.sql
+   docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms' < old.sql
    ```
 
 4. Start the rest: `docker compose up -d --build` (or `deploy/deploy.sh deploy`). The first start of `api` renames the old tables, builds the new ones, and copies every row; watch `docker compose logs api` for lines starting `legacy:`, each naming a row it could not read and skipped. `api` starts listening only once the copy is done. A database that takes longer than about a minute outlasts the healthcheck, so `up` reports `api` unhealthy and leaves `web` stopped. That is harmless: wait for `Server is running on port 3001` in `docker compose logs api`, then run the same command again.
@@ -303,8 +299,7 @@ A database from the PHP era or the first Node backend holds `devices`, `location
 6. Verify the counts with the SQL in the section linked above, then drop the legacy tables by hand. Open the MySQL prompt with:
 
    ```bash
-   set -a; source .env; set +a
-   docker compose exec db mysql -uroot -p"$DB_PASSWORD" temperature_alarms
+   docker compose exec db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms'
    ```
 
 ### TLS in front of the stack
@@ -360,7 +355,7 @@ Set `TRUST_PROXY` in `.env` to the proxy's address, then run `docker compose up 
 
 | Where the proxy runs | `TRUST_PROXY` |
 | --- | --- |
-| On this host, as above (Caddy or nginx proxying to `127.0.0.1:8080`) | `gateway`. A host proxy reaches the container through the Docker network's gateway; nginx looks that address up when it starts |
+| On this host, as above (Caddy or nginx proxying to `127.0.0.1:8080`) | `gateway`. A host proxy reaches the container through the Docker network's gateway; nginx looks that address up when it starts. Only with `WEB_PORT=127.0.0.1:PORT`: Docker's userland proxy delivers other connections from the gateway too (every IPv6 client, since `web` listens on IPv4, and on hosts without iptables NAT every client), so with the port open to the network any of them could claim to be anyone. `deploy.sh` and `deploy.ps1` refuse to deploy `gateway` with the port open |
 | On another machine, or in a container on the stack's network | Its IP address, or several, comma-separated: `10.20.0.5,10.20.0.6`. CIDR ranges work too: `10.20.0.0/29` |
 
 Leave it empty with no proxy in front. That is the default, and nginx then counts the address it sees, as without the setting. `deploy/deploy.sh install` asks for the value only when you say a proxy is in front; non-interactively, use `--set TRUST_PROXY=gateway` (with `--reconfigure` on an existing `.env`). `docker compose logs web` shows what nginx trusts, as a line starting `real-ip:`.

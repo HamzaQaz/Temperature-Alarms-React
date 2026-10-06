@@ -1,0 +1,5 @@
+# A firmware image holds the WiFi password and the Device token in plain text, wherever it is
+# copied: `build/` is covered at the root, these catch a copy anywhere under arduino/.
+*.bin
+*.elf
+*.map

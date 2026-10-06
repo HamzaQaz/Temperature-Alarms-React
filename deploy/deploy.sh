@@ -248,16 +248,63 @@ lock_env() {
 }
 
 # TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
-# Never /0: trusting every address would let any client write its own X-Forwarded-For.
-# frontend/real-ip.sh checks the same at container start.
+# Never a prefix of 0, however spelled (/0, /00): trusting every address would let any client
+# write its own X-Forwarded-For. frontend/real-ip.sh checks the same, the same way, at container start.
+valid_ipv4() {
+  local octet octets
+  case "$1" in *[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+  IFS=. read -r -a octets <<< "$1"
+  [ ${#octets[@]} -eq 4 ] || return 1
+  for octet in "${octets[@]}"; do
+    case "$octet" in ????*) return 1 ;; esac
+    [ "$((10#$octet))" -le 255 ] || return 1
+  done
+}
+
+# Groups of up to four hex digits, eight of them, or fewer around one `::`; the last two may be
+# a dotted IPv4 address. No zone (%eth0) and no brackets: nginx takes neither.
+valid_ipv6() {
+  local a=$1 compressed=0 groups=0 group parts
+  case "$a" in *:*) ;; *) return 1 ;; esac
+  case "$a" in *[!0-9A-Fa-f:.]*|*:::*|*::*::*) return 1 ;; esac
+  case "$a" in *.*) valid_ipv4 "${a##*:}" || return 1; a="${a%:*}:0:0" ;; esac
+  case "$a" in *.*) return 1 ;; esac
+  case "$a" in *::*) compressed=1 ;; esac
+  IFS=: read -r -a parts <<< "$a"
+  for group in "${parts[@]}"; do
+    if [ -z "$group" ]; then [ "$compressed" -eq 1 ] || return 1; continue; fi
+    case "$group" in ?????*) return 1 ;; esac
+    groups=$((groups + 1))
+  done
+  if [ "$compressed" -eq 1 ]; then [ "$groups" -le 7 ]; else [ "$groups" -eq 8 ]; fi
+}
+
+# An address, or ADDRESS/PREFIX with the prefix 1 to 32 (IPv4) or 1 to 128 (IPv6).
+valid_address() {
+  local addr prefix max
+  case "$1" in
+    */*/*) return 1 ;;
+    */*) addr=${1%/*}; prefix=${1#*/} ;;
+    *) addr=$1; prefix="" ;;
+  esac
+  if valid_ipv4 "$addr"; then max=32
+  elif valid_ipv6 "$addr"; then max=128
+  else return 1
+  fi
+  case "$1" in */*) ;; *) return 0 ;; esac
+  case "$prefix" in ''|*[!0-9]*|????*) return 1 ;; esac
+  [ "$((10#$prefix))" -ge 1 ] && [ "$((10#$prefix))" -le "$max" ]
+}
+
 valid_trust_proxy() {
   local entry
   [ -n "$1" ] || return 0
-  # Only address characters, so the unquoted split below cannot glob.
-  printf '%s' "$1" | grep -Eq '^[0-9A-Za-z.:/, ]*$' || return 1
+  # Only address characters, and one line, so the unquoted split below cannot glob and the value
+  # cannot carry a second line into .env.
+  case "$1" in *[!0-9A-Za-z.:/,\ ]*) return 1 ;; esac
   for entry in $(printf '%s' "$1" | tr ',' ' '); do
-    case "$entry" in */0) return 1 ;; gateway) continue ;; esac
-    printf '%s' "$entry" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$' || return 1
+    [ "$entry" = gateway ] && continue
+    valid_address "$entry" || return 1
   done
 }
 
@@ -370,6 +417,16 @@ web_host() {
 }
 web_port_num() { local wp; wp=$(web_port_setting); printf '%s' "${wp##*:}"; }
 
+# TRUST_PROXY=gateway believes X-Forwarded-For from the Docker network's gateway. A proxy on this
+# host arrives from there, but so does whatever Docker's userland proxy forwards: every IPv6 client
+# (web listens on IPv4 only), and on hosts without iptables NAT every client. With web published on
+# every address, any of them could claim to be anyone. True when that is the setup.
+gateway_exposed() {
+  case ",$(env_get TRUST_PROXY | tr -d ' ')," in *,gateway,*) ;; *) return 1 ;; esac
+  case "$(web_port_setting)" in 127.*:*|'[::1]:'*|localhost:*) return 1 ;; esac
+  return 0
+}
+
 dc() { docker compose ${DC_ARGS[@]+"${DC_ARGS[@]}"} "$@"; }
 
 running() { [ -n "$(dc ps --status running -q "$1" 2>/dev/null)" ]; }
@@ -400,6 +457,11 @@ do_preflight() {
 
   if [ -f compose.yaml ] && [ -f .env.example ]; then ok "compose.yaml and .env.example in $REPO_DIR"
   else bad "compose.yaml or .env.example missing in $REPO_DIR"; failed=1; fi
+
+  if gateway_exposed; then
+    bad "TRUST_PROXY=gateway with WEB_PORT=$(web_port_setting): any client reaching the port could claim any address. Keep it on the loopback: --set WEB_PORT=127.0.0.1:$(web_port_num) --reconfigure"
+    failed=1
+  fi
 
   port=$(web_port_num); host=$(web_host)
   if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
@@ -1048,6 +1110,12 @@ remote_bootstrap() {
   ssh ${tty[@]+"${tty[@]}"} $SSH_OPTS "$host" "$cmd"
 }
 
+# USER@SERVER, SERVER, or an ssh config alias. Never starting with `-`, which ssh would take as an
+# option (-oProxyCommand=... runs a command here), and nothing a shell or ssh would read as syntax.
+valid_host() {
+  case "$1" in ''|-*|*[!A-Za-z0-9_.@:%+-]*) return 1 ;; esac
+}
+
 remote_main() {
   local host line results=() failed=0
   if [ -n "$SERVERS_FILE" ]; then
@@ -1058,6 +1126,9 @@ remote_main() {
     done < "$SERVERS_FILE"
   fi
   [ ${#HOSTS[@]} -gt 0 ] || die "no hosts in $SERVERS_FILE"
+  for host in "${HOSTS[@]}"; do
+    valid_host "$host" || die "'$host' is not a host: give USER@SERVER (ssh options go in --ssh-opts)"
+  done
   [ -n "$ACTION" ] || [ ${#HOSTS[@]} -eq 1 ] || die "give an action for more than one host"
   [ -n "$ACTION" ] || interactive || die "give an action, or run interactively for the menu"
   command -v ssh >/dev/null 2>&1 || die "ssh is not installed here"

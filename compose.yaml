@@ -24,6 +24,10 @@ services:
       MYSQL_USER: temperature
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env (openssl rand -hex 32)}
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      # root only through the socket inside this container (deploy.sh's backups and restores, the
+      # commands in DEPLOYMENT.md), never over the network: the root password is DB_PASSWORD, which
+      # api holds too. The image's default is root@'%'. Applies when the volume is first created.
+      MYSQL_ROOT_HOST: localhost
     volumes:
       - db-data:/var/lib/mysql
     # The entrypoint chowns the data directory and drops to the mysql user; nothing else is needed.
@@ -31,8 +35,11 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
     # Not published: only api reaches it. Use `docker compose exec db mysql ...` from the host.
+    # No password: `mysqladmin ping` exits 0 whenever the server answers, access denied included,
+    # and 1 when nothing listens. Over TCP, so the entrypoint's socket-only first start is not taken
+    # for the real one. A password here would sit on a command line the host's `ps` shows every 5 s.
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uhealthcheck", "--silent"]
       interval: 5s
       timeout: 5s
       retries: 30

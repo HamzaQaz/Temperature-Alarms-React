@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -286,6 +287,70 @@ class ServerClient(unittest.TestCase):
         with self.assertRaises(bench.BenchError) as raised:
             bench.Server("http://alarms.local", "tok", FakeTransport(device_status=401)).register("ESP_7AED5B", 7)
         self.assertIn("ADMIN_TOKEN", str(raised.exception))
+
+
+class RedirectingServer:
+    """A real HTTP server on the loopback: `/api/` answers with a redirect elsewhere, and every request is recorded."""
+
+    def __init__(self, status):
+        import http.server
+
+        self.requests = []
+        recorded = self.requests
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def _answer(self):
+                length = int(self.headers.get("Content-Length") or 0)
+                if length:
+                    self.rfile.read(length)
+                recorded.append((self.command, self.path, self.headers.get("Authorization")))
+                if self.path.startswith("/api/"):
+                    self.send_response(status)
+                    self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere{self.path}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    body = b"[]"
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            do_GET = do_POST = _answer
+
+        self._server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self._server.server_port}"
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self._server.shutdown()
+        self._server.server_close()
+
+
+class HttpTransport(unittest.TestCase):
+    """The real transport, against a loopback server: the Admin token never follows a redirect."""
+
+    def test_a_redirect_is_refused_naming_where_it_pointed_and_the_token_goes_nowhere_else(self):
+        for status in (301, 302, 303, 307, 308):
+            with self.subTest(status=status):
+                server = RedirectingServer(status)
+                self.addCleanup(server.close)
+                with self.assertRaises(bench.BenchError) as raised:
+                    bench.http_transport("POST", server.url + "/api/campuses", {"name": "Bench"}, "admin-secret")
+                self.assertEqual([path for _, path, _ in server.requests], ["/api/campuses"])
+                self.assertIn(str(status), str(raised.exception))
+                self.assertIn("/elsewhere/api/campuses", str(raised.exception))
+                self.assertNotIn("admin-secret", str(raised.exception))
+
+    def test_a_get_is_not_redirected_either(self):
+        server = RedirectingServer(308)
+        self.addCleanup(server.close)
+        with self.assertRaises(bench.BenchError):
+            bench.http_transport("GET", server.url + "/api/health", None, "")
+        self.assertEqual(len(server.requests), 1)
 
 
 class OneBoard(unittest.TestCase):

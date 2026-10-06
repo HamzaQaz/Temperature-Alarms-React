@@ -286,7 +286,7 @@ There is no on-device web server, no retry loop, and no per-Device setting. Your
 
 ### Libraries and board settings
 
-The sketch compiles clean against these versions; install them from the IDE's Boards Manager and Library Manager.
+The sketch compiles clean against these versions; install them from the IDE's Boards Manager and Library Manager. Build production binaries with exactly these, not whatever is newest: the same `config.h` and the same three versions give the same firmware, so a board flashed months later behaves like the rest of its batch. When a version changes, compile, run one board through the bench checklist, and update this table in the same commit.
 
 | Dependency | Version | Where |
 | --- | --- | --- |
@@ -298,7 +298,7 @@ Board settings, under Tools: board **NodeMCU 1.0 (ESP-12E Module)**, upload spee
 
 ### Flashing
 
-1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials (leave the password `""` for an open network that admits Devices by MAC allowlist), and the server URL without a trailing slash (the sketch appends `/api/readings`): `http://<host>` where the stack runs, with a port only if `WEB_PORT` was changed, or `https://YOUR_DOMAIN` once TLS sits in front of it. A Device flashed with `http://<host>` keeps reporting after TLS goes in front, by hostname or by address, but only through the plain-HTTP Readings route that DEPLOYMENT.md's TLS proxy keeps; the Device cannot follow a redirect to HTTPS. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
+1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials (leave the password `""` for an open network that admits Devices by MAC allowlist, and see [Secrets on the board](#secrets-on-the-board) first), and the server URL without a trailing slash (the sketch appends `/api/readings`): `http://<host>` where the stack runs, with a port only if `WEB_PORT` was changed, or `https://YOUR_DOMAIN` once TLS sits in front of it. A Device flashed with `http://<host>` keeps reporting after TLS goes in front, by hostname or by address, but only through the plain-HTTP Readings route that DEPLOYMENT.md's TLS proxy keeps; the Device cannot follow a redirect to HTTPS. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
 2. Open `TemperatureAlarms.ino` in the Arduino IDE, choose the board setting above and the port the NodeMCU appears on, and click Upload.
 3. Open the serial monitor at 115200 and watch the Device join WiFi.
 
@@ -314,6 +314,18 @@ arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
 ```
 
 An `https://` server URL is sent over TLS without certificate checking, since a pinned certificate would need a reflash at every renewal. The Device token therefore trusts DNS on the closet's network; ADR 0003 records the trade-off.
+
+### Secrets on the board
+
+Every board carries the WiFi password and the Device token in plain text: in `config.h`, in the exported `.bin`, and in the board's flash, where anyone holding the board reads them back over USB with `esptool read_flash`. The ESP8266 has no flash encryption or secure boot, so no build setting changes that. Treat a board like a key to the closet network.
+
+- **What the Device token allows.** Posting Readings, and nothing else: it cannot read anything the dashboard does not already show, or change Campuses or Devices. A Reading is accepted only for a hostname registered in Settings (the dashboard lists them), at most 20 a minute per hostname, so a stolen token can send false temperatures for any registered Device: open false incidents, or hide a real one by posting normal values over it. Every board shares the one token, so one lost board exposes all of them.
+- **What the WiFi password allows.** Joining the Devices' network. Give the boards an SSID and VLAN of their own that reaches only the server's port 80 (or 443), with client isolation, so the password opens nothing else.
+- **An open network** (`WIFI_PASSWORD ""`) is only for an SSID that admits Devices by MAC allowlist, and a MAC allowlist stops nobody determined: the MACs are on the inventory sheet and in every frame the boards send. Use it only on that same isolated VLAN.
+- **Serial.** The firmware never prints the token or the WiFi password; serial shows the SSID, the server URL, the hostname, and each report's status. A refused report prints at most 120 printable characters of the server's answer, so the bench log carries no secret, and a server cannot write a line of its own into it.
+- **Where the token goes.** Only to `SERVER_URL`: the firmware never follows a redirect (a 3xx is logged as `report: 3xx` and nothing is recorded). Over `http://`, anyone who can see the traffic reads the token, hence the isolated VLAN above. Over `https://` it is encrypted, but without a certificate check a machine that answers for the server's name (a spoofed DNS answer, an ARP spoof on the VLAN) can still take it.
+- **A lost or stolen board**, or a token seen in the wrong place: rotate the token. Set a new `DEVICE_TOKEN` in the stack's `.env` (`deploy.sh` or by hand) and restart `api`; from then every board still on the old token is refused with a 401 and records nothing, so plan the rotation as a flashing day. Put the new token in `config.h`, export once, and reflash every board with the watcher, which takes boards already registered (`already`) without moving them from their Campus and Closet and stops the batch at once if the binary carries the wrong token. Behind a proxy without `TRUST_PROXY`, boards still on the old token also trip the wrong-token limit for everyone behind it (DEPLOYMENT.md, TLS); unplug them until they are reflashed.
+- **The exported `.bin` is a secret.** Keep it under the sketch's `build/` (gitignored, as is any `.bin` under `arduino/`), never copy it to a share or a ticket, and delete it when the batch is done.
 
 ### Bench checklist
 
@@ -333,7 +345,7 @@ pip install esptool pyserial
 ```
 
 1. **Export the binary once.** Fill in `config.h` as above, then in the IDE choose Sketch, Export Compiled Binary: it lands under `build/` in the sketch folder as `TemperatureAlarms.ino.bin`. One board type per batch, since `DHT_PIN` is in the binary; a batch of integrated boards is a second export.
-2. **Set the Admin token**, from the stack's `.env`, in the environment and nowhere else: `$env:ADMIN_TOKEN = "..."` in PowerShell, `set ADMIN_TOKEN=...` in cmd.
+2. **Set the Admin token**, from the stack's `.env`, in the environment and nowhere else: `$env:ADMIN_TOKEN = "..."` in PowerShell, `set ADMIN_TOKEN=...` in cmd. The watcher never prints it or writes it to the sheet or the log. It does send it with every registration, so give `--server` an `https://` URL once a TLS proxy is in front; over `http://`, run the bench only on a network you trust, such as the Devices' VLAN or a cable to the server's LAN. The watcher never follows a redirect, so an `http://` URL that the proxy redirects stops it at startup, naming the URL to use instead. Close the PowerShell window when the batch is done.
 3. **Run the watcher** against the live server and the inventory sheet, a CSV with a `MAC` column (`ID` and `HOSTNAME` columns are used when present). Close the sheet in Excel first, since an open sheet cannot be written. Keep the sheet outside the repo: it lists every board's MAC, and the watcher writes `<sheet>.bench.csv` and, while saving, `<sheet>.tmp` next to it (`.gitignore` covers CSVs at the repo root and in `arduino/` in case one lands there):
 
    ```powershell
@@ -349,6 +361,7 @@ pip install esptool pyserial
 
    PASS needs `device:` with the derived hostname, `wifi: connected`, a numeric `sensor:` line, and `report: 201 created`. `FAIL bad sensor` and `FAIL did not boot` keep the batch going and leave the Device registered. A `report: 401` (the Device token in the binary), no `wifi: connected` on the first board of the run (SSID or password), or `report: failed` (the server is unreachable from the bench) stops the batch and names which of the binary, the WiFi, or the server to fix. Ctrl-C stops after the boards in progress finish.
 4. **Read the sheet and the log.** After each board, its sheet row is updated in place: `FLASHED` becomes TRUE, `TESTED` becomes TRUE on PASS or FALSE on a FAIL, and a `BENCH` column holds the verdict and the date; the three columns are added to the header when the sheet lacks them, and a board the sheet lacks gets a new row with the next `ID`. Rows the watcher did not touch are written back as they were, so edits made between boards survive. `<sheet>.bench.csv` next to the sheet also gains one row per board seen (time, port, sheet row, hostname, MAC, `registered` or `already`, `flashed`, verdict, reason); replugging a board runs it again and adds a row. On stop, the watcher prints the sheet rows no board answered for and the boards the sheet lacked at start. A Device on the Bench stays there, Offline, until Settings moves it to its Campus and Closet.
+5. **Clean up.** Delete the exported `.bin` (it holds the WiFi password and the Device token), close the window that holds `ADMIN_TOKEN`, and keep the sheet where only technicians can read it.
 
 The watcher has run one batch of 92 boards (91 passed, one bad sensor). Its logic is unit-tested without hardware (see Tests and checks); a real board on the bench is the acceptance test for any change to it.
 
