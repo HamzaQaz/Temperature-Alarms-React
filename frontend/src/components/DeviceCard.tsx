@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 import { History, KeyRound, Wifi, WifiOff } from 'lucide-react';
+import { AcknowledgeLine } from '@/components/AcknowledgeLine';
 import { ConditionBadge } from '@/components/ConditionBadge';
 import { EscalationTrace } from '@/components/EscalationTrace';
 import { ReportHairline, type ReportState } from '@/components/ReportHairline';
@@ -16,7 +17,7 @@ import { formatStaleAge, hasSensorFault } from '@/lib/faultReport';
 import { EASE_OUT_EXPO_CSS, crossfade, reveal } from '@/lib/motion';
 import { formatAge, nextReport, type NextReport } from '@/lib/reportTiming';
 import { cn } from '@/lib/utils';
-import type { Condition, ConditionLevel, DashboardDevice } from '@/types';
+import type { Condition, ConditionLevel, DashboardDevice, Incident } from '@/types';
 
 interface DeviceCardProps {
   device: DashboardDevice;
@@ -27,6 +28,10 @@ interface DeviceCardProps {
   /** When the last report's age was zero, on the browser's monotonic clock (lib/elapsed.ts); null when it never reported. */
   anchorMs: number | null;
   reportIntervalSeconds: number;
+  /** Now, by this browser's clock, ticking: how long ago each open incident was acknowledged. */
+  now: number;
+  /** An acknowledgement the server just recorded for one of its incidents, to show at once. */
+  onIncident: (incident: Incident) => void;
 }
 
 interface MeasureProps {
@@ -134,8 +139,8 @@ function useEscalations(level: ConditionLevel | undefined): number {
 }
 
 /** One Device: where it is, what it last reported, and whether it is still reporting. */
-export function DeviceCard({ device, secondsSinceReading, secondsSinceReport, anchorMs, reportIntervalSeconds }: DeviceCardProps) {
-  const { latestReading, lastReportAt, online, conditions } = device;
+export function DeviceCard({ device, secondsSinceReading, secondsSinceReport, anchorMs, reportIntervalSeconds, now, onIncident }: DeviceCardProps) {
+  const { latestReading, lastReportAt, online, conditions, openIncidents } = device;
   // The board reports but its sensor does not answer: the Reading on the card is the last good one, not the closet now.
   const fault = hasSensorFault(conditions);
   const titleId = `device-${device.id}-title`;
@@ -301,6 +306,23 @@ export function DeviceCard({ device, secondsSinceReading, secondsSinceReport, an
             </motion.ul>
           )}
         </AnimatePresence>
+        {/* Who is on it, under the badges; with two incidents open, each line names its Condition. */}
+        {openIncidents.length > 0 && (
+          <div className="grid gap-1">
+            {openIncidents.map((incident) => (
+              <AcknowledgeLine
+                key={incident.id}
+                incident={incident}
+                open
+                named={openIncidents.length > 1}
+                place={`${device.closet}, ${device.campus.name}`}
+                when="age"
+                now={now}
+                onAcknowledged={onIncident}
+              />
+            ))}
+          </div>
+        )}
       </CardContent>
 
       <CardFooter className="relative mt-auto justify-between gap-3 border-t px-5 pt-4 text-sm text-muted-foreground">

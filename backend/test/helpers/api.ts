@@ -44,6 +44,23 @@ export interface DashboardDevice {
   secondsSinceReport: number | null;
   /** Every Condition the Device is in, worst first. */
   conditions: Condition[];
+  /** Its incidents still open, oldest first, each with who acknowledged it. */
+  openIncidents: OpenIncident[];
+}
+
+/** Who said they are on an incident, and when (POST /api/incidents/:id/acknowledge). */
+export interface Acknowledgement {
+  by: string;
+  at: string;
+}
+
+/** An open incident as a Dashboard card carries it. */
+export interface OpenIncident {
+  id: number;
+  condition: Condition['name'];
+  level: Condition['level'];
+  start: string;
+  acknowledgement: Acknowledgement | null;
 }
 
 export interface DaySummary {
@@ -101,6 +118,7 @@ export interface Incident {
   end: string | null;
   peak: { value: number | null; tempF: number; humidity: number | null; recordedAt: string };
   segments: IncidentSegment[];
+  acknowledgement: Acknowledgement | null;
 }
 
 export interface IncidentLog {
@@ -172,6 +190,8 @@ export function api(server: RunningServer) {
         if (response.status !== 200) throw new Error(`GET /api/incidents: ${response.status} ${await response.text()}`);
         return json<IncidentLog>(response);
       },
+      /** Acknowledges an incident, as the admin unless init says otherwise. */
+      acknowledge: (id: number, body: unknown, init?: RequestInit) => post(`/api/incidents/${id}/acknowledge`, body, init),
     },
     dashboard: {
       url: (query = '') => `${server.url}/api/dashboard${query}`,

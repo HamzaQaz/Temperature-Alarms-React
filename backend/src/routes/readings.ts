@@ -20,9 +20,11 @@ import {
   broadcastIncidentChanges,
   deleteDeviceIncidents,
   latestReadingOf,
+  openIncidentsByDevice,
   recordFaultIncidents,
   recordReadingIncidents,
   type ChangedIncident,
+  type OpenIncidentPayload,
 } from '../incidentStore';
 import { enqueueNotifications } from '../outboxStore';
 
@@ -267,7 +269,7 @@ const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
 const secondsSince = (then: Date | null, now: Date): number | null =>
   then === null ? null : Math.max(0, Math.floor((now.getTime() - then.getTime()) / 1000));
 
-function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, sightings: DeviceSightings) {
+function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, sightings: DeviceSightings, openIncidents: OpenIncidentPayload[]) {
   const { id, hostname, closet, campusId, campusName, campusShortcode, tempF, humidity, recordedAt, sensorFaults } = row;
   const latest = recordedAt === null || tempF === null ? null : { tempF, humidity, recordedAt };
   const secondsSinceReading = secondsSince(latest?.recordedAt ?? null, now);
@@ -291,6 +293,8 @@ function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, 
     conditions,
     /** When the board was last refused for its Device token, within the last 15 minutes; null otherwise. */
     tokenMismatchAt: sightings.mismatchedAt(hostname)?.toISOString() ?? null,
+    /** Its incidents still open, oldest first, each with who acknowledged it: the card says who is on them. */
+    openIncidents,
   };
 }
 
@@ -329,7 +333,8 @@ export function dashboardRouter({ pool, config, sse, sightings, now = () => new 
     try {
       const at = now();
       const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, [latestAllowed(at), ...params]);
-      const devices = rows.map((row) => toDashboardDevice(row, at, rules, sightings));
+      const open = await openIncidentsByDevice(pool);
+      const devices = rows.map((row) => toDashboardDevice(row, at, rules, sightings, open.get(row.id) ?? []));
       // Array sort is stable, so Devices at the same level keep the Campus and closet order of the query.
       if (order === 'worst') devices.sort((a, b) => severity(a.conditions) - severity(b.conditions));
       res.json({
