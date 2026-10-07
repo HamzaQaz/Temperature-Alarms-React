@@ -22,11 +22,21 @@ The rebuild left notifications out ("The Alarms feature is removed, not rebuilt"
 - **The SMTP password never goes on a command line.** The deploy scripts refuse `--smtp-password`; it comes from a hidden prompt, or the first line of stdin with `--yes`, and over `--host` it travels on ssh's stdin. It is written to `.env` single-quoted (`SMTP_PASSWORD='...'`) so Compose reads it literally, and a password holding a single quote is refused. `info` masks it whole, not first and last four. `--smtp-host off` empties the whole group, since any of it left without `SMTP_HOST` stops the api. Compose passes all nine variables as `${KEY:-}`.
 - **The server's downtime is already handled** by ADR 0006's "heard since" rule, so a restart or database outage opens no Offline incidents and sends no email. A restart also continues an open incident without emailing it again: it lives in its row.
 
+## Update 2026-10-07: Acknowledgement
+
+A technician can now say they are on an open Incident (CONTEXT.md, **Acknowledgement**), so the team knows someone owns it. Decided by the coordinator, open to the owner:
+
+- **In the app, with the Admin token.** `POST /api/incidents/:id/acknowledge` with `{by}`, from the Device card or the Incidents log; the button shows only in a browser holding the token. The email carries no one-click acknowledge link: that would need a signed, single-use token in the URL, since the reader of an email holds no Admin token. Emails keep linking to the Device's History; acknowledging is done from the Dashboard card or the Incidents log, which History does not offer.
+- **Free text, not a list of technicians.** `by` is a name or a short note, 1 to 60 characters once trimmed, with no control characters, line or paragraph separators, or text-reordering marks (it goes into emails and onto every Dashboard). There are no user accounts (ADR 0003), and a list kept in Settings is more to maintain than a district this size needs.
+- **The first stands, and it is never cleared.** Two people at once leave the first name; a repeat while it is open answers the Incident as it is, with no stream message. An ended Incident is refused (409), whether or not someone acknowledged it before; a stale page then reads that it has ended, and a late answer never brings the closed Incident back onto a card or the log. A level rising after it keeps it: someone is still on it, and the "got worse" email says who. The close keeps it too, so the log shows who handled it.
+- **It does not stop email.** A worse or closing email still sends, and names who acknowledged it and when. Reminders for long Incidents (notifications-2, ticket 02) are what acknowledgement will stop.
+- **Stored on the Incident** (`acknowledged_at`, `acknowledged_by`, migration 0012), read by the email builder at send time like the rest of the Incident, and sent on the stream as `{type: 'incident', change: 'acknowledged'}`, so every open Dashboard and Incidents log updates. The Dashboard now carries each Device's open Incidents, with their acknowledgement, so a card can say who is on it.
+
 ## Consequences
 
 - One new dependency, `nodemailer`.
 - The email builder and the queueing rules (`outbox.ts`) are pure, so content is unit-tested without SMTP, and another channel could reuse the outbox later.
-- Recipients are global. Recipients per Campus, quiet hours, reminders for long incidents, and acknowledgement are left for later.
+- Recipients are global. Recipients per Campus, quiet hours, and reminders for long incidents are left for later; acknowledgement came on 2026-10-07 (above).
 - Sent and failed rows are kept 7 days for the Settings status, then removed by the retention job; pending rows cascade with their Incident and their Device, so Reset history takes them too. The status (pending, given up, last sent with its subject, last failure) is read from the rows, so it survives a restart. The Settings test email skips the outbox, so its own result is kept by the running process only.
 - Rows record `level`, `attempts`, `last_attempt_at`, `last_error`, and the `subject` they were sent under, beyond the columns first sketched, so Settings can say what went out and when the relay last failed.
 - A row queued while the sender could not run at all (the backend down for days) is still tried when it returns; if that try fails, it is given up at once, being past its day.

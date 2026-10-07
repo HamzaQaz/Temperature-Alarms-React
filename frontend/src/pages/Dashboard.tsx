@@ -14,9 +14,10 @@ import { NoValue, Tile } from '@/components/Tile';
 import { Button } from '@/components/ui/button';
 import { hasWarningOrWorse, isWarningOrWorse, worstCondition } from '@/lib/conditions';
 import { applyFault } from '@/lib/faultReport';
+import { applyIncident } from '@/lib/acknowledgement';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useElapsedNow } from '@/hooks/use-now';
+import { useElapsedNow, useNow } from '@/hooks/use-now';
 import { ageSeconds, monotonicNow } from '@/lib/elapsed';
 import { arrive, regroup, settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
@@ -26,7 +27,7 @@ import { LiveAnnouncement } from '@/components/LiveAnnouncement';
 import { deviceChanges, type Announcement } from '@/lib/announce';
 import { errorReloads } from '@/lib/reload';
 import { useResource } from '@/hooks/use-resource';
-import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, FaultEvent, ReadingEvent } from '@/types';
+import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, FaultEvent, Incident, ReadingEvent } from '@/types';
 
 const ALL = 'all';
 /** The cards the Campus and order tabs filter and sort; the tabs name it as what they control. */
@@ -224,6 +225,16 @@ function DashboardContent({ campus, order, campusName, onShowAll, announce }: Da
     if (unknown) askedAbout.current.add(hostname);
     return unknown;
   };
+  const applyIncidentToCards = useCallback(
+    (incident: Incident, opens = true) =>
+      update((dashboard) => {
+        const devices = applyIncident(dashboard.devices, incident, { opens });
+        return devices === dashboard.devices ? dashboard : { ...dashboard, devices };
+      }),
+    [update],
+  );
+  // An acknowledgement only updates an incident a card holds: it never opens one (lib/acknowledgement.ts).
+  const acknowledgeOnCards = useCallback((incident: Incident) => applyIncidentToCards(incident, false), [applyIncidentToCards]);
   const stream = useReadingStream({
     onReading: (event) => {
       const moves = shown.current !== undefined && movesCard(shown.current, event);
@@ -242,7 +253,9 @@ function DashboardContent({ campus, order, campusName, onShowAll, announce }: Da
       });
       if (moves || unknown || reloadOnError(state.status)) void reload();
     },
-    onIncident: () => {
+    // An incident opening, changing level, closing, or acknowledged changes the card's open incidents, and so who is on them.
+    onIncident: (event) => {
+      applyIncidentToCards(event.incident, event.change !== 'acknowledged');
       if (reloadOnError(state.status)) void reload();
     },
     onReconnect: () => void reload(),
@@ -304,6 +317,7 @@ function DashboardContent({ campus, order, campusName, onShowAll, announce }: Da
           onPastOffline={reload}
           arriveOnMount={cached === undefined}
           pending={pending}
+          onIncident={acknowledgeOnCards}
         />
       )}
     </motion.div>
@@ -320,10 +334,14 @@ interface DeviceGridProps {
   arriveOnMount: boolean;
   /** A Campus or order switch is in flight and these cards answer the previous one. */
   pending: boolean;
+  /** An incident the server just answered with (an acknowledgement), applied to its card. */
+  onIncident: (incident: Incident) => void;
 }
 
-function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPastOffline, arriveOnMount, pending }: DeviceGridProps) {
+function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPastOffline, arriveOnMount, pending, onIncident }: DeviceGridProps) {
   const now = useElapsedNow();
+  // The browser's clock, for how long ago an acknowledgement was given; the server sends when.
+  const wallNow = useNow();
   // After the first render, a card joining or leaving is the filter at work, not the page arriving.
   const [settled, setSettled] = useState(false);
   useEffect(() => setSettled(true), []);
@@ -368,6 +386,8 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
                 secondsSinceReport={reportAge(device)}
                 anchorMs={device.secondsSinceReport === null ? null : device.asOf - device.secondsSinceReport * 1000}
                 reportIntervalSeconds={reportIntervalSeconds}
+                now={wallNow}
+                onIncident={onIncident}
               />
             </motion.li>
           ))}

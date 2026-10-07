@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, History as HistoryIcon } from 'lucide-react';
 import { getIncidents } from '@/api';
+import { AcknowledgeLine } from '@/components/AcknowledgeLine';
 import { ConditionBadge } from '@/components/ConditionBadge';
 import { LiveStatus } from '@/components/LiveStatus';
 import { Placeholder } from '@/components/Placeholder';
@@ -39,6 +40,7 @@ import { monotonicNow } from '@/lib/elapsed';
 import { settle } from '@/lib/motion';
 import { cn } from '@/lib/utils';
 import { errorReloads } from '@/lib/reload';
+import { replaceIncident } from '@/lib/acknowledgement';
 import type { Incident, IncidentEvent, Incidents as IncidentsPayload } from '@/types';
 
 /** A window's incidents as loaded, with the window they were asked for, so the page knows when what it shows is behind the controls. */
@@ -87,6 +89,11 @@ export default function Incidents() {
     return { ...(await getIncidents(from, to)), kind, date };
   }, [kind, date]);
   const { state, reload, update } = useResource(load);
+  // An incident the server answered with (an acknowledgement), replacing its row where it is.
+  const replaceRow = useCallback(
+    (incident: Incident) => update((data) => ({ ...data, incidents: replaceIncident(data.incidents, incident) })),
+    [update],
+  );
 
   // Rows that arrived or changed level while the page was open, by incident id: how many times, so each takes the wash once.
   const [landed, setLanded] = useState<Record<number, number>>({});
@@ -119,11 +126,16 @@ export default function Incidents() {
       // A new incident goes at the end, like the next line of a log; a change replaces its row where it is.
       update((data) => {
         const index = data.incidents.findIndex((i) => i.id === incident.id);
-        if (index >= 0) return { ...data, incidents: data.incidents.map((i, n) => (n === index ? incident : i)) };
+        if (index >= 0) return { ...data, incidents: replaceIncident(data.incidents, incident) };
         if (!overlaps(incident, ms(data.from), ms(data.to), Date.now())) return data;
         return { ...data, incidents: [...data.incidents, incident] };
       });
       if (change === 'closed') return;
+      // Someone being on it is news, not a change of state: said once, with no wash.
+      if (change === 'acknowledged') {
+        if (incident.acknowledgement !== null) announce({ key: `${incident.id}:ack`, text: `${incident.device.closet}, ${incident.device.campus.name}: ${incident.condition} acknowledged by ${incident.acknowledgement.by}` });
+        return;
+      }
       setLanded((counts) => ({ ...counts, [incident.id]: (counts[incident.id] ?? 0) + 1 }));
       if (!present) {
         setArrived((ids) => new Set(ids).add(incident.id));
@@ -219,7 +231,7 @@ export default function Incidents() {
           ) : (
             <>
               <Summary incidents={loaded.incidents} phrase={loaded.kind === kind && loaded.date === date ? phrase : windowPhrase(loaded.kind, loaded.date, new Date(now))} now={now} />
-              <Log data={loaded} now={now} landed={landed} arrived={arrived} />
+              <Log data={loaded} now={now} landed={landed} arrived={arrived} onIncident={replaceRow} />
             </>
           )}
         </motion.div>
@@ -297,6 +309,7 @@ interface LogProps {
   now: number;
   landed: Record<number, number>;
   arrived: ReadonlySet<number>;
+  onIncident: (incident: Incident) => void;
 }
 
 /**
@@ -304,7 +317,7 @@ interface LogProps {
  * incident as a span on a ruler the whole window shares, so overlaps and the worst stretch
  * show without reading. Under 1024px the span moves under its row, on a ruler of major marks.
  */
-function Log({ data, now, landed, arrived }: LogProps) {
+function Log({ data, now, landed, arrived, onIncident }: LogProps) {
   const from = ms(data.from);
   const to = ms(data.to);
   const marks = ticks(data.kind, data.date);
@@ -332,6 +345,7 @@ function Log({ data, now, landed, arrived }: LogProps) {
             nowAt={nowAt}
             landed={landed[incident.id] ?? 0}
             arrived={arrived.has(incident.id)}
+            onIncident={onIncident}
           />
         ))}
       </ol>
@@ -404,15 +418,19 @@ interface IncidentRowProps {
   landed: number;
   /** Arrived on the stream after the page loaded, so it rises into place. */
   arrived: boolean;
+  /** The server's answer to an acknowledgement, replacing the row. */
+  onIncident: (incident: Incident) => void;
 }
 
-function IncidentRow({ incident, kind, from, to, now, marks, nowAt, landed, arrived }: IncidentRowProps) {
+function IncidentRow({ incident, kind, from, to, now, marks, nowAt, landed, arrived, onIncident }: IncidentRowProps) {
   const start = new Date(incident.start);
   const end = incident.end === null ? null : new Date(incident.end);
   // A day name is needed when the time alone is ambiguous: a week, or a start before the window.
   const dayFirst = kind === 'week' || start.getTime() < from;
   const endDayDiffers = end !== null && toDateString(end) !== toDateString(start);
   const day = toDateString(start);
+  // As the end: in a week, the acknowledgement's day name when it differs from the start's.
+  const acknowledgedDay = incident.acknowledgement === null ? day : toDateString(new Date(incident.acknowledgement.at));
   const { device } = incident;
   const duration = formatDuration(durationOf(incident, now));
 
@@ -469,6 +487,16 @@ function IncidentRow({ incident, kind, from, to, now, marks, nowAt, landed, arri
           <p className="text-sm text-muted-foreground tabular-nums">
             <Facts incident={incident} />
           </p>
+          <AcknowledgeLine
+            incident={incident}
+            open={end === null}
+            named={false}
+            place={`${device.closet}, ${device.campus.name}`}
+            when="time"
+            day={kind === 'week' && acknowledgedDay !== day ? `${formatDayShort(acknowledgedDay)}, ` : ''}
+            now={now}
+            onAcknowledged={onIncident}
+          />
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="font-mono text-sm text-muted-foreground">{device.hostname}</span>
             <Button asChild variant="outline" size="sm">

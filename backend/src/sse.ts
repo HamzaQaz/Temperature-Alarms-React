@@ -74,12 +74,23 @@ export interface IncidentPayload {
   };
   /** Oldest first; only the last can be open. */
   segments: { level: ConditionLevel; start: string; end: string | null }[];
+  /** Who said they are on it, and when (ISO instant in UTC); null until someone does. */
+  acknowledgement: AcknowledgementPayload | null;
 }
 
-/** What every open dashboard receives when an incident opens, changes level, or closes (docs/adr/0006). */
+/** An Acknowledgement as the API sends it: a free-text name or short note, and when it was given. */
+export interface AcknowledgementPayload {
+  by: string;
+  at: string;
+}
+
+/**
+ * What every open dashboard receives when an incident opens, changes level, or closes
+ * (docs/adr/0006), or when someone acknowledges it.
+ */
 export interface IncidentEvent {
   type: 'incident';
-  change: IncidentChange;
+  change: IncidentChange | 'acknowledged';
   incident: IncidentPayload;
 }
 

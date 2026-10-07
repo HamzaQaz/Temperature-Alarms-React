@@ -15,7 +15,7 @@ let nextId = 1;
 function row(kind: NotificationKind, incident: Partial<QueuedNotification['incident']> = {}, device: Partial<QueuedNotification['device']> = {}): QueuedNotification {
   return {
     kind,
-    incident: { id: nextId++, condition: 'Hot', level: 'critical', start: START, end: null, peak: { tempF: 91, humidity: 45, recordedAt: at(10) }, ...incident },
+    incident: { id: nextId++, condition: 'Hot', level: 'critical', start: START, end: null, peak: { tempF: 91, humidity: 45, recordedAt: at(10) }, acknowledgement: null, ...incident },
     device: { id: 12, hostname: 'ESP_A1B2C3', closet: 'IDF 2', campus: { name: 'Central High School', shortcode: 'CHS' }, ...device },
   };
 }
@@ -121,6 +121,23 @@ describe('notificationEmail (the email for one batch)', () => {
     assert.doesNotMatch(email.html, /<script|<img|src=|url\(/i);
     assert.deepEqual(email.html.match(/href="[^"]*"/g), ['href="https://alarms.district.example/history/12?date=2026-10-06"']);
     assert.match(email.text, /IDF <2> & "B"/, 'the plain text is left as it is');
+  });
+
+  test('an acknowledged incident names who acknowledged it and when, in both parts, escaped in the HTML', () => {
+    const acknowledgement = { by: 'Sam <on site>', at: at(15) };
+    const worse = notificationEmail([row('worse', { acknowledgement })], SETTINGS);
+    assert.deepEqual(worse.text.split('\n').slice(0, 4), [
+      'Hot critical: got worse',
+      'Central High School (CHS), IDF 2, ESP_A1B2C3',
+      'Started: Tue, Oct 6, 9:05 PM CDT',
+      'Acknowledged by Sam <on site> at Tue, Oct 6, 9:20 PM CDT',
+    ]);
+    assert.match(worse.html ?? '', /Acknowledged by Sam &lt;on site&gt; at Tue, Oct 6, 9:20 PM CDT/);
+    assert.equal(worse.subject, '[Temperature Alarms] CHS IDF 2: Hot critical, got worse (91 °F)', 'the subject is unchanged');
+
+    const closed = notificationEmail([row('closed', { end: at(65), acknowledgement })], SETTINGS);
+    assert.match(closed.text, /^Ended: .*\nAcknowledged by Sam <on site> at /m, 'after the end, once resolved');
+    assert.doesNotMatch(notificationEmail([row('opened')], SETTINGS).text, /Acknowledged/, 'nothing when nobody has');
   });
 
   test('durations read in minutes, hours, and days', () => {

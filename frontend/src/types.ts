@@ -107,6 +107,26 @@ export interface DashboardDevice {
   conditions: Condition[];
   /** When the board was last refused for its Device token, within 15 minutes; null otherwise. */
   tokenMismatchAt: string | null;
+  /** Its incidents still open, oldest first, each with who acknowledged it: the card says who is on them. */
+  openIncidents: OpenIncident[];
+}
+
+/** Who said they are on an incident, and when (CONTEXT.md, Acknowledgement). Free text: there are no user accounts. */
+export interface Acknowledgement {
+  /** A name or a short note, 1 to 60 characters. */
+  by: string;
+  /** ISO instant in UTC. */
+  at: string;
+}
+
+/** An open incident as a Dashboard card carries it: enough to name it and say who is on it. */
+export interface OpenIncident {
+  id: number;
+  condition: ConditionName;
+  /** The worst level it has reached. */
+  level: ConditionLevel;
+  start: string;
+  acknowledgement: Acknowledgement | null;
 }
 
 /** What the live stream sends when a Device posts a Reading: the card's new state, matched by hostname. */
@@ -198,6 +218,8 @@ export interface Incident {
   peak: { value: number | null; tempF: number; humidity: number | null; recordedAt: string };
   /** Oldest first; only the last can be open. */
   segments: IncidentSegment[];
+  /** Who said they are on it; null until someone does. Kept after it ends. */
+  acknowledgement: Acknowledgement | null;
 }
 
 /** Every incident that overlaps a window, oldest first. */
@@ -207,10 +229,10 @@ export interface Incidents {
   incidents: Incident[];
 }
 
-/** What the live stream sends when an incident opens, changes level, or closes. */
+/** What the live stream sends when an incident opens, changes level, closes, or is acknowledged. */
 export interface IncidentEvent {
   type: 'incident';
-  change: 'opened' | 'level' | 'closed';
+  change: 'opened' | 'level' | 'closed' | 'acknowledged';
   incident: Incident;
 }
 
