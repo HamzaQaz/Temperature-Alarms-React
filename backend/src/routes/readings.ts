@@ -11,6 +11,8 @@ import { isTimeZone, localDay, serverTimeZone, todayIn, type LocalDay } from '..
 import type { ReadingPayload } from '../sse';
 import { MonotonicStore } from '../monotonicStore';
 import { LATEST_READING_ID, latestAllowed } from '../latestReading';
+import { notePending } from '../pendingDevices';
+import type { DeviceSightings } from '../deviceSightings';
 import { broadcastIncidentChanges, deleteDeviceIncidents, recordReadingIncidents, type ChangedIncident } from '../incidentStore';
 
 interface DeviceIdRow extends RowDataPacket {
@@ -74,7 +76,7 @@ export { DEVICE_AUTH_FAILURE_LIMIT } from '../deviceAuth';
  * Reading ingest (POST /api/readings): a Device posts `{device, temp, humidity}` with the
  * Device token. Each recorded Reading is broadcast to every open dashboard.
  */
-export function readingsRouter({ pool, config, sse, ingest, listening, rotation, deviceAuth }: RouteDeps): Router {
+export function readingsRouter({ pool, config, sse, ingest, listening, rotation, sightings, deviceAuth }: RouteDeps): Router {
   const router = Router();
   const rules = conditionRules(config);
 
@@ -116,6 +118,10 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         device = devices[0];
         if (device === undefined) {
           await conn.rollback();
+          // A board with the Device token that nobody has registered: listed in Settings to be adopted.
+          await notePending(pool, { hostname, reading: { tempF, humidity }, address: req.ip ?? null }).catch((error: unknown) =>
+            console.error('Could not list an unregistered board:', error instanceof Error ? error.message : error),
+          );
           res.status(404).json({ error: `No device is registered with the hostname ${hostname}` });
           return;
         }
@@ -137,6 +143,7 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       ingest.succeeded();
       // Only for a registered Device, so neither the log nor the list can be filled with made-up hostnames.
       rotation.heard(device.hostname, deviceTokenOf(res));
+      sightings.accepted(device.hostname);
       const reading: ReadingPayload = { tempF, humidity, recordedAt: recordedAt.toISOString() };
       res.status(201).json({ device: device.hostname, reading });
       // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
@@ -178,7 +185,7 @@ const SELECT_DASHBOARD = `
   LEFT JOIN readings r ON r.id = (${LATEST_READING_ID})`;
 const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
 
-function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules) {
+function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, sightings: DeviceSightings) {
   const { id, hostname, closet, campusId, campusName, campusShortcode, tempF, humidity, recordedAt } = row;
   const latest = recordedAt === null || tempF === null ? null : { tempF, humidity, recordedAt };
   const secondsSinceReading = latest === null ? null : Math.max(0, Math.floor((now.getTime() - latest.recordedAt.getTime()) / 1000));
@@ -194,6 +201,8 @@ function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules) 
     secondsSinceReading,
     /** Worst first; the browser renders these and computes none of its own. */
     conditions,
+    /** When the board was last refused for its Device token, within the last 15 minutes; null otherwise. */
+    tokenMismatchAt: sightings.mismatchedAt(hostname)?.toISOString() ?? null,
   };
 }
 
@@ -213,7 +222,7 @@ const severity = (conditions: Condition[]): number => {
  * Dashboard (GET /api/dashboard?campus=SHORTCODE&order=worst|campus) and its live stream
  * (GET /api/dashboard/stream), which carries every Reading as it is ingested.
  */
-export function dashboardRouter({ pool, config, sse, now = () => new Date() }: RouteDeps): Router {
+export function dashboardRouter({ pool, config, sse, sightings, now = () => new Date() }: RouteDeps): Router {
   const router = Router();
   const { reportIntervalSeconds, thresholds } = config;
   const rules = conditionRules(config);
@@ -232,7 +241,7 @@ export function dashboardRouter({ pool, config, sse, now = () => new Date() }: R
     try {
       const at = now();
       const [rows] = await pool.query<DashboardRow[]>(`${SELECT_DASHBOARD} ${where} ${ORDER_DASHBOARD}`, [latestAllowed(at), ...params]);
-      const devices = rows.map((row) => toDashboardDevice(row, at, rules));
+      const devices = rows.map((row) => toDashboardDevice(row, at, rules, sightings));
       // Array sort is stable, so Devices at the same level keep the Campus and closet order of the query.
       if (order === 'worst') devices.sort((a, b) => severity(a.conditions) - severity(b.conditions));
       res.json({

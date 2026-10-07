@@ -12,6 +12,8 @@ export interface Device {
   hostname: string;
   closet: string;
   campus: Campus;
+  /** GET /api/devices only: when the board was last refused for its Device token, within 15 minutes. */
+  tokenMismatchAt?: string | null;
 }
 
 /**
@@ -23,6 +25,19 @@ export interface DeviceRotation {
   since: string;
   previous: Device[];
   unheard: Device[];
+}
+
+/** A board reporting with the Device token that is not registered yet, waiting to be adopted (GET /api/devices/pending). */
+export interface PendingDevice {
+  hostname: string;
+  firstSeen: string;
+  lastSeen: string;
+  reports: number;
+  lastReading: { tempF: number; humidity: number } | null;
+  /** The address it reported from, to find it on the network. */
+  address: string | null;
+  /** Hidden from the pop-up; still listed in Settings. */
+  ignored: boolean;
 }
 
 /** The firmware build on offer to Devices over the air (docs/adr/0007). */
@@ -75,6 +90,8 @@ export interface DashboardDevice {
   secondsSinceReading: number | null;
   /** Every Condition the Device is in, worst first. The browser renders these and computes none. */
   conditions: Condition[];
+  /** When the board was last refused for its Device token, within 15 minutes; null otherwise. */
+  tokenMismatchAt: string | null;
 }
 
 /** What the live stream sends when a Device posts a Reading: the card's new state, matched by hostname. */

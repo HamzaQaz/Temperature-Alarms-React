@@ -1,8 +1,10 @@
 import type { Request, RequestHandler } from 'express';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
-import { hasDeviceToken, requireDeviceToken } from './auth';
+import { deviceTokenMatcher, hasDeviceToken } from './auth';
 import type { Config } from './config';
+import type { DeviceSightings } from './deviceSightings';
 import { MonotonicStore } from './monotonicStore';
+import { HOSTNAME } from './pendingDevices';
 
 /**
  * How many requests with a missing or wrong Device token one address may make in 15 minutes. A board
@@ -12,11 +14,25 @@ import { MonotonicStore } from './monotonicStore';
 export const DEVICE_AUTH_FAILURE_LIMIT = 100;
 
 /**
+ * The hostname a refused request claims: a Reading's `device`, or the firmware check's MAC. Only for
+ * flagging the token mismatch on a registered Device (deviceSightings.ts); nothing is trusted from it.
+ */
+function claimedHostname(req: Request): string | undefined {
+  const device = (req.body as Record<string, unknown> | undefined)?.device;
+  if (typeof device === 'string') {
+    const hostname = device.trim().replace(/-/g, '_').toUpperCase();
+    return HOSTNAME.test(hostname) ? hostname : undefined;
+  }
+  const mac = req.header('x-esp8266-sta-mac') ?? '';
+  return /^([0-9A-F]{2}:){5}[0-9A-F]{2}$/i.test(mac) ? `ESP_${mac.replace(/:/g, '').slice(-6).toUpperCase()}` : undefined;
+}
+
+/**
  * What every route a Device calls runs first (Readings, the firmware check): the wrong-token limit,
  * one per address across all of them, then the Device token. Made once per app, so a guesser cannot
  * get a fresh allowance by switching route.
  */
-export function createDeviceAuth(config: Config): RequestHandler[] {
+export function createDeviceAuth(config: Config, sightings: DeviceSightings): RequestHandler[] {
   // The general /api/ limit skips the Readings route, so refusals get their own: per address, since a guesser
   // can claim any hostname. Only a request with a missing or wrong token is counted, and it is
   // answered at once with a 401. A request with the right token is never counted: not a campus of
@@ -55,5 +71,19 @@ export function createDeviceAuth(config: Config): RequestHandler[] {
     }
   };
 
-  return [refuseLockedOutAddress, authFailureLimiter, requireDeviceToken(config)];
+  // The Device token, or during a rotation the previous one; a refusal flags the hostname it claimed.
+  const match = deviceTokenMatcher(config);
+  const requireToken: RequestHandler = (req, res, next) => {
+    const which = match(req);
+    if (which === undefined) {
+      const claimed = claimedHostname(req);
+      if (claimed !== undefined) sightings.mismatch(claimed);
+      res.status(401).json({ error: 'Not authorised' });
+      return;
+    }
+    res.locals.deviceToken = which;
+    next();
+  };
+
+  return [refuseLockedOutAddress, authFailureLimiter, requireToken];
 }

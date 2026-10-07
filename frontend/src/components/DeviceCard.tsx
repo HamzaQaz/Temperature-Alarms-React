@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { History, Wifi, WifiOff } from 'lucide-react';
+import { History, KeyRound, Wifi, WifiOff } from 'lucide-react';
 import { ConditionBadge } from '@/components/ConditionBadge';
 import { EscalationTrace } from '@/components/EscalationTrace';
 import { ReportHairline, type ReportState } from '@/components/ReportHairline';
@@ -252,6 +252,15 @@ export function DeviceCard({ device, secondsSinceReading, anchorMs, reportInterv
             <Measure label="Temperature" value={latestReading.tempF} unit="°F" size="lg" dimmed={!online} />
             <Measure label="Humidity" value={latestReading.humidity} unit="%" size="md" dimmed={!online} />
           </div>
+        )}
+        {device.tokenMismatchAt !== null && (
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            <Badge className="border-transparent bg-amber-500/15 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+              <KeyRound aria-hidden />
+              Token mismatch
+            </Badge>
+            <span>Its Readings are refused: the Device token on the board is not the server's.</span>
+          </p>
         )}
         <AnimatePresence initial={false}>
           {readingConditions.length > 0 && (

@@ -5,6 +5,7 @@ import { createBroadcaster } from './sse';
 import { createIngestHealth } from './ingestHealth';
 import { createTokenRotation } from './tokenRotation';
 import { createDeviceAuth } from './deviceAuth';
+import { createDeviceSightings } from './deviceSightings';
 import { MonotonicStore } from './monotonicStore';
 import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
@@ -25,13 +26,15 @@ export const WRITE_LIMIT = 500;
 
 /** The Express app, without a listening socket, so tests can drive it directly. */
 export function createApp(appDeps: AppDeps): Express {
+  const sightings = appDeps.sightings ?? createDeviceSightings();
   const deps: RouteDeps = {
     ...appDeps,
     sse: appDeps.sse ?? createBroadcaster(),
     // Two Report intervals: long enough that a failure is seen by the next healthcheck, short enough to clear on its own.
     ingest: appDeps.ingest ?? createIngestHealth(2 * appDeps.config.reportIntervalSeconds * 1000),
     rotation: appDeps.rotation ?? createTokenRotation(),
-    deviceAuth: createDeviceAuth(appDeps.config),
+    sightings,
+    deviceAuth: createDeviceAuth(appDeps.config, sightings),
   };
   const app = express();
   // Naming the framework only helps someone matching it to an advisory.

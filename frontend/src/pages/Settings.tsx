@@ -6,11 +6,12 @@ import { AdminTokenPanel } from '@/components/AdminTokenPanel';
 import { CampusesSection } from '@/components/settings/CampusesSection';
 import { DevicesSection } from '@/components/settings/DevicesSection';
 import { FirmwareSection } from '@/components/settings/FirmwareSection';
+import { NewDevicesSection } from '@/components/settings/NewDevicesSection';
 import { RotationLine } from '@/components/settings/RotationLine';
 import { useAdminToken } from '@/hooks/use-admin-token';
 import { clearAdminToken, setAdminToken } from '@/lib/adminToken';
 
-const TABS = ['campuses', 'devices', 'firmware'] as const;
+const TABS = ['campuses', 'devices', 'new', 'firmware'] as const;
 type Tab = (typeof TABS)[number];
 
 function isTab(value: string | null): value is Tab {
@@ -59,6 +60,7 @@ export default function Settings() {
         <TabsList aria-label="Settings sections">
           <TabsTrigger value="campuses">Campuses</TabsTrigger>
           <TabsTrigger value="devices">Devices</TabsTrigger>
+          <TabsTrigger value="new">New devices</TabsTrigger>
           <TabsTrigger value="firmware">Firmware</TabsTrigger>
         </TabsList>
         <TabsContent value="campuses" tabIndex={-1} className="pt-4">
@@ -66,6 +68,9 @@ export default function Settings() {
         </TabsContent>
         <TabsContent value="devices" tabIndex={-1} className="pt-4">
           <DevicesSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
+        </TabsContent>
+        <TabsContent value="new" tabIndex={-1} className="pt-4">
+          <NewDevicesSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
         </TabsContent>
         <TabsContent value="firmware" tabIndex={-1} className="pt-4">
           <FirmwareSection canEdit={token !== null} onUnauthorised={onUnauthorised} />

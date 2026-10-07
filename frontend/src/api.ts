@@ -1,4 +1,4 @@
-import type { Device, DeviceRotation, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incidents, Overview } from './types';
+import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incidents, Overview } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -110,6 +110,17 @@ export const editDevice = (id: number, changes: DeviceEdit): Promise<Device> =>
   request(`/api/devices/${id}`, { method: 'PATCH', body: changes });
 
 export const deleteDevice = (id: number): Promise<void> => request(`/api/devices/${id}`, { method: 'DELETE' });
+
+/** Boards reporting with the Device token that nobody has registered yet. Needs the Admin token. */
+export const getPendingDevices = (): Promise<PendingDevice[]> => request('/api/devices/pending', { admin: true });
+
+/** Hide a waiting board from the pop-up (or show it again). Needs the Admin token. */
+export const setPendingIgnored = (hostname: string, ignored: boolean): Promise<unknown> =>
+  request(`/api/devices/pending/${encodeURIComponent(hostname)}`, { method: 'PATCH', body: { ignored } });
+
+/** Drop a waiting board from the list until it reports again. Needs the Admin token. */
+export const forgetPendingDevice = (hostname: string): Promise<void> =>
+  request(`/api/devices/pending/${encodeURIComponent(hostname)}`, { method: 'DELETE' });
 
 /** The published firmware release and the version each Device last reported. Needs the Admin token. */
 export const getFirmwareStatus = (): Promise<FirmwareStatus> => request('/api/firmware/status', { admin: true });

@@ -2,6 +2,7 @@ import express, { Router } from 'express';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireAdminToken } from '../auth';
 import type { RouteDeps } from '../deps';
+import { notePending } from '../pendingDevices';
 import { currentRelease, FirmwareImageError, MAX_IMAGE_BYTES, offers, publishFirmware, releaseImage, withdrawFirmware, type FirmwareRelease } from '../firmwareStore';
 
 /** `5C:CF:7F:A1:B2:C3`, as the ESP8266 update library sends its station MAC. */
@@ -47,6 +48,7 @@ export function firmwareRouter({ pool, config, deviceAuth }: RouteDeps): Router 
         [version, hostname],
       );
       if (result.affectedRows === 0) {
+        await notePending(pool, { hostname, reading: null, address: req.ip ?? null });
         res.status(404).json({ error: `No device is registered with the hostname ${hostname}` });
         return;
       }

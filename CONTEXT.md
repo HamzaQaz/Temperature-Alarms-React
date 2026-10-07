@@ -41,6 +41,10 @@ The single shared secret every Device sends with each Reading.
 Replacing the Device token without a dark fleet: for a while the server accepts the **previous Device token** as well as the new one, lists which Devices still report with the previous token (and which it has not heard since it started), and stops accepting the previous one when the rotation is finished. One at a time (docs/adr/0003).
 _Avoid_: Key rollover, token refresh, re-keying
 
+**New device**:
+A board that reports with the Device token but is not yet added as a Device, waiting in Settings to be adopted: given a Campus and Closet, it becomes a Device. Its Readings are refused until then.
+_Avoid_: Pending device, unknown device, orphan
+
 **Firmware release**:
 The one signed firmware build the server offers to Devices over the air, with its version and, while it is staged, the Devices it is offered to. A Device installs it when its version is higher than the Device's own (docs/adr/0007).
 _Avoid_: OTA image, update, push

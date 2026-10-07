@@ -10,6 +10,7 @@ import Campuses from './pages/Campuses';
 import NotFound from './pages/NotFound';
 import { historyModule } from './pages/history-loader';
 import { Skeleton } from '@/components/ui/skeleton';
+import { NewDevicePrompt } from '@/components/NewDevicePrompt';
 
 // History carries the charting library, which is a third of the bundle and unused elsewhere, so it loads on first visit
 // (or while the dashboard idles; see history-loader).
@@ -129,6 +130,7 @@ function App() {
           <div id={MAIN_ID} tabIndex={-1} className="flex flex-1 flex-col gap-4 p-4 pt-0 outline-none">
             <AnimatedRoutes />
           </div>
+          <NewDevicePrompt />
         </SidebarInset>
       </SidebarProvider>
     </Router>

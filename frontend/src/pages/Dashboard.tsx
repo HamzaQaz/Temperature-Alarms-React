@@ -161,7 +161,7 @@ function applyReading(dashboard: LoadedDashboard, event: ReadingEvent): LoadedDa
   const device = dashboard.devices[index];
   if (device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt) return dashboard;
   const devices = dashboard.devices.slice();
-  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, secondsSinceReading: 0, asOf: monotonicNow() };
+  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, tokenMismatchAt: null, secondsSinceReading: 0, asOf: monotonicNow() };
   return { ...dashboard, devices };
 }
 
