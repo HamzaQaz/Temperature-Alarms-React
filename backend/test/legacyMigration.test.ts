@@ -217,6 +217,7 @@ describe('upgrading a production database', () => {
       '0006-readings-covering-index',
       '0007-firmware',
       '0008-pending-devices',
+      '0009-device-info',
     ]);
   });
 });

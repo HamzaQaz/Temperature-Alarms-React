@@ -24,10 +24,15 @@
 // itself (backend/src/firmwareStore.ts). Printed at boot, which also keeps it from being dropped.
 static const char VERSION_MARKER[] PROGMEM = "TA-FIRMWARE-VERSION=" STRINGIFY(FIRMWARE_VERSION);
 
-static const unsigned long FIRST_CHECK_MS = 60 * 1000UL;
+static const unsigned long FIRST_CHECK_MS = 30 * 1000UL;
 static const unsigned long CHECK_INTERVAL_MS = 60 * 60 * 1000UL;
+// The least time between two checks the server asked for, so a build every check refuses (a bad
+// signature, no room) costs one try a minute rather than one per Reading.
+static const unsigned long OFFERED_GAP_MS = 60 * 1000UL;
 static bool checkedOnce = false;
+static bool offered = false;
 static unsigned long lastCheckAt = 0;
+static String lastResult;
 
 void updaterBegin() {
   Serial.print(F("firmware: "));
@@ -49,6 +54,7 @@ static void check() {
     if (problem != nullptr) {
       Serial.print(F("update: skipped, "));
       Serial.println(problem);
+      lastResult = String(F("skipped, ")) + problem;
       return;
     }
     result = ESPhttpUpdate.update(client, url, version);
@@ -59,18 +65,35 @@ static void check() {
   // HTTP_UPDATE_OK restarts the board inside update(), so it is never seen here.
   if (result == HTTP_UPDATE_NO_UPDATES) {
     Serial.println(F("update: none newer"));
+    lastResult = F("none newer");
   } else if (result == HTTP_UPDATE_FAILED) {
     Serial.print(F("update: failed, "));
     Serial.println(ESPhttpUpdate.getLastErrorString());
+    lastResult = String(F("failed, ")) + ESPhttpUpdate.getLastErrorString();
   }
+}
+
+void updaterOffered(long version) {
+  if (!ARDUINO_SIGNING || version <= FIRMWARE_VERSION) return;
+  if (!offered) {
+    Serial.print(F("update: version "));
+    Serial.print(version);
+    Serial.println(F(" is waiting, checking now"));
+  }
+  offered = true;
+}
+
+const String& updaterLastResult() {
+  return lastResult;
 }
 
 void updaterLoop() {
   if (!ARDUINO_SIGNING) return;
-  const unsigned long wait = checkedOnce ? CHECK_INTERVAL_MS : FIRST_CHECK_MS;
+  const unsigned long wait = offered ? OFFERED_GAP_MS : checkedOnce ? CHECK_INTERVAL_MS : FIRST_CHECK_MS;
   // Unsigned elapsed time, right across millis() wrapping, as the report interval is.
   if (millis() - lastCheckAt < wait) return;
   checkedOnce = true;
+  offered = false;
   lastCheckAt = millis();
   check();
 }

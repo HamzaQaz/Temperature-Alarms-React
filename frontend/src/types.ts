@@ -53,7 +53,18 @@ export interface FirmwareRelease {
 /** GET /api/firmware/status (Admin token): the release and the version each Device last reported. */
 export interface FirmwareStatus {
   release: FirmwareRelease | null;
-  devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null }>;
+  devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null; info: DeviceInfo | null }>;
+}
+
+/** What a board said about itself with its latest Reading (firmware 3 and later); null for older firmware. */
+export interface DeviceInfo {
+  rssi: number | null;
+  uptimeSeconds: number | null;
+  freeHeap: number | null;
+  resetReason: string | null;
+  updateResult: string | null;
+  /** When it said so. */
+  at: string;
 }
 
 /** One temperature and humidity sample sent by a Device at a single moment. */

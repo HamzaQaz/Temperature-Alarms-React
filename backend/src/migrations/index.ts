@@ -10,6 +10,7 @@ import { incidentsSchema } from './0005-incidents';
 import { readingsCoveringIndex } from './0006-readings-covering-index';
 import { firmwareSchema } from './0007-firmware';
 import { pendingDevicesSchema } from './0008-pending-devices';
+import { deviceInfoSchema } from './0009-device-info';
 
 /** What a migration may consult and report to while it runs. */
 export interface MigrationContext {
@@ -36,6 +37,7 @@ export const migrations: Migration[] = [
   readingsCoveringIndex,
   firmwareSchema,
   pendingDevicesSchema,
+  deviceInfoSchema,
 ];
 
 /** The context the running backend hands its migrations: the configured legacy zone, logging to stdout. */

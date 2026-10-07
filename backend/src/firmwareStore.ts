@@ -73,6 +73,18 @@ const toRelease = ({ version, md5, size, onlyHostnames, publishedAt }: ReleaseRo
   publishedAt,
 });
 
+/**
+ * The release on offer, as `currentRelease`, read at most every 30 s: every Reading asks it (to tell
+ * a board a newer build is waiting), and 100 boards every 30 s need not each query the database.
+ * Publishing and withdrawing in this process clear it at once.
+ */
+let cached: { at: number; release: FirmwareRelease | null } | null = null;
+const CACHE_MS = 30_000;
+export async function cachedRelease(pool: Pool): Promise<FirmwareRelease | null> {
+  if (cached === null || Date.now() - cached.at >= CACHE_MS) cached = { at: Date.now(), release: await currentRelease(pool) };
+  return cached.release;
+}
+
 /** The release on offer, without its image; null when none is. */
 export async function currentRelease(pool: Pool): Promise<FirmwareRelease | null> {
   const [rows] = await pool.query<ReleaseRow[]>(
@@ -105,6 +117,7 @@ export async function publishFirmware(pool: Pool, image: Buffer, only?: string[]
   if (current !== null && parsed.version === current.version && parsed.md5 !== current.md5) {
     throw new FirmwareImageError(`version ${parsed.version} is already published with different contents; raise FIRMWARE_VERSION in version.h and export again`);
   }
+  cached = null;
   await pool.query(
     `REPLACE INTO firmware_release (id, version, md5, size, image, only_hostnames, published_at)
      VALUES (1, ?, ?, ?, ?, ?, UTC_TIMESTAMP())`,
@@ -115,6 +128,7 @@ export async function publishFirmware(pool: Pool, image: Buffer, only?: string[]
 
 /** Stops offering any release; boards keep what they run. */
 export async function withdrawFirmware(pool: Pool): Promise<void> {
+  cached = null;
   await pool.query('DELETE FROM firmware_release');
 }
 

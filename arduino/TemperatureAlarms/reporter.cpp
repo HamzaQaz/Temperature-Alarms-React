@@ -7,6 +7,8 @@
 
 #include "config.h"
 #include "server.h"
+#include "updater.h"
+#include "version.h"
 
 static const char READINGS_PATH[] = "/api/readings";
 static const unsigned long HTTP_TIMEOUT_MS = 10 * 1000UL;
@@ -20,16 +22,40 @@ static const unsigned long RESPONSE_READ_MS = 2 * 1000UL;
 // rebuilt on the heap every interval.
 static String readingsUrl;
 
+// Text for the JSON: printable ASCII only, without quotes or backslashes, so it never breaks the body.
+static String jsonText(const String& text) {
+  String clean;
+  clean.reserve(text.length());
+  for (char c : text) {
+    if (c >= 0x20 && c < 0x7f && c != '"' && c != '\\') clean += c;
+  }
+  return clean;
+}
+
+// The Reading, and what the board says about itself for the Firmware tab (backend deviceInfo.ts):
+// version, WiFi signal, uptime, free memory, why it last restarted, and its last update check.
 static String readingJson(const char* hostname, const Sample& sample) {
   String json;
-  json.reserve(64);
+  json.reserve(224);
   json += F("{\"device\":\"");
   json += hostname;
   json += F("\",\"temp\":");
   json += String(sample.tempF, 1);
   json += F(",\"humidity\":");
   json += String(sample.humidity, 0);
-  json += '}';
+  json += F(",\"fw\":");
+  json += FIRMWARE_VERSION;
+  json += F(",\"rssi\":");
+  json += WiFi.RSSI();
+  json += F(",\"uptime\":");
+  json += millis() / 1000;
+  json += F(",\"heap\":");
+  json += ESP.getFreeHeap();
+  json += F(",\"reset\":\"");
+  json += jsonText(ESP.getResetReason());
+  json += F("\",\"update\":\"");
+  json += jsonText(updaterLastResult());
+  json += F("\"}");
   return json;
 }
 
@@ -60,7 +86,11 @@ static int post(WiFiClient& client, const String& body, String& response) {
   if (!http.begin(client, readingsUrl)) return HTTPC_ERROR_CONNECTION_FAILED;
   http.addHeader(F("Content-Type"), F("application/json"));
   http.addHeader(F("Authorization"), String(F("Bearer ")) + DEVICE_TOKEN);
+  // The server names a newer build waiting for this board in a header, so the board checks at once.
+  const char* wanted[] = {"X-Firmware-Available"};
+  http.collectHeaders(wanted, 1);
   int status = http.POST(body);
+  if (status == HTTP_CODE_CREATED && http.hasHeader("X-Firmware-Available")) updaterOffered(http.header("X-Firmware-Available").toInt());
   if (status > 0 && status != HTTP_CODE_CREATED) response = responseStart(client);
   http.end();
   return status;

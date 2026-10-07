@@ -7,6 +7,9 @@ import { Label } from '@/components/ui/label';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
 import { firmwareSummary } from '@/lib/firmware';
+import { formatHeap, formatSignal, formatUptime } from '@/lib/deviceInfo';
+import { formatAge } from '@/lib/reportTiming';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { DeleteButton, FieldHint, InlineError, InlineForm, SectionHeader, StatusLine } from './section';
 
 interface FirmwareSectionProps {
@@ -33,7 +36,7 @@ export function FirmwareSection({ canEdit, onUnauthorised }: FirmwareSectionProp
       <SectionHeader
         id="firmware-heading"
         title="Firmware"
-        description="Builds the boards install over WiFi. Every hour each board asks for a signed build with a higher version than its own, installs it, and restarts."
+        description="Builds the boards install over WiFi. A board installs a signed build with a higher version than its own within one Report interval of its publication (an hour for boards before version 3), then restarts."
       />
       {canEdit ? (
         <FirmwareStatusAndPublish onUnauthorised={onUnauthorised} />
@@ -63,7 +66,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
     setStatus(
       targets.length > 0
         ? `Published to ${targets.join(', ')}. Once they run it, publish the same file again with the box empty for every Device.`
-        : 'Published to every Device. Boards install it within the hour.',
+        : 'Published to every Device. Boards on version 3 or later install it within a Report interval; older ones within the hour.',
     );
     setFile(null);
     if (fileInput.current) fileInput.current.value = '';
@@ -108,6 +111,49 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
               onDismiss={withdraw.clearError}
             />
           )}
+        </div>
+      )}
+
+      {state.status === 'ready' && state.data.devices.length > 0 && (
+        <div className="overflow-x-auto rounded-lg border">
+          <Table aria-label="What each Device last reported about itself">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Device</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead>WiFi signal</TableHead>
+                <TableHead>Up for</TableHead>
+                <TableHead>Free memory</TableHead>
+                <TableHead>Last restart</TableHead>
+                <TableHead>Last update check</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {state.data.devices.map((device) => (
+                <TableRow key={device.id}>
+                  <TableCell>
+                    <span className="font-mono">{device.hostname}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {device.campus.name} · {device.closet}
+                    </span>
+                  </TableCell>
+                  <TableCell className="tabular-nums">{device.firmwareVersion ?? '—'}</TableCell>
+                  <TableCell className="tabular-nums">{formatSignal(device.info?.rssi ?? null)}</TableCell>
+                  <TableCell className="tabular-nums">{formatUptime(device.info?.uptimeSeconds ?? null)}</TableCell>
+                  <TableCell className="tabular-nums">{formatHeap(device.info?.freeHeap ?? null)}</TableCell>
+                  <TableCell>{device.info?.resetReason ?? '—'}</TableCell>
+                  <TableCell>
+                    {device.info?.updateResult ?? '—'}
+                    {device.info !== null && (
+                      <span className="block text-xs text-muted-foreground">
+                        as of {formatAge(Math.max(0, Math.floor((Date.now() - new Date(device.info.at).getTime()) / 1000)))}
+                      </span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         </div>
       )}
 

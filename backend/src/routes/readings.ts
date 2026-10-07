@@ -12,6 +12,8 @@ import type { ReadingPayload } from '../sse';
 import { MonotonicStore } from '../monotonicStore';
 import { LATEST_READING_ID, latestAllowed } from '../latestReading';
 import { notePending } from '../pendingDevices';
+import { parseDeviceInfo } from '../deviceInfo';
+import { cachedRelease, offers } from '../firmwareStore';
 import type { DeviceSightings } from '../deviceSightings';
 import { broadcastIncidentChanges, deleteDeviceIncidents, recordReadingIncidents, type ChangedIncident } from '../incidentStore';
 
@@ -105,6 +107,7 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       return;
     }
     const { hostname, tempF, humidity } = parsed;
+    const info = parseDeviceInfo(req.body);
     try {
       // The Reading and what it does to the Device's incidents commit together, under the Device's
       // row lock, so two Readings of one Device are never judged at once (docs/adr/0006).
@@ -132,6 +135,14 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
           'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
           [device.id, tempF, humidity, recordedAt],
         );
+        // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware tab.
+        if (info !== null) {
+          await conn.query(
+            `UPDATE devices SET firmware_version = COALESCE(?, firmware_version), rssi = ?, uptime_s = ?, free_heap = ?,
+               reset_reason = ?, update_result = ?, info_at = ? WHERE id = ?`,
+            [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, recordedAt, device.id],
+          );
+        }
         changed = await recordReadingIncidents(conn, device.id, { tempF, humidity, recordedAt }, rules, listening?.since());
         await conn.commit();
       } catch (error) {
@@ -145,6 +156,12 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       rotation.heard(device.hostname, deviceTokenOf(res));
       sightings.accepted(device.hostname);
       const reading: ReadingPayload = { tempF, humidity, recordedAt: recordedAt.toISOString() };
+      // A newer build waiting for this board: said in a header, so the board checks for it now instead
+      // of at its hourly check. Only for a board that says its version, the firmware that can act on it.
+      if (info?.firmwareVersion != null) {
+        const release = await cachedRelease(pool).catch(() => null);
+        if (release !== null && offers(release, device.hostname, info.firmwareVersion)) res.set('X-Firmware-Available', String(release.version));
+      }
       res.status(201).json({ device: device.hostname, reading });
       // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
       const conditions = conditionsFor({ reading: { tempF, humidity }, secondsSinceReading: 0, ...rules });

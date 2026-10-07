@@ -55,6 +55,7 @@ describe('migration runner', () => {
       '0006-readings-covering-index',
       '0007-firmware',
       '0008-pending-devices',
+      '0009-device-info',
     ]);
   });
 
@@ -62,7 +63,7 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 9);
+    assert.equal(rows[0].n, 10);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {

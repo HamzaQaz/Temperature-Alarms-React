@@ -20,6 +20,12 @@ interface StatusRow extends RowDataPacket {
   campusShortcode: string;
   firmwareVersion: number | null;
   checkedAt: Date | null;
+  rssi: number | null;
+  uptimeSeconds: number | null;
+  freeHeap: number | null;
+  resetReason: string | null;
+  updateResult: string | null;
+  infoAt: Date | null;
 }
 
 /**
@@ -100,18 +106,32 @@ export function firmwareRouter({ pool, config, deviceAuth }: RouteDeps): Router 
       const release = await currentRelease(pool);
       const [rows] = await pool.query<StatusRow[]>(`
         SELECT d.id, d.hostname, d.closet, d.firmware_version AS firmwareVersion, d.firmware_checked_at AS checkedAt,
+               d.rssi, d.uptime_s AS uptimeSeconds, d.free_heap AS freeHeap, d.reset_reason AS resetReason,
+               d.update_result AS updateResult, d.info_at AS infoAt,
                c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode
         FROM devices d JOIN campuses c ON c.id = d.campus_id
         ORDER BY c.name, d.closet, d.hostname`);
       res.json({
         release: release === null ? null : toJson(release),
-        devices: rows.map(({ id, hostname, closet, campusId, campusName, campusShortcode, firmwareVersion, checkedAt }) => ({
+        devices: rows.map(({ id, hostname, closet, campusId, campusName, campusShortcode, firmwareVersion, checkedAt, ...rest }) => ({
           id,
           hostname,
           closet,
           campus: { id: campusId, name: campusName, shortcode: campusShortcode },
           firmwareVersion,
           checkedAt: checkedAt === null ? null : checkedAt.toISOString(),
+          // The latest a board said about itself with a Reading (deviceInfo.ts); null for older firmware.
+          info:
+            rest.infoAt === null
+              ? null
+              : {
+                  rssi: rest.rssi,
+                  uptimeSeconds: rest.uptimeSeconds,
+                  freeHeap: rest.freeHeap,
+                  resetReason: rest.resetReason,
+                  updateResult: rest.updateResult,
+                  at: rest.infoAt.toISOString(),
+                },
         })),
       });
     } catch (error) {

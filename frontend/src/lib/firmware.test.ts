@@ -10,6 +10,7 @@ const device = (hostname: string, firmwareVersion: number | null, checked = true
   campus: { id: 1, name: 'Central', shortcode: 'CHS' },
   firmwareVersion,
   checkedAt: checked ? '2026-10-06T12:00:00.000Z' : null,
+  info: null,
 });
 const day = (iso: string) => iso.slice(0, 10);
 const release = (only: string[] | null = null) => ({ version: 3, size: 431956, md5: 'x', publishedAt: '2026-10-06T12:00:00.000Z', only });
