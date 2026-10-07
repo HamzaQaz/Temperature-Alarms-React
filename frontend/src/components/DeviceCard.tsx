@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { History, Wifi, WifiOff } from 'lucide-react';
+import { History, KeyRound, Wifi, WifiOff } from 'lucide-react';
 import { ConditionBadge } from '@/components/ConditionBadge';
 import { EscalationTrace } from '@/components/EscalationTrace';
 import { ReportHairline, type ReportState } from '@/components/ReportHairline';
@@ -12,6 +12,7 @@ import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
 import { useLanded } from '@/hooks/use-landed';
 import { headingScope, morphTo, type HistorySeed } from '@/lib/card-morph';
 import { levelLook, levelRank, worstCondition } from '@/lib/conditions';
+import { formatStaleAge, hasSensorFault } from '@/lib/faultReport';
 import { EASE_OUT_EXPO_CSS, crossfade, reveal } from '@/lib/motion';
 import { formatAge, nextReport, type NextReport } from '@/lib/reportTiming';
 import { cn } from '@/lib/utils';
@@ -21,7 +22,9 @@ interface DeviceCardProps {
   device: DashboardDevice;
   /** Seconds since the latest Reading, ticking in the browser; null when there is none. */
   secondsSinceReading: number | null;
-  /** When the latest Reading's age was zero, on the browser's monotonic clock (lib/elapsed.ts); null when there is none. */
+  /** Seconds since the last report, a Reading or a fault report, ticking in the browser; null when it never reported. The footer counts from it. */
+  secondsSinceReport: number | null;
+  /** When the last report's age was zero, on the browser's monotonic clock (lib/elapsed.ts); null when it never reported. */
   anchorMs: number | null;
   reportIntervalSeconds: number;
 }
@@ -131,8 +134,10 @@ function useEscalations(level: ConditionLevel | undefined): number {
 }
 
 /** One Device: where it is, what it last reported, and whether it is still reporting. */
-export function DeviceCard({ device, secondsSinceReading, anchorMs, reportIntervalSeconds }: DeviceCardProps) {
-  const { latestReading, online, conditions } = device;
+export function DeviceCard({ device, secondsSinceReading, secondsSinceReport, anchorMs, reportIntervalSeconds }: DeviceCardProps) {
+  const { latestReading, lastReportAt, online, conditions } = device;
+  // The board reports but its sensor does not answer: the Reading on the card is the last good one, not the closet now.
+  const fault = hasSensorFault(conditions);
   const titleId = `device-${device.id}-title`;
   const offline = conditions.find((c) => c.name === 'Offline');
   const readingConditions = conditions.filter((c) => c.name !== 'Offline');
@@ -161,8 +166,9 @@ export function DeviceCard({ device, secondsSinceReading, anchorMs, reportInterv
   }, [worstName]);
   const traceCard = useCallback(() => cardRef.current, []);
 
+  // On time, late, or Offline counts from the last report, as the server counts: a fault report is the board heard from.
   const report: ReportState =
-    latestReading === null || secondsSinceReading === null ? 'none' : !online ? 'offline' : nextReport(secondsSinceReading, reportIntervalSeconds).status;
+    lastReportAt === null || secondsSinceReport === null ? 'none' : !online ? 'offline' : nextReport(secondsSinceReport, reportIntervalSeconds).status;
 
   // History opens with the Closet name, Campus and temperature carried from this card into its header.
   const historyPath = `/history/${device.id}`;
@@ -248,10 +254,30 @@ export function DeviceCard({ device, secondsSinceReading, anchorMs, reportInterv
             No readings yet from <span className="font-mono text-sm">{device.hostname}</span>
           </p>
         ) : (
-          <div className="flex items-end justify-between gap-6">
-            <Measure label="Temperature" value={latestReading.tempF} unit="°F" size="lg" dimmed={!online} />
-            <Measure label="Humidity" value={latestReading.humidity} unit="%" size="md" dimmed={!online} />
+          <div className="space-y-2">
+            <div className="flex items-end justify-between gap-6">
+              <Measure label="Temperature" value={latestReading.tempF} unit="°F" size="lg" dimmed={!online || fault} />
+              <Measure label="Humidity" value={latestReading.humidity} unit="%" size="md" dimmed={!online || fault} />
+            </div>
+            {/* Kept, greyed, with its age: what the closet was doing when the sensor stopped answering. */}
+            {fault && secondsSinceReading !== null && (
+              <p className="text-sm text-muted-foreground tabular-nums">
+                Last good Reading{' '}
+                <time dateTime={latestReading.recordedAt} title={new Date(latestReading.recordedAt).toLocaleString()}>
+                  {formatStaleAge(secondsSinceReading)}
+                </time>
+              </p>
+            )}
           </div>
+        )}
+        {device.tokenMismatchAt !== null && (
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            <Badge className="border-transparent bg-amber-500/15 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+              <KeyRound aria-hidden />
+              Token mismatch
+            </Badge>
+            <span>Its Readings are refused: the Device token on the board is not the server's.</span>
+          </p>
         )}
         <AnimatePresence initial={false}>
           {readingConditions.length > 0 && (
@@ -279,14 +305,14 @@ export function DeviceCard({ device, secondsSinceReading, anchorMs, reportInterv
 
       <CardFooter className="relative mt-auto justify-between gap-3 border-t px-5 pt-4 text-sm text-muted-foreground">
         <ReportHairline state={report} anchorMs={anchorMs} reportIntervalSeconds={reportIntervalSeconds} />
-        {latestReading === null || secondsSinceReading === null ? (
+        {lastReportAt === null || secondsSinceReport === null ? (
           <span>Never reported</span>
         ) : (
           <span className="flex min-w-0 flex-wrap gap-x-3 tabular-nums">
-            <time dateTime={latestReading.recordedAt} title={new Date(latestReading.recordedAt).toLocaleString()}>
-              {formatAge(secondsSinceReading)}
+            <time dateTime={lastReportAt} title={new Date(lastReportAt).toLocaleString()}>
+              {formatAge(secondsSinceReport)}
             </time>
-            {online && <NextReportNote {...nextReport(secondsSinceReading, reportIntervalSeconds)} />}
+            {online && <NextReportNote {...nextReport(secondsSinceReport, reportIntervalSeconds)} />}
           </span>
         )}
 

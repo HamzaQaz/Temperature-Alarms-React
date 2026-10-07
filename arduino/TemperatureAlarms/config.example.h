@@ -8,9 +8,13 @@
 #define WIFI_PASSWORD "your-password"
 
 // Where the backend is served, without a trailing slash. Readings are posted to
-// SERVER_URL/api/readings. The Compose stack is http://<host> (add :PORT only if WEB_PORT
-// was changed); an https:// URL is sent over TLS (see the firmware README).
-#define SERVER_URL "http://YOUR_HOST"
+// SERVER_URL/api/readings, and the board checks /api/firmware for updates. Production boards:
+// https://YOUR_DOMAIN, the name the dashboard is served at. Its certificate must chain to a Let's
+// Encrypt root (roots.cpp) and name that host, so renewals and key changes on the server never
+// need a reflash; the board takes the time from the server itself. Run the README's "Transport
+// for production boards" checks before flashing. On a desk, the Compose stack is http://<host>
+// (add :PORT only if WEB_PORT was changed).
+#define SERVER_URL "https://YOUR_DOMAIN"
 
 // Must match DEVICE_TOKEN in the backend .env (docs/adr/0003).
 #define DEVICE_TOKEN "change-me-device"

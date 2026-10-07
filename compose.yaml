@@ -1,4 +1,4 @@
-# The whole system on one port (docs/adr/0005): `cp .env.example .env`, fill in the three
+# The whole system on one port (docs/adr/0005): `cp .env.example .env`, fill in the four
 # secrets, then `docker compose up -d --build`. The database is a named volume, so data
 # survives `down`; `down -v` wipes it. See DEPLOYMENT.md.
 #
@@ -23,7 +23,14 @@ services:
       MYSQL_DATABASE: temperature_alarms
       MYSQL_USER: temperature
       MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env (openssl rand -hex 32)}
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      # Root has its own password, which api never holds: a code-execution bug in api reaches the
+      # app's own database, not MySQL root. Used by deploy.sh's backups and restores and the
+      # commands in DEPLOYMENT.md, through the socket inside this container. Like MYSQL_ROOT_HOST,
+      # the image applies it only when the volume is first created; deploy.sh deploy moves an older
+      # volume over once (DEPLOYMENT.md, Separate MySQL root password).
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env (openssl rand -hex 32); for an install older than it, run deploy.sh deploy once, which moves root over (DEPLOYMENT.md)}
+      # root only through that socket, never over the network. The image's default is root@'%'.
+      MYSQL_ROOT_HOST: localhost
     volumes:
       - db-data:/var/lib/mysql
     # The entrypoint chowns the data directory and drops to the mysql user; nothing else is needed.
@@ -31,8 +38,11 @@ services:
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt: ["no-new-privileges:true"]
     # Not published: only api reaches it. Use `docker compose exec db mysql ...` from the host.
+    # No password: `mysqladmin ping` exits 0 whenever the server answers, access denied included,
+    # and 1 when nothing listens. Over TCP, so the entrypoint's socket-only first start is not taken
+    # for the real one. A password here would sit on a command line the host's `ps` shows every 5 s.
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uhealthcheck", "--silent"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -53,6 +63,8 @@ services:
       DB_NAME: temperature_alarms
       ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env (openssl rand -hex 32)}
       DEVICE_TOKEN: ${DEVICE_TOKEN:?Set DEVICE_TOKEN in .env (openssl rand -hex 32)}
+      # Set only during a Device token rotation (deploy.sh rotate-device-token, docs/adr/0003).
+      DEVICE_TOKEN_PREVIOUS: ${DEVICE_TOKEN_PREVIOUS:-}
       REPORT_INTERVAL_SECONDS: ${REPORT_INTERVAL_SECONDS:-30}
       RETENTION_DAYS: ${RETENTION_DAYS:-90}
       HOT_WARNING_F: ${HOT_WARNING_F:-82}
@@ -61,6 +73,17 @@ services:
       DRY_WARNING_PERCENT: ${DRY_WARNING_PERCENT:-20}
       MISSED_REPORTS_BEFORE_OFFLINE: ${MISSED_REPORTS_BEFORE_OFFLINE:-3}
       LEGACY_TIME_ZONE: ${LEGACY_TIME_ZONE:-}
+      # Email notifications (docs/adr/0008), off while SMTP_HOST is empty. Each is empty when unset,
+      # which the backend reads as unset: the port, security, and window then take their defaults.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_SECURE: ${SMTP_SECURE:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      NOTIFY_FROM: ${NOTIFY_FROM:-}
+      NOTIFY_TO: ${NOTIFY_TO:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      NOTIFY_COALESCE_SECONDS: ${NOTIFY_COALESCE_SECONDS:-}
     depends_on:
       db:
         condition: service_healthy

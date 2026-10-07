@@ -15,7 +15,7 @@ import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useAnnouncer } from '@/hooks/use-announcer';
 import { LiveAnnouncement } from '@/components/LiveAnnouncement';
 import { useResource } from '@/hooks/use-resource';
-import { levelLook } from '@/lib/conditions';
+import { spanFill, spanKind, type SpanKind } from '@/lib/conditions';
 import {
   durationOf,
   formatDuration,
@@ -23,6 +23,7 @@ import {
   overlaps,
   parseWindowKind,
   place,
+  rulerKinds,
   spanLayout,
   stepDays,
   ticks,
@@ -105,6 +106,9 @@ export default function Incidents() {
   const stream = useReadingStream({
     // On the error screen, any event reloads: the stream working means the server is back (lib/reload.ts).
     onReading: () => {
+      if (reloadOnError(state.status)) void reload();
+    },
+    onFault: () => {
       if (reloadOnError(state.status)) void reload();
     },
     onIncident: ({ change, incident }: IncidentEvent) => {
@@ -242,6 +246,9 @@ function worstClause(incident: Incident, now: number): string {
   if (incident.condition === 'Offline') {
     return `${incident.end === null ? 'has been' : 'was'} Offline for ${formatDuration(durationOf(incident, now))}`;
   }
+  if (incident.condition === 'Sensor fault') {
+    return `${incident.end === null ? 'has had' : 'had'} a Sensor fault for ${formatDuration(durationOf(incident, now))}`;
+  }
   return `reached ${incident.condition} ${incident.level}, ${peakFigure(incident)} at ${formatTime(incident.peak.recordedAt)}`;
 }
 
@@ -302,8 +309,10 @@ function Log({ data, now, landed, arrived }: LogProps) {
   const to = ms(data.to);
   const marks = ticks(data.kind, data.date);
   const nowAt = now >= from && now < to ? place(now, from, to) : null;
+  const kinds = rulerKinds(data.incidents, from, to, now);
   return (
     <section aria-label="Incidents, oldest first" className="rounded-xl border bg-card px-1 py-2 text-card-foreground shadow-sm">
+      <Legend kinds={kinds} />
       <div aria-hidden className="grid border-b text-sm text-muted-foreground lg:grid-cols-[minmax(0,27rem)_minmax(0,1fr)]">
         <div className="px-5 py-3 max-lg:hidden">Incident</div>
         <div className="px-5 py-3 max-md:px-4">
@@ -331,6 +340,25 @@ function Log({ data, now, landed, arrived }: LogProps) {
 }
 
 const pct = (share: number): string => `${share * 100}%`;
+
+const KIND_NAMES: Record<SpanKind, string> = { critical: 'Critical', high: 'High', warning: 'Warning', moderate: 'Moderate', 'Sensor fault': 'Sensor fault' };
+
+/**
+ * The ruler's key: each colour a span in the window is drawn in, the levels and Sensor fault's
+ * own. Hidden from screen readers with the ruler it explains; every row says its level in words.
+ */
+function Legend({ kinds }: { kinds: SpanKind[] }) {
+  return (
+    <ul aria-hidden className="flex flex-wrap items-center justify-end gap-x-4 gap-y-1 px-5 pt-1 pb-2 text-xs text-muted-foreground max-md:justify-start max-md:px-4">
+      {kinds.map((kind) => (
+        <li key={kind} className="flex items-center gap-1.5">
+          <i className={cn('h-2.5 w-4 rounded-[3px] forced-colors:bg-[CanvasText] forced-colors:forced-color-adjust-none', spanFill(kind))} />
+          {KIND_NAMES[kind]}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 /** How close (as a share of the ruler) a label may sit to "Now" before it gives way: on the wide ruler, and on a phone's. */
 const NOW_CLEARANCE = 0.05;
@@ -481,6 +509,18 @@ function Facts({ incident }: { incident: Incident }) {
     // Times, not a second duration: the silence began at the last Reading, the incident (and the row's duration) only once the server reported it Offline.
     return <>{strong(`No Readings from ${formatTime(peak.recordedAt)} to ${formatTime(incident.end)}`)}, then the Device reported again.</>;
   }
+  if (condition === 'Sensor fault') {
+    // The peak is the last good Reading (docs/adr/0009), so the silence of the sensor runs from it.
+    if (incident.end === null) {
+      const last = peak.humidity === null ? `${figure(peak.tempF)}°F` : `${figure(peak.tempF)}°F, ${figure(peak.humidity)}%`;
+      return (
+        <>
+          The board is online but its sensor is not answering. Last good Reading {strong(last)} at {formatTime(peak.recordedAt)}.
+        </>
+      );
+    }
+    return <>{strong(`No Readings from ${formatTime(peak.recordedAt)} to ${formatTime(incident.end)}`)}: the board was online but its sensor was not answering.</>;
+  }
   const value = peakFigure(incident) ?? '';
   const when = formatTime(peak.recordedAt);
   const lead =
@@ -517,7 +557,7 @@ function WorstStretch({ incident }: { incident: Incident }) {
 
 /**
  * The incident on the shared ruler: one span, a stretch per level in that level's signal
- * colour (critical solid, with no text on it), cut square where it runs past the window and
+ * colour (critical solid, with no text on it; a Sensor fault in its own violet), cut square where it runs past the window and
  * capped where it is still going. The row's text says all of this too, so it is hidden from
  * screen readers.
  */
@@ -540,7 +580,7 @@ function Track({ incident, from, to, now, marks, nowAt }: { incident: Incident; 
         >
           {span.pieces.map((piece, i) => (
             // Forced colours drop fills: the span is drawn in the text colour there, and the row's text gives the levels.
-            <i key={i} className={cn('absolute inset-y-0 forced-colors:bg-[CanvasText] forced-colors:forced-color-adjust-none', levelLook(piece.level).span)} style={{ left: pct(piece.left), width: pct(piece.width) }} />
+            <i key={i} className={cn('absolute inset-y-0 forced-colors:bg-[CanvasText] forced-colors:forced-color-adjust-none', spanFill(spanKind(incident.condition, piece.level)))} style={{ left: pct(piece.left), width: pct(piece.width) }} />
           ))}
           {span.ongoing && <i className="absolute inset-y-0 right-0 w-0.5 bg-foreground forced-colors:bg-[Canvas] forced-colors:forced-color-adjust-none" />}
         </span>

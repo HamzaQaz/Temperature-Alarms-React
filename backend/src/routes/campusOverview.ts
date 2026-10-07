@@ -5,7 +5,7 @@ import { closetType } from '../closet';
 import { conditionsFor, isOffline, LEVELS_WORST_FIRST, worstLevel, type Condition, type ConditionLevel, type ConditionName } from '../conditions';
 import { isTimeZone, localDay, serverTimeZone, todayIn, type LocalDay } from '../localDay';
 import type { ReadingPayload } from '../sse';
-import { LATEST_READING_ID, latestAllowed } from '../latestReading';
+import { LATEST_READING_ID, lastReportAt, latestAllowed } from '../latestReading';
 
 /** How many local days the overview's chart covers, today (partial) included. */
 export const OVERVIEW_DAYS = 7;
@@ -25,6 +25,8 @@ interface DeviceRow extends RowDataPacket {
   tempF: number | null;
   humidity: number | null;
   recordedAt: Date | null;
+  lastReportAt: Date | null;
+  sensorFaults: number;
 }
 
 interface DayMaxRow extends RowDataPacket {
@@ -50,7 +52,8 @@ interface LastIncidentRow extends RowDataPacket {
 /** Every Device with its latest Reading, one step back along the index each (latestReading.ts). */
 const SELECT_DEVICES = `
   SELECT d.id, d.hostname, d.closet, d.campus_id AS campusId,
-         r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt
+         r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt,
+         d.last_report_at AS lastReportAt, d.sensor_faults AS sensorFaults
   FROM devices d
   LEFT JOIN readings r ON r.id = (${LATEST_READING_ID})
   ORDER BY d.closet, d.hostname`;
@@ -215,7 +218,10 @@ export function campusOverviewRouter({ pool, config, now = () => new Date() }: R
           .map((d) => {
             const latest = d.recordedAt === null || d.tempF === null ? null : { tempF: d.tempF, humidity: d.humidity, recordedAt: d.recordedAt };
             const secondsSinceReading = latest === null ? null : Math.max(0, Math.floor((at.getTime() - latest.recordedAt.getTime()) / 1000));
-            const conditions = conditionsFor({ reading: latest, secondsSinceReading, ...rules });
+            // Online and Sensor fault from the Device's reports, as the dashboard judges them (docs/adr/0009).
+            const reportedAt = lastReportAt(d.lastReportAt, latest?.recordedAt ?? null, at);
+            const secondsSinceReport = reportedAt === null ? null : Math.max(0, Math.floor((at.getTime() - reportedAt.getTime()) / 1000));
+            const conditions = conditionsFor({ reading: latest, secondsSinceReport, sensorFaults: d.sensorFaults, ...rules });
             return { row: d, latest, secondsSinceReading, conditions, level: worstLevel(conditions) };
           });
         // Array sort is stable, so closets at the same level keep the query's closet order.

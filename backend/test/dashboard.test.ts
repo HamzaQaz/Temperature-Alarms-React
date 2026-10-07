@@ -48,9 +48,12 @@ describe('GET /api/dashboard', () => {
       campus,
       closet: 'IDF 2',
       closetType: 'IDF',
+      tokenMismatchAt: null,
       latestReading: latest.reading,
       online: true,
       secondsSinceReading: entry.secondsSinceReading,
+      lastReportAt: latest.reading.recordedAt,
+      secondsSinceReport: entry.secondsSinceReport,
       conditions: [],
     });
     assert.ok(entry.secondsSinceReading !== null && entry.secondsSinceReading >= 0 && entry.secondsSinceReading <= 5, `just posted: ${entry.secondsSinceReading}`);
@@ -79,9 +82,12 @@ describe('GET /api/dashboard', () => {
         campus,
         closet: 'MDF',
         closetType: 'MDF',
+        tokenMismatchAt: null,
         latestReading: null,
         online: false,
         secondsSinceReading: null,
+        lastReportAt: null,
+        secondsSinceReport: null,
         conditions: [{ name: 'Offline', level: 'warning' }],
       },
     ]);

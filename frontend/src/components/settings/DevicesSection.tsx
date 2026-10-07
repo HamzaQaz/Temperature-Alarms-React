@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Pencil, Plus } from 'lucide-react';
 import { addDevice, deleteDevice, getCampuses, getDevices } from '@/api';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -262,7 +263,17 @@ export function DevicesSection({ canEdit, onUnauthorised }: DevicesSectionProps)
                   </AnimatedRow>
                 ) : (
                   <AnimatedRow key={device.id}>
-                    <TableCell className="font-mono font-medium">{device.hostname}</TableCell>
+                    <TableCell className="font-mono font-medium">
+                      {device.hostname}
+                      {device.tokenMismatchAt && (
+                        <Badge
+                          className="ml-2 border-transparent bg-amber-500/15 font-sans text-amber-700 dark:bg-amber-500/20 dark:text-amber-400"
+                          title="Its Readings are refused: the Device token on the board is not the server's"
+                        >
+                          Token mismatch
+                        </Badge>
+                      )}
+                    </TableCell>
                     <WrappingCell>
                       {device.campus.name} <span className="text-sm text-muted-foreground">{device.campus.shortcode}</span>
                     </WrappingCell>

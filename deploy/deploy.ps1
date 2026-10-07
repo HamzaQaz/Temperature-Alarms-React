@@ -19,8 +19,13 @@ $EnvPath = Join-Path $RepoDir '.env'
 $ExamplePath = Join-Path $RepoDir '.env.example'
 $BackupDir = Join-Path $RepoDir 'backups'
 $DbName = 'temperature_alarms'
-$Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD')
-$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE')
+$Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD')
+$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS')
+# Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
+# flags or the install prompts, never with --set; the password never comes from the command line.
+$NotifyKeys = @('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL')
+# The SMTP password once read from stdin or the hidden prompt (Read-SmtpPassword); never from the arguments.
+$SmtpPw = ''
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
 # repeated deploy leaves the running containers alone instead of recreating them.
 if (-not $env:BUILDX_NO_DEFAULT_ATTESTATIONS) { $env:BUILDX_NO_DEFAULT_ATTESTATIONS = '1' }
@@ -29,6 +34,8 @@ $DemoProject = 'temperature-alarms-demo'
 $DemoPort = '8080'
 # Extra arguments for every docker compose call; the demo sets its project and files here.
 $DcArgs = @()
+# True for an install from before DB_ROOT_PASSWORD, whose root password is still DB_PASSWORD (Set-LegacyRootEnv).
+$LegacyRoot = $false
 
 $OnWindows = ($PSVersionTable.PSVersion.Major -lt 6) -or $IsWindows
 $UseColour = (-not [Console]::IsOutputRedirected) -and (-not $env:NO_COLOR)
@@ -38,8 +45,14 @@ $O = @{
     Reveal = $false; Reconfigure = $false; Wipe = $false; Confirm = ''; Follow = $false; Tail = '200'
     Service = ''; Hosts = @(); Servers = ''; Dir = 'temperature-alarms'; Repo = ''; Branch = ''
     SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'; Down = $false
+    Finish = $false; Force = $false; Only = ''
+    SmtpHost = ''; SmtpPort = ''; SmtpSecure = ''; SmtpUser = ''; NotifyFrom = ''; NotifyTo = ''; PublicUrl = ''
 }
 $OrigArgs = @($args | ForEach-Object { "$_" })
+# What is piped to the script, read only when the SMTP password is wanted (Read-SmtpPassword): a pipe
+# inside a PowerShell session, or stdin under -File. Never read up front, or an open stdin would block.
+$ScriptInput = $input
+$ScriptExpectingInput = [bool]$MyInvocation.ExpectingInput
 
 # --- output ----------------------------------------------------------------------------
 function Write-Line([string]$Text, [string]$Colour) {
@@ -70,6 +83,16 @@ With no action at a console, shows a menu. Actions:
   restore [FILE]     Replace the database with a backup (typed confirmation; backs up first)
   migrate-legacy     Back up, then run `npm run migrate:legacy` in api
   info               The URL, the tokens (masked unless --reveal), and the config.h lines
+  rotate-device-token  Start a Device token rotation: the current token becomes
+                     DEVICE_TOKEN_PREVIOUS, still accepted, and a new DEVICE_TOKEN is generated;
+                     prints the new config.h line (masked unless --reveal). Reflash the boards,
+                     then --finish clears the previous token once Settings lists no Device on it
+                     (--force finishes anyway, with a typed confirmation).
+  publish-firmware   Offer a signed firmware build to the boards over the air: --file the
+                     TemperatureAlarms.ino.bin.signed from the build, --only ESP_A,ESP_B to offer
+                     it to those Devices first (publish again without --only for every Device)
+  firmware-status    The published build and the version each Device runs
+  withdraw-firmware  Stop offering the published build; boards keep what they run
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
                      (typed confirmation). .env and backups\ stay.
@@ -86,12 +109,23 @@ Options:
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
       --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
                         TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
-      --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
+      --reconfigure     Apply --web-port/--set/--smtp-*/--notify-* to an existing .env (secrets are kept)
+Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off unless --smtp-host:
+      --smtp-host HOST    The district's SMTP relay; `off` turns email off and clears the rest
+      --smtp-port PORT    Default 587, or 465 with --smtp-secure tls
+      --smtp-secure MODE  starttls (default), tls, or none
+      --smtp-user USER    Only for a relay that needs a login. The password is read from a hidden
+                          prompt, or with --yes from the first line of stdin; never from the command line
+      --notify-from ADDR  The sender address the relay allows (required with --smtp-host)
+      --notify-to LIST    Recipients, comma-separated; a distribution list (required with --smtp-host)
+      --public-url URL    The dashboard's address, for links in emails (required with --smtp-host)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
       --wipe            uninstall also deletes the database volume
       --down            demo: remove the demo instead of starting it
+      --finish, --force rotate-device-token: end the rotation (--force: even with Devices left)
+      --only HOSTNAMES  publish-firmware: only these Devices, comma-separated
       --file FILE       Backup file for restore
       --follow, --service NAME, --tail N   For logs
 Remote Linux servers (runs deploy.sh there over ssh; each keeps its own .env and backups):
@@ -123,12 +157,24 @@ function Read-Args([string[]]$List) {
                 'webport' { $takesValue = $true; $O.WebPort = $next; $O.Pass += @('--web-port', $next) }
                 'set' { $takesValue = $true; $O.Sets += $next; $O.Pass += @('--set', $next) }
                 'reconfigure' { $O.Reconfigure = $true; $O.Pass += '--reconfigure' }
+                'smtphost' { $takesValue = $true; $O.SmtpHost = $next; $O.Pass += @('--smtp-host', $next) }
+                'smtpport' { $takesValue = $true; $O.SmtpPort = $next; $O.Pass += @('--smtp-port', $next) }
+                'smtpsecure' { $takesValue = $true; $O.SmtpSecure = $next; $O.Pass += @('--smtp-secure', $next) }
+                'smtpuser' { $takesValue = $true; $O.SmtpUser = $next; $O.Pass += @('--smtp-user', $next) }
+                'notifyfrom' { $takesValue = $true; $O.NotifyFrom = $next; $O.Pass += @('--notify-from', $next) }
+                'notifyto' { $takesValue = $true; $O.NotifyTo = $next; $O.Pass += @('--notify-to', $next) }
+                'publicurl' { $takesValue = $true; $O.PublicUrl = $next; $O.Pass += @('--public-url', $next) }
+                # Every process on the host can read another's command line; the password comes on stdin instead.
+                { $_ -like 'smtppassword*' } { Fail 'the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin' }
                 'pull' { $O.Pull = $true; $O.Pass += '--pull' }
                 'nopull' { $O.Pull = $false; $O.Pass += '--no-pull' }
                 'reveal' { $O.Reveal = $true; $O.Pass += '--reveal' }
                 'confirm' { $takesValue = $true; $O.Confirm = $next; $O.Pass += @('--confirm', $next) }
                 'wipe' { $O.Wipe = $true; $O.Pass += '--wipe' }
                 'down' { $O.Down = $true; $O.Pass += '--down' }
+                'finish' { $O.Finish = $true; $O.Pass += '--finish' }
+                'force' { $O.Force = $true; $O.Pass += '--force' }
+                'only' { $takesValue = $true; $O.Only = $next; $O.Pass += @('--only', $next) }
                 'file' { $takesValue = $true; $O.File = $next; $O.Pass += @('--file', $next) }
                 { $_ -in 'f', 'follow' } { $O.Follow = $true; $O.Pass += '--follow' }
                 'service' { $takesValue = $true; $O.Service = $next; $O.Pass += @('--service', $next) }
@@ -202,6 +248,8 @@ function Get-EnvValue([string]$Key) {
     foreach ($line in (Read-Lines $EnvPath)) {
         if ($line.StartsWith("$Key=")) { $value = $line.Substring($Key.Length + 1).Trim().Trim('"') }
     }
+    # A single-quoted value (the SMTP password) is literal to Compose: no $ interpolation, no # comment.
+    if ($value.Length -ge 2 -and $value.StartsWith("'") -and $value.EndsWith("'")) { $value = $value.Substring(1, $value.Length - 2) }
     return $value
 }
 
@@ -239,17 +287,63 @@ function Protect-EnvFile {
 }
 
 # TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
-# Never /0: trusting every address would let any client write its own X-Forwarded-For.
-# frontend/real-ip.sh checks the same at container start.
+# Never a prefix of 0, however spelled (/0, /00): trusting every address would let any client
+# write its own X-Forwarded-For. frontend/real-ip.sh and deploy.sh check the same, the same way.
+function Test-IPv4([string]$Value) {
+    if ($Value -notmatch '\A[0-9]{1,3}(\.[0-9]{1,3}){3}\z') { return $false }
+    foreach ($octet in $Value.Split('.')) { if ([int]$octet -gt 255) { return $false } }
+    return $true
+}
+
+# Groups of up to four hex digits, eight of them, or fewer around one `::`; the last two may be
+# a dotted IPv4 address. No zone (%eth0) and no brackets: nginx takes neither.
+function Test-IPv6([string]$Value) {
+    $a = $Value
+    if ($a -notmatch ':' -or $a -match '[^0-9A-Fa-f:.]' -or $a.Contains(':::') -or ($a -split '::').Count -gt 2) { return $false }
+    if ($a.Contains('.')) {
+        $last = $a.LastIndexOf(':')
+        if (-not (Test-IPv4 $a.Substring($last + 1))) { return $false }
+        $a = $a.Substring(0, $last) + ':0:0'
+    }
+    if ($a.Contains('.')) { return $false }
+    $compressed = $a.Contains('::')
+    $groups = 0
+    foreach ($group in $a.Split(':')) {
+        if ($group -eq '') { if (-not $compressed) { return $false }; continue }
+        if ($group.Length -gt 4) { return $false }
+        $groups++
+    }
+    if ($compressed) { return $groups -le 7 }
+    return $groups -eq 8
+}
+
+# An address, or ADDRESS/PREFIX with the prefix 1 to 32 (IPv4) or 1 to 128 (IPv6).
+function Test-Address([string]$Value) {
+    $parts = $Value.Split('/')
+    if ($parts.Count -gt 2) { return $false }
+    if (Test-IPv4 $parts[0]) { $max = 32 }
+    elseif (Test-IPv6 $parts[0]) { $max = 128 }
+    else { return $false }
+    if ($parts.Count -eq 1) { return $true }
+    if ($parts[1] -notmatch '\A[0-9]{1,3}\z') { return $false }
+    return ([int]$parts[1] -ge 1) -and ([int]$parts[1] -le $max)
+}
+
 function Test-TrustProxy([string]$Value) {
     if (-not $Value) { return $true }
-    if ($Value -notmatch '^[0-9A-Za-z.:/, ]*$') { return $false }
+    # \z, not $: one line only, so the value cannot carry a second line into .env.
+    if ($Value -notmatch '\A[0-9A-Za-z.:/, ]*\z') { return $false }
     foreach ($entry in ($Value -split '[, ]+' | Where-Object { $_ })) {
-        if ($entry -match '/0$') { return $false }
         if ($entry -eq 'gateway') { continue }
-        if ($entry -notmatch '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$') { return $false }
+        if (-not (Test-Address $entry)) { return $false }
     }
     return $true
+}
+
+# USER@SERVER, SERVER, or an ssh config alias. Never starting with `-`, which ssh would take as an
+# option (-oProxyCommand=... runs a command here), and nothing ssh would read as syntax.
+function Test-SshHost([string]$Value) {
+    return $Value -cmatch '\A[A-Za-z0-9_.@:%+][A-Za-z0-9_.@:%+-]*\z'
 }
 
 function Test-Setting([string]$Key, [string]$Value) {
@@ -259,8 +353,183 @@ function Test-Setting([string]$Key, [string]$Value) {
         'LEGACY_TIME_ZONE' { return ($Value -eq '') -or ($Value -match '^[A-Za-z0-9_/+:-]+$') }
         # MySQL's size syntax: bytes, or a whole number of K, M, or G.
         'DB_BUFFER_POOL_SIZE' { return ($Value -eq '') -or ($Value -cmatch '^[1-9][0-9]*[KMG]?$') }
+        'NOTIFY_COALESCE_SECONDS' { return ($Value -eq '') -or ($Value -match '^[0-9]+$') }
         default { return $Value -match '^[0-9]+$' }
     }
+}
+
+# The email settings, as backend/src/config.ts takes them, and nothing that .env or Compose would read
+# as syntax: no quotes, $, #, spaces, or second line (\A and \z, never ^ and $, which allow a newline).
+$EmailRe = '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z0-9-]+'
+function Test-NotifySetting([string]$Key, [string]$Value) {
+    switch ($Key) {
+        'SMTP_HOST' { return $Value -match '\A[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\z' }
+        'SMTP_PORT' { return ($Value -match '\A[0-9]{1,5}\z') -and ([int]$Value -ge 1) -and ([int]$Value -le 65535) }
+        'SMTP_SECURE' { return $Value -cin @('starttls', 'tls', 'none') }
+        # An account name, an address, or DOMAIN\account.
+        'SMTP_USER' { return $Value -match '\A[A-Za-z0-9._@+\\-]+\z' }
+        # Written single-quoted, which Compose takes literally; so anything but a quote and a line break.
+        'SMTP_PASSWORD' { return ($Value -ne '') -and ($Value -notmatch "['`r`n]") }
+        'NOTIFY_FROM' { return $Value -match "\A$EmailRe\z" }
+        'NOTIFY_TO' { return $Value -match "\A$EmailRe(,$EmailRe)*\z" }
+        'PUBLIC_URL' { return $Value -match '\Ahttps?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?\z' }
+        default { return $false }
+    }
+}
+
+function Test-NotifyFlags { return [bool]("$($O.SmtpHost)$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)") }
+
+function Test-StdinRedirected { return [Console]::IsInputRedirected }
+
+# The SMTP password into $script:SmtpPw, never from the command line: a hidden prompt at a console, else
+# the first line piped to the script (or of stdin). Empty when none was given; the caller decides whether
+# that keeps the old one.
+function Read-SmtpPassword([string]$User, [bool]$HasCurrent) {
+    $script:SmtpPw = ''
+    if (Test-Interactive) {
+        $hint = if ($HasCurrent) { '; blank keeps the current one' } else { '' }
+        $secure = Read-Host "  SMTP password for $User (not shown$hint)" -AsSecureString
+        if ($secure -and $secure.Length -gt 0) { $script:SmtpPw = (New-Object System.Management.Automation.PSCredential 'smtp', $secure).GetNetworkCredential().Password }
+        return
+    }
+    $line = $null
+    if ($script:ScriptExpectingInput -and $script:ScriptInput -and $script:ScriptInput.MoveNext()) { $line = "$($script:ScriptInput.Current)" }
+    elseif (Test-StdinRedirected) { $line = [Console]::In.ReadLine() }
+    elseif (-not $script:ScriptExpectingInput) {
+        Fail "--smtp-user with --yes reads the SMTP password from a pipe, and nothing is piped in. Pipe it (`$pw = Read-Host -AsSecureString; [Net.NetworkCredential]::new('', `$pw).Password | .\deploy\deploy.ps1 ...), or leave out --yes to type it at a hidden prompt"
+    }
+    # Windows PowerShell pipes lines with CRLF.
+    if ($null -ne $line) { $script:SmtpPw = $line.TrimEnd("`r") }
+}
+
+# Turns email notifications off: every setting of the group emptied, since one left set without
+# SMTP_HOST stops api from starting.
+function Clear-Notify {
+    foreach ($k in $NotifyKeys) { if (Get-EnvValue $k) { Set-EnvValue $k '' } }
+}
+
+# The whole group at once. An empty port or security mode leaves the backend's default (587, starttls);
+# an empty user drops the login.
+function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string]$User, [string]$Password, [string]$From, [string]$To, [string]$Url) {
+    Set-EnvValue 'SMTP_HOST' $SmtpHost
+    if ($Port -or (Get-EnvValue 'SMTP_PORT')) { Set-EnvValue 'SMTP_PORT' $Port }
+    if ($Secure -or (Get-EnvValue 'SMTP_SECURE')) { Set-EnvValue 'SMTP_SECURE' $Secure }
+    if ($User) { Set-EnvValue 'SMTP_USER' $User; Set-EnvValue 'SMTP_PASSWORD' "'$Password'" }
+    else { Set-EnvValue 'SMTP_USER' ''; Set-EnvValue 'SMTP_PASSWORD' '' }
+    Set-EnvValue 'NOTIFY_FROM' $From
+    Set-EnvValue 'NOTIFY_TO' $To
+    Set-EnvValue 'PUBLIC_URL' $Url
+}
+
+function Get-NotifySummary {
+    $smtpHost = Get-EnvValue 'SMTP_HOST'
+    if (-not $smtpHost) { return 'off (no SMTP_HOST)' }
+    $secure = Get-EnvValue 'SMTP_SECURE'; if (-not $secure) { $secure = 'starttls' }
+    $port = Get-EnvValue 'SMTP_PORT'; if (-not $port) { $port = if ($secure -eq 'tls') { '465' } else { '587' } }
+    return "${smtpHost}:$port ($secure), from $(Get-EnvValue 'NOTIFY_FROM') to $(Get-EnvValue 'NOTIFY_TO')"
+}
+
+function Get-FlagOrEnv([string]$Flag, [string]$Key) { if ($Flag) { return $Flag } else { return Get-EnvValue $Key } }
+
+# --smtp-host and friends into .env, each checked first and nothing written unless all pass. A flag
+# not given keeps what .env has, so one setting can change on its own.
+function Set-NotifyFlagsInEnv {
+    if (-not (Test-NotifyFlags)) { return }
+    if ($O.SmtpHost -eq 'off') {
+        if ("$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)") { Fail '--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it' }
+        Clear-Notify; Ok 'email notifications off'; return
+    }
+    $smtpHost = Get-FlagOrEnv $O.SmtpHost 'SMTP_HOST'
+    if (-not $smtpHost) { Fail 'email notifications are off here; --smtp-host turns them on (with --notify-from, --notify-to, and --public-url)' }
+    $port = Get-FlagOrEnv $O.SmtpPort 'SMTP_PORT'
+    $secure = Get-FlagOrEnv $O.SmtpSecure 'SMTP_SECURE'
+    $user = Get-FlagOrEnv $O.SmtpUser 'SMTP_USER'
+    $from = Get-FlagOrEnv $O.NotifyFrom 'NOTIFY_FROM'
+    $to = (Get-FlagOrEnv $O.NotifyTo 'NOTIFY_TO').Replace(' ', '')
+    $url = (Get-FlagOrEnv $O.PublicUrl 'PUBLIC_URL').TrimEnd('/')
+    if (-not (Test-NotifySetting 'SMTP_HOST' $smtpHost)) { Fail "--smtp-host: '$smtpHost' is not a host name or IPv4 address" }
+    if ($port -and -not (Test-NotifySetting 'SMTP_PORT' $port)) { Fail "--smtp-port: '$port' is not a port number" }
+    if ($secure -and -not (Test-NotifySetting 'SMTP_SECURE' $secure)) { Fail "--smtp-secure: '$secure' is not starttls, tls, or none" }
+    if ($user -and -not (Test-NotifySetting 'SMTP_USER' $user)) { Fail "--smtp-user: '$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\name)" }
+    if (-not $from) { Fail '--notify-from is required with --smtp-host: the sender address the relay allows' }
+    if (-not (Test-NotifySetting 'NOTIFY_FROM' $from)) { Fail "--notify-from: '$from' is not a bare address like alarms@example.org" }
+    if (-not $to) { Fail '--notify-to is required with --smtp-host: at least one recipient, comma-separated' }
+    if (-not (Test-NotifySetting 'NOTIFY_TO' $to)) { Fail "--notify-to: '$to' is not a comma-separated list of bare addresses" }
+    if (-not $url) { Fail '--public-url is required with --smtp-host: the address technicians open the dashboard at, for links in emails (https://YOUR_DOMAIN)' }
+    if (-not (Test-NotifySetting 'PUBLIC_URL' $url)) { Fail "--public-url: '$url' is not an http:// or https:// address" }
+    $script:SmtpPw = ''
+    if ($O.SmtpUser) { Read-SmtpPassword $user ([bool](Get-EnvValue 'SMTP_PASSWORD')) }
+    if (-not $script:SmtpPw -and $user) {
+        $script:SmtpPw = Get-EnvValue 'SMTP_PASSWORD'
+        if (-not $script:SmtpPw) { Fail "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin" }
+    }
+    if ($user -and -not (Test-NotifySetting 'SMTP_PASSWORD' $script:SmtpPw)) { Fail 'the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads $ and # literally)' }
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url
+    $script:SmtpPw = ''
+    $login = if ($user) { ", login $user" } else { '' }
+    Ok "email notifications: $(Get-NotifySummary)$login"
+}
+
+# The same, asked at the keyboard, each answer checked as it is typed. Blank turns them off.
+function Read-Notifications {
+    if (-not (Test-Interactive)) { return }
+    $current = Get-EnvValue 'SMTP_HOST'
+    Write-Host "  Incident emails go out through the district's SMTP relay (DEPLOYMENT.md, Email notifications)."
+    $offHint = if ($current) { '; off: turn them off' } else { '' }
+    while ($true) {
+        $value = Ask "SMTP relay host for Incident emails (blank: no emails$offHint)" $current
+        if (-not $value -or $value -eq 'off' -or (Test-NotifySetting 'SMTP_HOST' $value)) { break }
+        Warn "'$value' is not a host name or IPv4 address"
+    }
+    if (-not $value -or $value -eq 'off') { Clear-Notify; return }
+    $smtpHost = $value
+    $current = Get-EnvValue 'SMTP_SECURE'; if (-not $current) { $current = 'starttls' }
+    while ($true) {
+        $secure = Ask 'Connection security: starttls, tls (from the first byte), or none' $current
+        if (Test-NotifySetting 'SMTP_SECURE' $secure) { break }
+        Warn "'$secure' is not starttls, tls, or none"
+    }
+    $current = Get-EnvValue 'SMTP_PORT'; if (-not $current) { $current = if ($secure -eq 'tls') { '465' } else { '587' } }
+    while ($true) {
+        $port = Ask 'SMTP port (587 for starttls, 465 for tls, 25 for a plain relay)' $current
+        if (Test-NotifySetting 'SMTP_PORT' $port) { break }
+        Warn "'$port' is not a port number"
+    }
+    $user = Get-EnvValue 'SMTP_USER'
+    $script:SmtpPw = ''
+    if (Confirm-Choice "Does the relay need a login (a service account)? Ask the district's mail admin" ([bool]$user)) {
+        while ($true) {
+            $user = Ask 'SMTP user' $user
+            if ($user -and (Test-NotifySetting 'SMTP_USER' $user)) { break }
+            Warn "'$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\name)"
+        }
+        while ($true) {
+            Read-SmtpPassword $user ([bool](Get-EnvValue 'SMTP_PASSWORD'))
+            if (-not $script:SmtpPw) { $script:SmtpPw = Get-EnvValue 'SMTP_PASSWORD' }
+            if (Test-NotifySetting 'SMTP_PASSWORD' $script:SmtpPw) { break }
+            Warn 'a password is needed, without a single quote'
+        }
+    }
+    else { $user = '' }
+    while ($true) {
+        $from = Ask 'Sender address the relay allows' (Get-EnvValue 'NOTIFY_FROM')
+        if (Test-NotifySetting 'NOTIFY_FROM' $from) { break }
+        Warn "'$from' is not a bare address like alarms@example.org"
+    }
+    while ($true) {
+        $to = (Ask 'Recipients, comma-separated (a distribution list is best)' (Get-EnvValue 'NOTIFY_TO')).Replace(' ', '')
+        if (Test-NotifySetting 'NOTIFY_TO' $to) { break }
+        Warn "'$to' is not a comma-separated list of bare addresses"
+    }
+    $current = Get-EnvValue 'PUBLIC_URL'; if (-not $current) { $current = Get-SiteUrl }
+    while ($true) {
+        $url = (Ask 'Dashboard address for links in emails (https://YOUR_DOMAIN behind TLS)' $current.TrimEnd('/')).TrimEnd('/')
+        if (Test-NotifySetting 'PUBLIC_URL' $url) { break }
+        Warn "'$url' is not an http:// or https:// address"
+    }
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url
+    $script:SmtpPw = ''
+    Write-Host '  Settings, Notifications, has a "Send test email" button once deployed.'
 }
 
 function Set-FlagsInEnv {
@@ -275,6 +544,7 @@ function Set-FlagsInEnv {
         if (-not (Test-Setting $key $value)) { Fail "--set: '$value' is not valid for $key" }
         Set-EnvValue $key $value; Ok "$key=$value"
     }
+    Set-NotifyFlagsInEnv
 }
 
 function Read-Tunables {
@@ -299,6 +569,7 @@ function Read-Tunables {
         Set-EnvValue 'TRUST_PROXY' $value
     }
     elseif ($current) { Set-EnvValue 'TRUST_PROXY' '' }
+    Read-Notifications
     if (Confirm-Choice 'Change the alarm thresholds and retention from their defaults?' $false) {
         foreach ($k in $Tunables) {
             $current = Get-EnvValue $k
@@ -307,7 +578,7 @@ function Read-Tunables {
                 if (Test-Setting $k $value) { break }
                 Warn "'$value' is not valid for $k"
             }
-            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE') -and -not $value) { continue }
+            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS') -and -not $value) { continue }
             Set-EnvValue $k $value
         }
     }
@@ -316,6 +587,8 @@ function Read-Tunables {
 function Add-MissingSecrets {
     $filled = @()
     foreach ($k in $Secrets) {
+        # An older install's root already has a password, DB_PASSWORD; deploy moves it over (Invoke-MigrateRootPassword).
+        if ($k -eq 'DB_ROOT_PASSWORD' -and $script:LegacyRoot) { continue }
         if (-not (Get-EnvValue $k)) { Set-EnvValue $k (New-Secret); $filled += $k }
     }
     if ($filled.Count -gt 0) { Ok "Generated $($filled -join ' ') (never printed; see: deploy.ps1 info --reveal)" }
@@ -347,7 +620,20 @@ function Get-WebHost {
 }
 function Get-WebPortNumber { $wp = Get-WebPortSetting; return $wp.Substring($wp.LastIndexOf(':') + 1) }
 
+# TRUST_PROXY=gateway believes X-Forwarded-For from the Docker network's gateway. A proxy on this
+# host arrives from there, but so does whatever Docker's userland proxy forwards: every IPv6 client
+# (web listens on IPv4 only), and on hosts without iptables NAT every client. With web published on
+# every address, any of them could claim to be anyone. True when that is the setup.
+function Test-GatewayExposed {
+    $entries = @((Get-EnvValue 'TRUST_PROXY') -split '[, ]+' | Where-Object { $_ })
+    if ($entries -notcontains 'gateway') { return $false }
+    $wp = Get-WebPortSetting
+    return -not ($wp -match '\A(127\.[0-9.]+|\[::1\]|localhost):[0-9]+\z')
+}
+
 function Invoke-Dc { & docker compose @DcArgs @args }
+# The same, with this function's pipeline input on docker's stdin (a function does not pass it on by itself).
+function Invoke-DcStdin { $input | & docker compose @DcArgs @args }
 
 function Test-Running([string]$Service) {
     $id = & docker compose @DcArgs ps --status running -q $Service 2>$null
@@ -380,6 +666,11 @@ function Invoke-Preflight {
     if ((Test-Path -LiteralPath (Join-Path $RepoDir 'compose.yaml')) -and (Test-Path -LiteralPath $ExamplePath)) { Ok "compose.yaml and .env.example in $RepoDir" }
     else { Bad "compose.yaml or .env.example missing in $RepoDir"; $failed = $true }
 
+    if (Test-GatewayExposed) {
+        Bad "TRUST_PROXY=gateway with WEB_PORT=$(Get-WebPortSetting): any client reaching the port could claim any address. Keep it on the loopback: --set WEB_PORT=127.0.0.1:$(Get-WebPortNumber) --reconfigure"
+        $failed = $true
+    }
+
     $port = [int](Get-WebPortNumber); $webHost = Get-WebHost
     $client = New-Object System.Net.Sockets.TcpClient
     $inUse = $false
@@ -407,11 +698,11 @@ function Invoke-Install {
     if (Test-Path -LiteralPath $EnvPath) {
         Ok '.env exists; keeping it'
         Add-MissingSecrets
-        if ($O.WebPort -or $O.Sets.Count -gt 0) {
+        if ($O.WebPort -or $O.Sets.Count -gt 0 -or (Test-NotifyFlags)) {
             if ($O.Reconfigure -or ((Test-Interactive) -and (Confirm-Choice 'Write the given settings into the existing .env? Secrets are kept.' $false))) { Set-FlagsInEnv }
             else { Warn 'settings given but .env left unchanged; add --reconfigure to apply them' }
         }
-        elseif ($O.Reconfigure -or ((Test-Interactive) -and (Confirm-Choice 'Change the port and tunables in the existing .env? Secrets are kept.' $false))) {
+        elseif ($O.Reconfigure -or ((Test-Interactive) -and (Confirm-Choice 'Change the port, email notifications, and tunables in the existing .env? Secrets are kept.' $false))) {
             Read-Tunables
         }
     }
@@ -425,10 +716,11 @@ function Invoke-Install {
         $name = if ($O.Project) { $O.Project } else { Get-ProjectName }
         Set-EnvValue 'COMPOSE_PROJECT_NAME' $name
         Ok "COMPOSE_PROJECT_NAME=$name (names the database volume, ${name}_db-data)"
-        if ($O.WebPort -or $O.Sets.Count -gt 0 -or -not (Test-Interactive)) { Set-FlagsInEnv } else { Read-Tunables }
+        if ($O.WebPort -or $O.Sets.Count -gt 0 -or (Test-NotifyFlags) -or -not (Test-Interactive)) { Set-FlagsInEnv } else { Read-Tunables }
     }
     Protect-EnvFile
     Ok "web port $(Get-WebPortSetting), project $(Get-ProjectName)"
+    if (-not (Test-NotifyFlags)) { Ok "email notifications: $(Get-NotifySummary)" }
 }
 
 function Invoke-MaybePull {
@@ -455,7 +747,68 @@ function Invoke-MaybePull {
 }
 
 function Assert-Secrets {
-    foreach ($k in $Secrets) { if (-not (Get-EnvValue $k)) { Fail "$k is empty in .env; run: deploy.ps1 install" } }
+    foreach ($k in $Secrets) {
+        if ($k -eq 'DB_ROOT_PASSWORD' -and $script:LegacyRoot) { continue }
+        if (-not (Get-EnvValue $k)) { Fail "$k is empty in .env; run: deploy.ps1 install" }
+    }
+}
+
+# The project's database volume, if Compose has made one.
+function Test-DbVolume {
+    $id = & docker volume ls -q --filter "label=com.docker.compose.project=$(Get-ProjectName)" --filter 'label=com.docker.compose.volume=db-data' 2>$null
+    return [bool]$id
+}
+
+# An install from before DB_ROOT_PASSWORD keeps root's password, DB_PASSWORD, in its volume: MySQL
+# takes MYSQL_ROOT_PASSWORD only when the volume is first created. Until deploy moves root over, every
+# action runs Compose with DB_ROOT_PASSWORD set to that, from this process's environment, so backups
+# keep working; compose.yaml refuses to start without it otherwise.
+function Set-LegacyRootEnv {
+    # Called again for the demo's own .env.demo: the real install's value must not carry over.
+    if ($script:LegacyRoot) { Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue }
+    $script:LegacyRoot = $false
+    if (-not (Test-Path -LiteralPath $EnvPath)) { return }
+    if ((Get-EnvValue 'DB_ROOT_PASSWORD') -or -not (Get-EnvValue 'DB_PASSWORD')) { return }
+    $env:DB_ROOT_PASSWORD = Get-EnvValue 'DB_PASSWORD'
+    if (Test-DbVolume) {
+        $script:LegacyRoot = $true
+        if ($O.Action -notin @('deploy', 'upgrade', 'install')) { Warn 'MySQL root still shares DB_PASSWORD (an install from before DB_ROOT_PASSWORD); deploy.ps1 deploy gives it its own' }
+    }
+    else { Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue }
+}
+
+# One time, on an install from before DB_ROOT_PASSWORD: drop root's network login, if the volume
+# predates MYSQL_ROOT_HOST, and give root a password of its own, which api never holds.
+function Invoke-MigrateRootPassword {
+    if (-not $script:LegacyRoot) { return }
+    Step 'Give MySQL root its own password (DB_ROOT_PASSWORD)'
+    Write-Host '  This install''s database was created when MySQL root shared DB_PASSWORD with api, and older'
+    Write-Host '  volumes also let root log in over the network. Once, this:'
+    Write-Host '    1. starts db and backs up the database'
+    Write-Host '    2. runs, as root inside db:  DROP USER IF EXISTS ''root''@''%'';'
+    Write-Host '                                 ALTER USER ''root''@''localhost'' IDENTIFIED BY ''<new password>'';'
+    Write-Host '    3. writes the new password to .env as DB_ROOT_PASSWORD; api never sees it'
+    Write-Host '  To do it by hand instead, see DEPLOYMENT.md, "Separate MySQL root password".'
+    Confirm-Typed "This changes MySQL root's password on the $(Get-ProjectName) database."
+    Invoke-Dc up -d --wait --wait-timeout 600 db
+    if ($LASTEXITCODE -ne 0) { Fail 'db did not start; nothing was changed' }
+    Invoke-Backup
+    $new = New-Secret
+    # .env first, so the new password is never only inside MySQL; put back if MySQL refuses it.
+    Set-EnvValue 'DB_ROOT_PASSWORD' $new
+    # On stdin, so the password is on no command line; one line, with the CR PowerShell adds removed.
+    # DROP first: a failure stops before the ALTER, leaving root as it was. Hex needs no SQL quoting.
+    "DROP USER IF EXISTS 'root'@'%'; ALTER USER 'root'@'localhost' IDENTIFIED BY '$new';" |
+        Invoke-DcStdin exec -T db sh -c 'tr -d ''\r'' | MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysql -uroot'
+    # Whatever mysql said, believe only a login with the new password.
+    $new | Invoke-DcStdin exec -T db sh -c 'read -r p; p=$(printf %s $p | tr -d ''\r''); MYSQL_PWD=$p exec mysql -uroot -e ''SELECT 1''' | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Set-EnvValue 'DB_ROOT_PASSWORD' ''
+        Fail "MySQL refused the new root password; root is unchanged and .env is as it was. The backup is $script:LastBackup"
+    }
+    Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue
+    $script:LegacyRoot = $false
+    Ok 'root has its own password (DB_ROOT_PASSWORD in .env) and logs in only inside db'
 }
 
 function Test-Health([int]$Tries) {
@@ -479,6 +832,8 @@ function Get-SiteUrl {
 
 function Invoke-Deploy {
     if (-not (Test-Path -LiteralPath $EnvPath)) { Invoke-Install }
+    Invoke-MigrateRootPassword
+    Add-MissingSecrets
     Assert-Secrets
     Invoke-MaybePull
     if (-not (Invoke-Preflight)) { Fail 'preflight failed; fix the [FAIL] lines above' }
@@ -611,13 +966,133 @@ function Invoke-Info {
     Write-Host "  Dashboard     $url"
     Write-Host "  Admin token   $(Hide-Secret (Get-EnvValue 'ADMIN_TOKEN'))   (Settings page)"
     Write-Host "  Device token  $(Hide-Secret (Get-EnvValue 'DEVICE_TOKEN'))"
+    $previous = Get-EnvValue 'DEVICE_TOKEN_PREVIOUS'
+    if ($previous) { Write-Host "  Previous      $(Hide-Secret $previous)   (still accepted: rotate-device-token --finish ends that)" }
     Write-Host "  DB password   $(Hide-Secret (Get-EnvValue 'DB_PASSWORD'))"
+    Write-Host "  DB root       $(Hide-Secret (Get-EnvValue 'DB_ROOT_PASSWORD'))"
+    Write-Host "  Email         $(Get-NotifySummary)"
+    # Masked whole: unlike the 64-hex secrets, a chosen password would give away its first and last four.
+    $smtpUser = Get-EnvValue 'SMTP_USER'
+    if ($smtpUser) {
+        $smtpPassword = if ($O.Reveal) { Get-EnvValue 'SMTP_PASSWORD' } else { '********' }
+        Write-Host "  SMTP login    $smtpUser / $smtpPassword"
+    }
     Write-Host ''
     Write-Host '  For arduino/TemperatureAlarms/config.h:'
     Write-Host "    #define SERVER_URL `"$($url.TrimEnd('/'))`""
     Write-Host "    #define DEVICE_TOKEN `"$(Hide-Secret (Get-EnvValue 'DEVICE_TOKEN'))`""
     if ($interval -and $interval -ne '30') { Write-Host "    #define REPORT_INTERVAL_SECONDS $interval" }
     if (-not $O.Reveal) { Write-Line '  Masked. Add --reveal to print them in full.' 'DarkGray' }
+}
+
+# --- Device token rotation (docs/adr/0003) ---------------------------------------------
+# Asks api, inside its own container, which Devices still report with the previous token: the
+# Admin token comes from api's environment, so it is on no command line. Prints one line per
+# Device ("previous HOSTNAME" or "unheard HOSTNAME") and exits 0 when there are none, 3 otherwise.
+# Template literals only: no quote characters, which Windows PowerShell 5.1 would mangle on the way.
+$RotationJs = 'fetch(`http://127.0.0.1:3001/api/devices/rotation`,{headers:{authorization:`Bearer ${process.env.ADMIN_TOKEN}`}}).then(async(r)=>{if(!r.ok)throw new Error(`GET /api/devices/rotation answered ${r.status}`);const b=await r.json();for(const d of b.previous)console.log(`previous ${d.hostname}`);for(const d of b.unheard)console.log(`unheard ${d.hostname}`);process.exit(b.previous.length+b.unheard.length===0?0:3)}).catch((e)=>{console.error(e.message);process.exit(1)})'
+
+# Recreates whatever the changed .env touches (api for the tokens) and waits for health.
+function Invoke-ApplyEnv {
+    Step 'Apply .env (docker compose up -d --wait)'
+    Invoke-Dc up -d --remove-orphans --wait --wait-timeout 600 | Out-Host
+    if ($LASTEXITCODE -ne 0) { return $false }
+    return (Test-Health 30)
+}
+
+function Invoke-RotateDeviceToken {
+    if (-not (Test-Path -LiteralPath $EnvPath)) { Fail 'not installed here yet (no .env); run: deploy.ps1 deploy' }
+    Assert-Secrets
+    if ($O.Finish) { Invoke-FinishRotation; return }
+    Step 'Rotate the Device token'
+    if (Get-EnvValue 'DEVICE_TOKEN_PREVIOUS') {
+        Fail 'a rotation is already under way; finish it first (deploy.ps1 rotate-device-token --finish), or the boards still on its previous token would stop reporting'
+    }
+    if (-not (Test-Running 'api')) { Fail 'api is not running; start the stack first (deploy.ps1 deploy)' }
+    if (-not (Confirm-Choice 'Generate a new Device token? Boards keep reporting with the current one until --finish.' $true)) { Fail 'not rotated; nothing was changed' }
+    $old = Get-EnvValue 'DEVICE_TOKEN'
+    Set-EnvValue 'DEVICE_TOKEN_PREVIOUS' $old
+    Set-EnvValue 'DEVICE_TOKEN' (New-Secret)
+    Ok 'DEVICE_TOKEN is new; the old one is DEVICE_TOKEN_PREVIOUS, accepted until --finish'
+    if (-not (Invoke-ApplyEnv)) {
+        Set-EnvValue 'DEVICE_TOKEN' $old
+        Set-EnvValue 'DEVICE_TOKEN_PREVIOUS' ''
+        [void](Invoke-ApplyEnv)
+        Fail 'api did not come back with both tokens; .env is back to the old token alone'
+    }
+    Write-Host ''
+    Write-Host '  For arduino/TemperatureAlarms/config.h, from now on:'
+    Write-Host "    #define DEVICE_TOKEN `"$(Hide-Secret (Get-EnvValue 'DEVICE_TOKEN'))`""
+    if (-not $O.Reveal) { Write-Line '  Masked. deploy.ps1 info --reveal prints it in full.' 'DarkGray' }
+    Write-Host ''
+    Write-Host '  Next:'
+    Write-Host '    1. Put the new token in config.h, export a binary, and reflash every board (README,'
+    Write-Host '       "Flashing a batch"). Until step 3, boards on either token keep reporting.'
+    Write-Host '    2. Watch Settings: its rotation line lists every Device still on the previous token,'
+    Write-Host '       and any not heard since api restarted. Reflash those.'
+    Write-Host '    3. When that list is empty: deploy.ps1 rotate-device-token --finish'
+}
+
+function Invoke-FinishRotation {
+    Step 'Finish the Device token rotation'
+    if (-not (Get-EnvValue 'DEVICE_TOKEN_PREVIOUS')) { Ok 'no rotation is under way (DEVICE_TOKEN_PREVIOUS is empty)'; return }
+    if (-not (Test-Running 'api')) { Fail 'api is not running; start the stack first (deploy.ps1 deploy)' }
+    $out = @(Invoke-Dc exec -T api node -e $RotationJs 2>&1 | ForEach-Object { "$_" })
+    $rc = $LASTEXITCODE
+    if ($rc -eq 0) { Ok 'every Device has reported with the new token since api started' }
+    elseif ($rc -eq 3) {
+        $left = @($out | Where-Object { $_ -match '^(previous|unheard) ' })
+        foreach ($line in $left) {
+            Write-Host ($line -replace '^previous ', '  still on the previous token: ' -replace '^unheard ', '  not heard since api started: ')
+        }
+        if (-not $O.Force) {
+            Fail "$($left.Count) Devices may still hold the previous token. Reflash them (or delete in Settings a Device that is gone), wait a Report interval, and run --finish again; --force finishes anyway"
+        }
+        Confirm-Typed 'The Devices above stop reporting until they are reflashed with the new token.'
+    }
+    else { Fail "could not read the rotation list from api: $($out -join ' ')" }
+    Set-EnvValue 'DEVICE_TOKEN_PREVIOUS' ''
+    if (-not (Invoke-ApplyEnv)) { Fail 'api did not come back healthy; see: deploy.ps1 logs --service api' }
+    Ok 'the previous Device token is no longer accepted'
+}
+
+# --- Over-the-air firmware (docs/adr/0007) ----------------------------------------------
+# The image goes into api as base64 on stdin, text that a PowerShell pipeline carries intact, and is
+# stored in the database. backend/src/firmwareCli.ts checks it is a signed build with a higher version.
+function Assert-ApiRunning { if (-not (Test-Running 'api')) { Fail 'api is not running; start the stack first (deploy.ps1 deploy)' } }
+
+function Invoke-PublishFirmware {
+    Step 'Publish firmware'
+    if (-not $O.File) { Fail 'publish-firmware needs --file PATH: the TemperatureAlarms.ino.bin.signed the build writes' }
+    $path = $O.File
+    if (-not [IO.Path]::IsPathRooted($path)) { $path = Join-Path (Get-Location) $path }
+    if (-not (Test-Path -LiteralPath $path)) { Fail "$($O.File) does not exist" }
+    $a = @('exec', '-T', 'api', 'node', 'dist/firmwareCli.js', 'publish')
+    if ($O.Only) {
+        if ($O.Only -notmatch '\A[A-Za-z0-9_,-]+\z') { Fail '--only takes Device hostnames, comma-separated (ESP_A1B2C3,ESP_D4E5F6)' }
+        $a += @('--only', $O.Only)
+    }
+    Assert-ApiRunning
+    [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Invoke-DcStdin @a
+    if ($LASTEXITCODE -ne 0) { Fail 'not published; see the line above' }
+    if ($O.Only) {
+        Write-Host '  Next: watch those Devices (deploy.ps1 firmware-status, or Settings) for an hour; then publish the'
+        Write-Host '  same file again without --only to offer it to every Device.'
+    }
+}
+
+function Invoke-FirmwareStatus {
+    Step 'Firmware'
+    Assert-ApiRunning
+    Invoke-Dc exec -T api node dist/firmwareCli.js status
+    if ($LASTEXITCODE -ne 0) { Fail 'could not read the firmware status' }
+}
+
+function Invoke-WithdrawFirmware {
+    Step 'Withdraw firmware'
+    Assert-ApiRunning
+    Invoke-Dc exec -T api node dist/firmwareCli.js withdraw
+    if ($LASTEXITCODE -ne 0) { Fail 'could not withdraw the firmware' }
 }
 
 function Invoke-Stop {
@@ -654,6 +1129,8 @@ function Invoke-Uninstall {
 function Use-Demo {
     $script:EnvPath = Join-Path $RepoDir '.env.demo'
     $script:DcArgs = @('-p', $DemoProject, '--env-file', '.env.demo', '-f', 'compose.yaml', '-f', 'compose.demo.yaml')
+    # A demo from before DB_ROOT_PASSWORD keeps root on DB_PASSWORD; it is throwaway, so it stays so.
+    Set-LegacyRootEnv
 }
 
 function New-DemoEnv {
@@ -727,6 +1204,10 @@ function Invoke-Action([string]$Name) {
         'restore' { Invoke-Restore }
         'migrate-legacy' { Invoke-MigrateLegacy }
         'info' { Invoke-Info }
+        'rotate-device-token' { Invoke-RotateDeviceToken }
+        'publish-firmware' { Invoke-PublishFirmware }
+        'firmware-status' { Invoke-FirmwareStatus }
+        'withdraw-firmware' { Invoke-WithdrawFirmware }
         'stop' { Invoke-Stop }
         'uninstall' { Invoke-Uninstall }
         'demo' { Invoke-Demo }
@@ -738,7 +1219,8 @@ function Invoke-Action([string]$Name) {
 
 function Show-Menu {
     $map = @{ '1' = 'preflight'; '2' = 'install'; '3' = 'deploy'; '4' = 'status'; '5' = 'logs'; '6' = 'backup'
-        '7' = 'restore'; '8' = 'migrate-legacy'; '9' = 'info'; '10' = 'stop'; '11' = 'uninstall'; '12' = 'demo' }
+        '7' = 'restore'; '8' = 'migrate-legacy'; '9' = 'info'; '10' = 'stop'; '11' = 'uninstall'; '12' = 'demo'
+        '13' = 'rotate-device-token'; '14' = 'rotate-device-token'; '15' = 'firmware-status'; '16' = 'publish-firmware' }
     while ($true) {
         Write-Host ''
         Write-Line "Temperature Alarms deploy  $RepoDir  (project $(Get-ProjectName), port $(Get-WebPortSetting))" 'Cyan'
@@ -748,14 +1230,18 @@ function Show-Menu {
         Write-Host '   4) Status                   10) Stop'
         Write-Host '   5) Logs                     11) Uninstall'
         Write-Host '   6) Back up the database     12) Demo, no hardware needed'
+        Write-Host '  13) Rotate the Device token  14) Finish the Device token rotation'
+        Write-Host '  15) Firmware status          16) Publish firmware (asks for the file)'
         Write-Host '                                q) Quit'
         $choice = Read-Host '  Choose'
         if ($null -eq $choice -or $choice -in @('q', 'quit', 'exit')) { return }
         if (-not $map.ContainsKey($choice.Trim())) { Warn 'no such choice'; continue }
         $action = $map[$choice.Trim()]
-        try { Invoke-Action $action }
+        $O.Finish = ($choice.Trim() -eq '14')
+        if ($choice.Trim() -eq '16') { $O.File = Ask 'The .bin.signed to publish' '' }
+        try { Set-LegacyRootEnv; Invoke-Action $action }
         catch { Write-Line "Error: $($_.Exception.Message)" 'Red'; Warn "$action did not finish" }
-        $O.File = ''; $O.Reveal = $false; $O.Wipe = $false; $O.Down = $false
+        $O.File = ''; $O.Reveal = $false; $O.Wipe = $false; $O.Down = $false; $O.Finish = $false; $O.Only = ''
         # The demo points these at its own project and .env.demo; the next action gets the real ones.
         $script:EnvPath = Join-Path $RepoDir '.env'; $script:DcArgs = @()
     }
@@ -787,12 +1273,18 @@ function Invoke-RemoteHost([string]$Target) {
     $b64 = [Convert]::ToBase64String($Utf8NoBom.GetBytes($remote + "`n"))
     $wrapper = "f=`$(mktemp) && echo $b64 | base64 -d > `$f && bash `$f; rc=`$?; rm -f `$f; exit `$rc"
     $sshArgs = @()
-    if ((Test-Interactive) -and -not [Console]::IsOutputRedirected) { $sshArgs += '-t' }
+    if ((Test-Interactive) -and -not [Console]::IsOutputRedirected -and -not $O.SmtpUser) { $sshArgs += '-t' }
     if ($O.SshOpts) { $sshArgs += @($O.SshOpts -split '\s+' | Where-Object { $_ }) }
     $sshArgs += @($Target, $wrapper)
     # Called as a statement, so ssh writes straight to the console (prompts included) and
     # only the exit code comes back, through $script:RemoteExit.
-    & ssh @sshArgs
+    if ($O.SmtpUser) {
+        # The SMTP password goes to deploy.sh there as the first line of its stdin, never in the command.
+        # UTF-8, not Windows PowerShell 5.1's ASCII default, so a non-ASCII password arrives intact.
+        $OutputEncoding = $Utf8NoBom
+        $script:SmtpPw | & ssh @sshArgs
+    }
+    else { & ssh @sshArgs }
     $script:RemoteExit = $LASTEXITCODE
 }
 
@@ -824,9 +1316,17 @@ function Invoke-Remote {
         }
     }
     if ($O.Hosts.Count -eq 0) { Fail "no hosts in $($O.Servers)" }
+    foreach ($h in $O.Hosts) {
+        if (-not (Test-SshHost $h)) { Fail "'$h' is not a host: give USER@SERVER (ssh options go in --ssh-opts)" }
+    }
     if (-not $O.Action -and $O.Hosts.Count -gt 1) { Fail 'give an action for more than one host' }
     if (-not $O.Action -and -not (Test-Interactive)) { Fail 'give an action, or run interactively for the menu' }
     if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) { Fail 'ssh is not installed here (Windows: Settings > Optional features > OpenSSH Client)' }
+    if ($O.SmtpUser) {
+        # Read once here and handed to each server on stdin (Invoke-RemoteHost).
+        Read-SmtpPassword $O.SmtpUser $false
+        if (-not $script:SmtpPw) { Fail '--smtp-user needs the SMTP password: type it at the prompt, or with --yes send it as the first line of stdin' }
+    }
     if (-not $O.Repo) { $O.Repo = "$(& git -C $RepoDir remote get-url origin 2>$null)" }
     $results = @(); $failed = $false
     $label = if ($O.Action) { $O.Action } else { 'menu' }
@@ -864,6 +1364,7 @@ try {
         Show-Menu
         exit 0
     }
+    Set-LegacyRootEnv
     Invoke-Action $O.Action
     exit 0
 }

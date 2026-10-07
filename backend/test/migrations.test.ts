@@ -43,7 +43,7 @@ describe('migration runner', () => {
   beforeEach(() => resetDatabase(pool));
 
   test('creates the schema tables and records the applied migrations', async () => {
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
     assert.deepEqual(rows.map((r) => r.id), [
       '0000-legacy-tables-aside',
@@ -53,6 +53,11 @@ describe('migration runner', () => {
       '0004-readings-recorded-at-index',
       '0005-incidents',
       '0006-readings-covering-index',
+      '0007-firmware',
+      '0008-pending-devices',
+      '0009-device-info',
+      '0010-device-reports',
+      '0011-notifications',
     ]);
   });
 
@@ -60,7 +65,7 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 7);
+    assert.equal(rows[0].n, 12);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {
@@ -81,12 +86,55 @@ describe('migration runner', () => {
   // MySQL commits DDL as it goes, so a run can die after a schema change and before recording it.
   test('a migration whose change landed but was never recorded runs again cleanly', async () => {
     await pool.query(
-      "DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index')",
+      "DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications')",
     );
     const applied = await runMigrations(pool);
-    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index']);
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
+    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
     assert.deepEqual((await readingsIndexes()).get('ix_readings_recorded'), ['recorded_at']);
+  });
+});
+
+describe('0010-device-reports', () => {
+  beforeEach(() => resetDatabase(pool));
+
+  test('backfills each Device\'s last report from its latest Reading and starts every fault count at zero', async () => {
+    // As a database migrated to 0009 had it: no report columns, Readings already in.
+    await pool.query('ALTER TABLE devices DROP COLUMN last_report_at, DROP COLUMN sensor_faults');
+    await pool.query("DELETE FROM schema_migrations WHERE id = '0010-device-reports'");
+    const campusId = await insertCampus();
+    const reported = await insertDevice(campusId, 'ESP_A1B2C3');
+    const silent = await insertDevice(campusId, 'ESP_D4E5F6');
+    await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [
+      [
+        [reported, 72, 40, new Date('2026-10-05T10:00:00Z')],
+        [reported, 73, 41, new Date('2026-10-05T10:00:30Z')],
+        [reported, 71, 40, new Date('2026-10-05T09:59:30Z')],
+      ],
+    ]);
+
+    assert.deepEqual(await runMigrations(pool), ['0010-device-reports']);
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT id, last_report_at AS lastReportAt, sensor_faults AS sensorFaults FROM devices ORDER BY id');
+    assert.deepEqual(
+      rows.map((r) => [r.id, r.lastReportAt === null ? null : (r.lastReportAt as Date).toISOString(), r.sensorFaults]),
+      [
+        [reported, '2026-10-05T10:00:30.000Z', 0],
+        [silent, null, 0],
+      ],
+    );
+  });
+
+  test('a run that landed but was never recorded runs again cleanly, keeping later reports', async () => {
+    const campusId = await insertCampus();
+    const device = await insertDevice(campusId);
+    await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, 72, 40, ?)', [device, new Date('2026-10-05T10:00:00Z')]);
+    await pool.query('UPDATE devices SET last_report_at = ?, sensor_faults = 2 WHERE id = ?', [new Date('2026-10-05T10:05:00Z'), device]);
+    await pool.query("DELETE FROM schema_migrations WHERE id = '0010-device-reports'");
+
+    assert.deepEqual(await runMigrations(pool), ['0010-device-reports']);
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT last_report_at AS lastReportAt, sensor_faults AS sensorFaults FROM devices');
+    assert.equal((rows[0].lastReportAt as Date).toISOString(), '2026-10-05T10:05:00.000Z');
+    assert.equal(rows[0].sensorFaults, 2);
   });
 });
 

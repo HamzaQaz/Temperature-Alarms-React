@@ -1,6 +1,7 @@
 /**
  * The Offline sweep (docs/adr/0006). Offline is computed when read, from how long ago the last
- * Reading arrived, so no Reading ever opens an Offline incident. This pass does instead: once
+ * report arrived, a Reading or a fault report (docs/adr/0009), so no report ever opens an
+ * Offline incident. This pass does instead: once
  * every Report interval it opens one for each Device the server would now report Offline.
  * The backend runs as one process (docs/adr/0001), so one sweep runs, as one retention job does;
  * the unique key on open incidents would stop a second from duplicating anything all the same.
@@ -33,7 +34,9 @@ export async function runOfflineSweep({ pool, config, sse, now = () => new Date(
     await pool.query('SELECT 1');
     const at = now();
     listening?.regained(at);
-    const changed = await sweepOffline(pool, { reportIntervalSeconds: config.reportIntervalSeconds, thresholds: config.thresholds }, at, listening?.since());
+    const rules = { reportIntervalSeconds: config.reportIntervalSeconds, thresholds: config.thresholds };
+    // Each opening is queued for email in its own transaction when notifications are on (docs/adr/0008).
+    const changed = await sweepOffline(pool, rules, at, listening?.since(), config.notifications !== undefined);
     await broadcastIncidentChanges(pool, sse, changed);
     return changed.length;
   } catch (error) {

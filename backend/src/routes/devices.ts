@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { requireAdminToken } from '../auth';
-import type { AppDeps } from '../deps';
+import type { RouteDeps } from '../deps';
 import { isDuplicateKey, isMissingForeignRow } from '../db';
 import { parseDevice, parseDeviceEdit } from '../deviceInput';
+import { forgetPending, HOSTNAME, listPending, setIgnored } from '../pendingDevices';
 
 export interface DeviceRow extends RowDataPacket {
   id: number;
@@ -25,15 +26,81 @@ export function toDevice({ id, hostname, closet, campusId, campusName, campusSho
   return { id, hostname, closet, campus: { id: campusId, name: campusName, shortcode: campusShortcode } };
 }
 
-/** Device routes: anyone may list; adding, editing, and deleting need the Admin token. */
-export function devicesRouter({ pool, config }: AppDeps): Router {
+/** Device routes: anyone may list; adding, editing, deleting, and the rotation list need the Admin token. */
+export function devicesRouter({ pool, config, rotation, sightings }: RouteDeps): Router {
   const router = Router();
   const adminOnly = requireAdminToken(config);
 
   router.get('/', async (_req, res, next) => {
     try {
       const [rows] = await pool.query<DeviceRow[]>(`${SELECT_DEVICES} ORDER BY c.name, d.closet, d.hostname`);
-      res.json(rows.map(toDevice));
+      res.json(rows.map((row) => ({ ...toDevice(row), tokenMismatchAt: sightings.mismatchedAt(row.hostname)?.toISOString() ?? null })));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // During a Device token rotation (DEVICE_TOKEN_PREVIOUS set): the Devices whose latest Reading
+  // came with the previous token, and those not heard at all since the api started. Both lists
+  // must be empty before the previous token is cleared (deploy.sh rotate-device-token --finish).
+  router.get('/rotation', adminOnly, async (_req, res, next) => {
+    const active = config.deviceTokenPrevious !== undefined;
+    try {
+      const [rows] = active ? await pool.query<DeviceRow[]>(`${SELECT_DEVICES} ORDER BY c.name, d.closet, d.hostname`) : [[]];
+      const onPrevious = rotation.onPrevious();
+      const heard = rotation.heardSince();
+      res.json({
+        active,
+        since: rotation.since.toISOString(),
+        previous: rows.filter((row) => onPrevious.has(row.hostname)).map(toDevice),
+        unheard: rows.filter((row) => !heard.has(row.hostname)).map(toDevice),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Boards reporting with the Device token that are not registered yet (pendingDevices.ts): adopt one
+  // by adding it (POST / below takes it off this list), hide it from the pop-up, or forget it.
+  router.get('/pending', adminOnly, async (_req, res, next) => {
+    try {
+      res.json(await listPending(pool));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  const pendingHostname = (raw: string): string | null => {
+    const hostname = raw.trim().toUpperCase();
+    return HOSTNAME.test(hostname) ? hostname : null;
+  };
+
+  router.patch('/pending/:hostname', adminOnly, async (req, res, next) => {
+    const hostname = pendingHostname(String(req.params.hostname));
+    const ignored = (req.body as Record<string, unknown> | undefined)?.ignored;
+    if (typeof ignored !== 'boolean') {
+      res.status(422).json({ error: 'ignored must be true or false' });
+      return;
+    }
+    try {
+      if (hostname === null || !(await setIgnored(pool, hostname, ignored))) {
+        res.status(404).json({ error: 'No unregistered board with that hostname' });
+        return;
+      }
+      res.json({ hostname, ignored });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.delete('/pending/:hostname', adminOnly, async (req, res, next) => {
+    const hostname = pendingHostname(String(req.params.hostname));
+    try {
+      if (hostname === null || !(await forgetPending(pool, hostname))) {
+        res.status(404).json({ error: 'No unregistered board with that hostname' });
+        return;
+      }
+      res.status(204).end();
     } catch (error) {
       next(error);
     }
@@ -52,6 +119,8 @@ export function devicesRouter({ pool, config }: AppDeps): Router {
         [hostname, campusId, closet],
       );
       const [rows] = await pool.query<DeviceRow[]>(`${SELECT_DEVICES} WHERE d.id = ?`, [result.insertId]);
+      // Adopted: it is a Device now, no longer a board waiting.
+      await forgetPending(pool, hostname);
       res.status(201).json(toDevice(rows[0]));
     } catch (error) {
       if (isDuplicateKey(error)) {

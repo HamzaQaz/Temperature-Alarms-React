@@ -12,6 +12,59 @@ export interface Device {
   hostname: string;
   closet: string;
   campus: Campus;
+  /** GET /api/devices only: when the board was last refused for its Device token, within 15 minutes. */
+  tokenMismatchAt?: string | null;
+}
+
+/**
+ * A Device token rotation (GET /api/devices/rotation, Admin token): while the previous token is
+ * still accepted, the Devices whose latest Reading used it, and those not heard since `since`.
+ */
+export interface DeviceRotation {
+  active: boolean;
+  since: string;
+  previous: Device[];
+  unheard: Device[];
+}
+
+/** A board reporting with the Device token that is not registered yet, waiting to be adopted (GET /api/devices/pending). */
+export interface PendingDevice {
+  hostname: string;
+  firstSeen: string;
+  lastSeen: string;
+  reports: number;
+  lastReading: { tempF: number; humidity: number } | null;
+  /** The address it reported from, to find it on the network. */
+  address: string | null;
+  /** Hidden from the pop-up; still listed in Settings. */
+  ignored: boolean;
+}
+
+/** The firmware build on offer to Devices over the air (docs/adr/0007). */
+export interface FirmwareRelease {
+  version: number;
+  size: number;
+  md5: string;
+  publishedAt: string;
+  /** The Devices it is offered to, or null for every Device. */
+  only: string[] | null;
+}
+
+/** GET /api/firmware/status (Admin token): the release and the version each Device last reported. */
+export interface FirmwareStatus {
+  release: FirmwareRelease | null;
+  devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null; info: DeviceInfo | null }>;
+}
+
+/** What a board said about itself with its latest Reading (firmware 3 and later); null for older firmware. */
+export interface DeviceInfo {
+  rssi: number | null;
+  uptimeSeconds: number | null;
+  freeHeap: number | null;
+  resetReason: string | null;
+  updateResult: string | null;
+  /** When it said so. */
+  at: string;
 }
 
 /** One temperature and humidity sample sent by a Device at a single moment. */
@@ -24,7 +77,7 @@ export interface Reading {
 
 export type ClosetType = 'IDF' | 'MDF';
 
-export type ConditionName = 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Offline';
+export type ConditionName = 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Sensor fault' | 'Offline';
 
 /** Worst first: critical, high, warning, moderate. Mold risk uses moderate/high; the rest warning/critical. */
 export type ConditionLevel = 'critical' | 'high' | 'warning' | 'moderate';
@@ -46,8 +99,14 @@ export interface DashboardDevice {
   /** Computed on the server: the Device is not in the Offline Condition. */
   online: boolean;
   secondsSinceReading: number | null;
+  /** When the board last reported, a Reading or a fault report; Online and Offline count from it. Null when it never has. */
+  lastReportAt: string | null;
+  /** Seconds since that report by the server's clock; null when it never has. */
+  secondsSinceReport: number | null;
   /** Every Condition the Device is in, worst first. The browser renders these and computes none. */
   conditions: Condition[];
+  /** When the board was last refused for its Device token, within 15 minutes; null otherwise. */
+  tokenMismatchAt: string | null;
 }
 
 /** What the live stream sends when a Device posts a Reading: the card's new state, matched by hostname. */
@@ -57,6 +116,22 @@ export interface ReadingEvent {
   reading: Reading;
   online: boolean;
   conditions: Condition[];
+  /** The Reading's own time: it is the Device's last report. */
+  lastReportAt: string;
+}
+
+/**
+ * What the live stream sends when a Device posts a fault report (docs/adr/0009): heard from, but
+ * no Reading, so the card keeps its last good one and takes the new state, matched by hostname.
+ */
+export interface FaultEvent {
+  type: 'fault';
+  device: string;
+  fault: 'sensor';
+  online: boolean;
+  conditions: Condition[];
+  /** When the fault report arrived: the Device's last report. */
+  lastReportAt: string;
 }
 
 /** How the dashboard lists its Devices; the server sorts, the browser shows the order it gets. */
@@ -199,4 +274,28 @@ export interface Overview {
   threshold: { name: ConditionName; level: ConditionLevel; tempF: number };
   retentionDays: number;
   campuses: CampusOverview[];
+}
+
+/** GET /api/notifications/status (Admin token): whether Incidents are emailed, through which relay, to whom, and how the last send went. */
+export interface NotificationStatus {
+  enabled: boolean;
+  /** Null when notifications are off. */
+  relay: { host: string; port: number; secure: 'starttls' | 'tls' | 'none' } | null;
+  from: string | null;
+  recipients: string[];
+  lastSent: { at: string; subject: string } | null;
+  lastFailure: { at: string; error: string } | null;
+  /** Notifications waiting to be sent, retries included. */
+  pending: number;
+  /** Notifications given up on after a day of retries, within the last week. */
+  failed: number;
+}
+
+/** POST /api/notifications/test: what the relay said when it took the test email. */
+export interface TestEmailResult {
+  sentAt: string;
+  accepted: string[];
+  rejected: string[];
+  /** The relay's final reply, e.g. `250 2.0.0 OK`. */
+  response: string;
 }

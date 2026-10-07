@@ -3,7 +3,7 @@
  * and sends them worst first; this module maps a level to a look and to whether the summary
  * counts it. No threshold lives here.
  */
-import type { Condition, ConditionLevel, DashboardDevice } from '@/types';
+import type { Condition, ConditionLevel, ConditionName, DashboardDevice } from '@/types';
 
 interface LevelLook {
   /** Badge colours: a tint for anything short of critical, solid for critical. */
@@ -50,6 +50,23 @@ const LOOKS: Record<ConditionLevel, LevelLook> = {
 };
 
 export const levelLook = (level: ConditionLevel): LevelLook => LOOKS[level];
+
+/**
+ * What a stretch on the incident ruler is drawn as: its level's colour, except Sensor fault, which
+ * has its own (Fault Violet), so a closet nobody is watching never reads as one that ran hot. Its
+ * badge and border stay critical: there the level speaks, and the ruler's legend names the violet.
+ */
+export type SpanKind = ConditionLevel | 'Sensor fault';
+
+export const spanKind = (condition: ConditionName, level: ConditionLevel): SpanKind => (condition === 'Sensor fault' ? 'Sensor fault' : level);
+
+/** Solid like critical, the level it always is: the 600 step on light, the 500 on dark. */
+const SENSOR_FAULT_SPAN = 'bg-violet-600 dark:bg-violet-500';
+
+export const spanFill = (kind: SpanKind): string => (kind === 'Sensor fault' ? SENSOR_FAULT_SPAN : LOOKS[kind].span);
+
+/** The legend's order: the levels worst first, then Sensor fault. */
+export const SPAN_KINDS: readonly SpanKind[] = ['critical', 'high', 'warning', 'moderate', 'Sensor fault'];
 
 /** How loud a level is, for telling an escalation from a de-escalation. No Condition is 0. */
 const RANK: Record<ConditionLevel, number> = { moderate: 1, warning: 2, high: 3, critical: 4 };

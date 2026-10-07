@@ -122,11 +122,14 @@ describe('upgrading a production database', () => {
       'alarms',
       'campuses',
       'devices',
+      'firmware_release',
       'incident_segments',
       'incidents',
       'legacy_devices',
       'legacy_locations',
       'legacy_readings_progress',
+      'notifications',
+      'pending_devices',
       'readings',
       'schema_migrations',
     ]);
@@ -213,6 +216,11 @@ describe('upgrading a production database', () => {
       '0004-readings-recorded-at-index',
       '0005-incidents',
       '0006-readings-covering-index',
+      '0007-firmware',
+      '0008-pending-devices',
+      '0009-device-info',
+      '0010-device-reports',
+      '0011-notifications',
     ]);
   });
 });
@@ -220,7 +228,7 @@ describe('upgrading a production database', () => {
 describe('a database that never had legacy tables', () => {
   test('gets only the new schema tables and no progress bookkeeping', async () => {
     await resetDatabase(pool);
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'incident_segments', 'incidents', 'readings', 'schema_migrations']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
   });
 
   test('a device table that appears later is still picked up by the guarded migration', async () => {

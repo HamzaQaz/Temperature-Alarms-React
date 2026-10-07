@@ -7,6 +7,8 @@ import { startRetentionJob } from './retention';
 import { startOfflineSweep } from './offlineSweep';
 import { createBroadcaster } from './sse';
 import { createListening } from './listening';
+import { createMailer } from './mailer';
+import { startNotifier } from './notifier';
 
 dotenv.config();
 
@@ -24,6 +26,9 @@ async function main(): Promise<void> {
   }
 
   for (const warning of tokenWarnings(config)) console.warn(`Warning: ${warning}`);
+  if (config.deviceTokenPrevious !== undefined) {
+    console.log('Device token rotation under way: Readings with DEVICE_TOKEN_PREVIOUS are accepted until it is cleared (Settings lists the Devices still on it)');
+  }
 
   const pool = createPool(config.database);
   const applied = await runMigrations(pool, { context: migrationContext(config) });
@@ -33,12 +38,20 @@ async function main(): Promise<void> {
   const sse = createBroadcaster();
   // The server hears Devices from now; their silence while it was down is not theirs (listening.ts).
   const listening = createListening(new Date());
-  const app = createApp({ config, pool, sse, listening });
+  // One relay client, shared by the Settings test button and the sender.
+  const mailer = config.notifications === undefined ? undefined : createMailer(config.notifications);
+  const app = createApp({ config, pool, sse, listening, mailer });
   app.listen(config.port, () => {
     console.log(`Server is running on port ${config.port}`);
   });
   startRetentionJob({ config, pool });
   startOfflineSweep({ config, pool, sse, listening });
+  // Ingest and the sweep queue Incident emails in the outbox; the sender delivers them (docs/adr/0008).
+  // A pass cut short by a restart rolls back, and its rows go out from the next process.
+  if (mailer !== undefined) {
+    startNotifier({ config, pool, mailer });
+    console.log(`Email notifications on: Incidents are sent to ${config.notifications?.to.join(', ')}`);
+  }
 }
 
 main().catch((error) => {

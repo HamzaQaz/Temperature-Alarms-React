@@ -26,7 +26,7 @@ export interface RecordedReading {
 }
 
 export interface Condition {
-  name: 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Offline';
+  name: 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Sensor fault' | 'Offline';
   level: 'critical' | 'high' | 'warning' | 'moderate';
 }
 
@@ -39,6 +39,9 @@ export interface DashboardDevice {
   latestReading: Reading | null;
   online: boolean;
   secondsSinceReading: number | null;
+  /** When the board last reported, a Reading or a fault report; null when it never has. */
+  lastReportAt: string | null;
+  secondsSinceReport: number | null;
   /** Every Condition the Device is in, worst first. */
   conditions: Condition[];
 }
@@ -139,7 +142,9 @@ export function api(server: RunningServer) {
     },
     devices: {
       url: (path = '') => `${server.url}/api/devices${path}`,
-      list: async () => json<Device[]>(await fetch(`${server.url}/api/devices`)),
+      /** The Device list without its token-mismatch hint (deviceAdoption.test.ts reads that directly). */
+      list: async () =>
+        (await json<Array<Device & { tokenMismatchAt?: string | null }>>(await fetch(`${server.url}/api/devices`))).map(({ tokenMismatchAt: _hint, ...device }) => device),
       add: (body: unknown, init?: RequestInit) => post('/api/devices', body, init),
       /** Changes a Device's closet or campus, as the admin unless init says otherwise. */
       edit: (id: number, body: unknown, init: RequestInit = asAdmin()) =>

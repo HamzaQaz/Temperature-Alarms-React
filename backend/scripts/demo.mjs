@@ -8,15 +8,17 @@
  *  2. Backfills seven days of history per Device. The API stamps every Reading with the server's
  *     own clock and has no backfill route (nor should it), so these rows go straight into the
  *     `readings` table (backend/src/migrations/0001-initial-schema.ts) over a MySQL connection.
- *     The scripted closets had a bad hour or two during the week, and the silent one a power cut.
- *     The incidents those Readings make are found by replaying the backend's own incident rules
- *     over them (replayIncidents, docs/adr/0006) and written with the backend's own insert, so the
- *     log can never disagree with the History.
+ *     The scripted closets had a bad hour or two during the week, the silent one a power cut, and
+ *     the faulty one an hour of fault reports, its sensor not answering (docs/adr/0009). The
+ *     incidents those reports make are found by replaying the backend's own incident rules over
+ *     them (replayIncidents, docs/adr/0006; applyFaultReport for the fault hour) and written with
+ *     the backend's own insert, so the log can never disagree with the History.
  *  3. Posts a live Reading per Device every Report interval with the Device token, on a scripted
  *     loop of about ten minutes in which one closet heats up through Hot warning to Hot critical,
- *     one dries out, one sits in Mold risk moderate then high, one goes cold overnight, and one
- *     goes silent (late, then Offline) and comes back. The rest stay calm. The api opens and
- *     closes the live incidents from these Readings itself, as it would for real boards.
+ *     one dries out, one sits in Mold risk moderate then high, one goes cold overnight, one goes
+ *     silent (late, then Offline) and comes back, and one sends fault reports for a few minutes
+ *     (Sensor fault from the third) before its sensor answers again. The rest stay calm. The api
+ *     opens and closes the live incidents from these reports itself, as it would for real boards.
  *
  * The thresholds and the Report interval are the api's own: this reads the same environment
  * through the backend's loadConfig, and every target value is found by asking the backend's
@@ -44,7 +46,7 @@ try {
   console.error('demo: needs the built backend (dist/); run `npm run build` first, or use the demo service');
   process.exit(1);
 }
-const { loadConfig, conditionsFor, replayIncidents, insertIncident } = backend;
+const { loadConfig, conditionsFor, replayIncidents, applyReading, applyFaultReport, offlineIncident, insertIncident } = backend;
 const mysql = require('mysql2/promise');
 
 const config = loadConfig(process.env);
@@ -90,7 +92,7 @@ function sequence(...keys) {
 
 // --- the district ------------------------------------------------------------------------
 // Fictional schools. Closets are named the way CONTEXT.md describes: role and number, with
-// the wing in brackets. `scenario` marks the five closets the loop scripts.
+// the wing in brackets. `scenario` marks the six closets the loop scripts.
 const CAMPUSES = [
   {
     name: 'Riverside High School',
@@ -119,6 +121,7 @@ const SCENARIO_CLOSETS = {
   'CRMS/IDF 1 (Cafeteria)': 'mold',
   'RHS/IDF 7 (Portables)': 'cold',
   'NGCC/IDF 1 (Auto Shop)': 'silent',
+  'CRMS/IDF 4 (Band Hall)': 'fault',
 };
 
 /** Each closet's character: where it sits and how far it swings over a day. */
@@ -186,7 +189,7 @@ function calm(device, ms) {
 
 // --- Conditions, asked of the backend ----------------------------------------------------
 const conditionsOf = (tempF, humidity) =>
-  conditionsFor({ reading: { tempF, humidity }, secondsSinceReading: 0, reportIntervalSeconds: interval, thresholds });
+  conditionsFor({ reading: { tempF, humidity }, secondsSinceReport: 0, reportIntervalSeconds: interval, thresholds });
 const label = (conditions) => (conditions.length === 0 ? 'calm' : conditions.map((c) => `${c.name} ${c.level}`).join(', '));
 
 /**
@@ -231,6 +234,8 @@ const SCRIPTS = {
 };
 /** The silent closet sends nothing in this window: late after one interval, Offline after three. */
 const SILENT = [90, 300];
+/** The faulty closet's sensor does not answer in this window: fault reports, Sensor fault from the third. */
+const FAULT = [360, 570];
 const TARGET_CONDITIONS = {
   hotWarning: ['Hot', 'warning'],
   hotCritical: ['Hot', 'critical'],
@@ -256,9 +261,10 @@ function resolveTargets() {
 }
 const TARGETS = resolveTargets();
 
-/** What a Device reads at `ms`, `second` seconds into the loop; null while it is silent. */
+/** What a Device reads at `ms`, `second` seconds into the loop; null while it is silent, 'fault' while its sensor does not answer. */
 function liveReading(device, ms, second) {
   if (device.scenario === 'silent' && second >= SILENT[0] * scale && second < SILENT[1] * scale) return null;
+  if (device.scenario === 'fault' && second >= FAULT[0] * scale && second < FAULT[1] * scale) return 'fault';
   const tick = Math.floor(second / interval);
   const base = settle(device, calm(device, ms));
   let value = base;
@@ -364,6 +370,8 @@ const EPISODES = {
   mold: [[2, 10, 3, 'moldHigh']],
   cold: [[5, 16, 8, 'cold']],
 };
+/** The faulty closet's hour without its sensor, as [days ago, hours before that moment]: a fault report every interval, no Readings. */
+const FAULT_HOUR = [3, 9];
 
 /** The closet's value at `ms`, pulled toward an episode's target while one is under way. */
 function backfillValue(device, ms, until) {
@@ -381,13 +389,49 @@ function backfillValue(device, ms, until) {
 }
 
 /**
- * The incidents a Device's backfilled Readings make, by the backend's own rules, written with
- * the backend's own insert. One still open at the end of the backfill is left out: the live
- * Readings that follow are the api's to judge, and it never saw that one open.
+ * replayIncidents with fault reports among the Readings, oldest first, as ingest would have seen
+ * them (docs/adr/0009): the same walk, each fault report judged by the backend's applyFaultReport
+ * with the count in a row that ingest keeps in devices.sensor_faults, and silence counted from the
+ * last report of either kind. Only the walk is here; every rule is the backend's.
  */
-async function backfillIncidents(pool, device, rows) {
+function replayReports(reports, rules) {
+  const all = [];
+  let open = [];
+  let last = null;
+  let sensorFaults = 0;
+  const advance = (steps) => {
+    open = [];
+    for (const { incident } of steps) (incident.end === null ? open : all).push(incident);
+  };
+  for (const report of reports) {
+    if (!open.some((i) => i.condition === 'Offline')) {
+      const offline = offlineIncident(last, new Date(report.recordedAt.getTime() - 1000), rules);
+      if (offline !== null) open.push(offline.incident);
+    }
+    if (report.fault) {
+      sensorFaults += 1;
+      advance(applyFaultReport(open, { at: report.recordedAt, sensorFaults }, last?.reading ?? null, rules));
+      last = { at: report.recordedAt, reading: last?.reading ?? null };
+    } else {
+      sensorFaults = 0;
+      advance(applyReading(open, report, rules));
+      last = { at: report.recordedAt, reading: report };
+    }
+  }
+  return [...all, ...open].sort((a, b) => a.start.getTime() - b.start.getTime());
+}
+
+/**
+ * The incidents a Device's backfilled Readings (and fault reports, `faults`) make, by the
+ * backend's own rules, written with the backend's own insert. One still open at the end of the
+ * backfill is left out: the live reports that follow are the api's to judge, and it never saw
+ * that one open.
+ */
+async function backfillIncidents(pool, device, rows, faults) {
+  const rules = { reportIntervalSeconds: interval, thresholds };
   const readings = rows.map(([, tempF, humidity, recordedAt]) => ({ tempF, humidity, recordedAt }));
-  const incidents = replayIncidents(readings, { reportIntervalSeconds: interval, thresholds });
+  const reports = [...readings, ...faults.map((recordedAt) => ({ fault: true, recordedAt }))].sort((a, b) => a.recordedAt - b.recordedAt);
+  const incidents = faults.length === 0 ? replayIncidents(readings, rules) : replayReports(reports, rules);
   let written = 0;
   for (const incident of incidents) {
     if (incident.end === null) continue;
@@ -400,8 +444,12 @@ async function backfillIncidents(pool, device, rows) {
 /**
  * Seven days of Readings for every Device that has none older than six days, up to its first
  * live one. One every Report interval, a second or two of jitter, the odd sample lost to the
- * sensor, a lunchtime power cut two days ago for the closet that goes silent, and the scripted
- * closets' bad stretches (EPISODES). Then the incidents those Readings make.
+ * sensor, a lunchtime power cut two days ago for the closet that goes silent, an hour of fault
+ * reports for the faulty one (FAULT_HOUR), and the scripted closets' bad stretches (EPISODES).
+ * Then the incidents those reports make. A fault report writes no Reading, so the fault hour is a
+ * gap in History, as it is for a real board. devices.last_report_at and sensor_faults are left to
+ * the live loop, already reporting: every backfilled report is older than its first, and the
+ * Readings after the fault hour cleared the count (ingest's rule) long before it.
  */
 async function backfill(pool, earliest, until) {
   const step = interval * 1000;
@@ -415,13 +463,20 @@ async function backfill(pool, earliest, until) {
     const end = first === undefined ? until : Math.min(until, first.getTime());
     const random = sequence('history', device.index);
     const gap = device.scenario === 'silent' ? [until - 2 * 86400000 - 3 * 3600000, until - 2 * 86400000 - 20 * 60000] : null;
+    const faultFrom = until - FAULT_HOUR[0] * 86400000 - FAULT_HOUR[1] * 3600000;
+    const faultHour = device.scenario === 'fault' ? [faultFrom, faultFrom + 3600000] : null;
     let rows = [];
     const all = [];
+    const faults = [];
     let dropped = false;
     for (let t = start; t < end; t += step) {
       const r = random();
       const jitter = Math.round((random() - 0.5) * 3000);
       if (gap !== null && t >= gap[0] && t < gap[1]) continue;
+      if (faultHour !== null && t >= faultHour[0] && t < faultHour[1]) {
+        faults.push(new Date(Math.floor((t + jitter) / 1000) * 1000));
+        continue;
+      }
       // Never two lost in a row: with jitter, that gap can pass three intervals and read as Offline.
       if (r < 0.01 && !dropped) {
         dropped = true;
@@ -444,7 +499,7 @@ async function backfill(pool, earliest, until) {
       await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [rows]);
       total += rows.length;
     }
-    incidents += await backfillIncidents(pool, device, all);
+    incidents += await backfillIncidents(pool, device, all, faults);
   }
   if (total === 0) log('history: every Device already has its week; nothing backfilled');
   else log(`history: ${total} Readings and ${incidents} incidents over ${HISTORY_DAYS} days written straight to MySQL in ${Math.round((Date.now() - began) / 1000)} s`);
@@ -459,18 +514,25 @@ function startLive(startedAt) {
     const second = ((now - startedAt) / 1000) % LOOP_SECONDS;
     const reading = liveReading(device, now, second);
     const where = `${device.campus.shortcode} ${device.closet}`;
-    const state = reading === null ? 'silent (late, then Offline)' : label(conditionsOf(reading.temp, reading.humidity));
+    const state =
+      reading === null
+        ? 'silent (late, then Offline)'
+        : reading === 'fault'
+          ? 'fault reports (Sensor fault from the third)'
+          : label(conditionsOf(reading.temp, reading.humidity));
     if (device.scenario !== null && last.get(device.hostname) !== state) {
-      log(`${String(Math.floor(second)).padStart(3)} s into the loop: ${where} -> ${state}${reading === null ? '' : ` (${reading.temp} F, ${reading.humidity} %)`}`);
+      log(`${String(Math.floor(second)).padStart(3)} s into the loop: ${where} -> ${state}${reading === null || reading === 'fault' ? '' : ` (${reading.temp} F, ${reading.humidity} %)`}`);
     }
     last.set(device.hostname, state);
     if (reading === null) return;
     try {
-      const response = await api('POST', '/api/readings', deviceToken, { device: device.hostname, ...reading });
+      // A fault report is accepted with 202: nothing was created (docs/adr/0009).
+      const body = reading === 'fault' ? { device: device.hostname, fault: 'sensor' } : { device: device.hostname, ...reading };
+      const response = await api('POST', '/api/readings', deviceToken, body);
       if (response.status === 404) {
         log(`${device.hostname} (${where}) is no longer registered; adding it back`);
         await seed();
-      } else if (response.status !== 201) {
+      } else if (response.status !== (reading === 'fault' ? 202 : 201)) {
         log(`${device.hostname}: report ${response.status} ${JSON.stringify(response.body)}`);
       }
     } catch (error) {

@@ -15,8 +15,11 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 ENV_FILE=".env"
 BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
-SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD"
-TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE"
+SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD"
+TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE NOTIFY_COALESCE_SECONDS"
+# Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
+# flags or the install prompts, never with --set; the password never comes from the command line.
+NOTIFY_KEYS="SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL"
 # The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
 DEMO_PROJECT="temperature-alarms-demo"
 DEMO_ENV=".env.demo"
@@ -47,6 +50,20 @@ KEEP_DAYS=""
 AT="02:00"
 BOOTSTRAP=0
 DOWN=0
+FINISH=0
+FORCE=0
+ONLY=""
+SMTP_HOST_OPT=""
+SMTP_PORT_OPT=""
+SMTP_SECURE_OPT=""
+SMTP_USER_OPT=""
+NOTIFY_FROM_OPT=""
+NOTIFY_TO_OPT=""
+PUBLIC_URL_OPT=""
+# The SMTP password once read from stdin or the hidden prompt (read_smtp_password); never from argv.
+SMTP_PW=""
+# 1 for an install from before DB_ROOT_PASSWORD, whose root password is still DB_PASSWORD (legacy_root_env).
+LEGACY_ROOT=0
 DC_ARGS=()
 HOSTS=()
 SERVERS_FILE=""
@@ -93,6 +110,16 @@ With no action and a terminal, shows a menu. Actions:
   restore [FILE]     Replace the database with a backup (typed confirmation; backs up first)
   migrate-legacy     Back up, then run `npm run migrate:legacy` in api
   info               The URL, the tokens (masked unless --reveal), and the config.h lines
+  rotate-device-token  Start a Device token rotation: the current token becomes
+                     DEVICE_TOKEN_PREVIOUS, still accepted, and a new DEVICE_TOKEN is generated;
+                     prints the new config.h line (masked unless --reveal). Reflash the boards,
+                     then --finish clears the previous token once Settings lists no Device on it
+                     (--force finishes anyway, with a typed confirmation).
+  publish-firmware   Offer a signed firmware build to the boards over the air: --file the
+                     TemperatureAlarms.ino.bin.signed from the build, --only ESP_A,ESP_B to offer
+                     it to those Devices first (publish again without --only for every Device)
+  firmware-status    The published build and the version each Device runs
+  withdraw-firmware  Stop offering the published build; boards keep what they run
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
                      (typed confirmation). .env and backups/ stay.
@@ -109,12 +136,23 @@ Options:
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
       --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
                         TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
-      --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
+      --reconfigure     Apply --web-port/--set/--smtp-*/--notify-* to an existing .env (secrets are kept)
+Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off unless --smtp-host:
+      --smtp-host HOST    The district's SMTP relay; `off` turns email off and clears the rest
+      --smtp-port PORT    Default 587, or 465 with --smtp-secure tls
+      --smtp-secure MODE  starttls (default), tls, or none
+      --smtp-user USER    Only for a relay that needs a login. The password is read from a hidden
+                          prompt, or with --yes from the first line of stdin; never from the command line
+      --notify-from ADDR  The sender address the relay allows (required with --smtp-host)
+      --notify-to LIST    Recipients, comma-separated; a distribution list (required with --smtp-host)
+      --public-url URL    The dashboard's address, for links in emails (required with --smtp-host)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
       --wipe            uninstall also deletes the database volume
       --down            demo: remove the demo instead of starting it
+      --finish, --force rotate-device-token: end the rotation (--force: even with Devices left)
+      --only HOSTNAMES  publish-firmware: only these Devices, comma-separated
       --file FILE       Backup file for restore
       --keep-days N     backup and schedule-backup: delete this project's backups older than N days
       --at HH:MM        schedule-backup: the time of day (default 02:00)
@@ -141,12 +179,24 @@ parse_args() {
       --web-port) need_value "$@"; WEB_PORT_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --set) need_value "$@"; SETS+=("$2"); PASS_ARGS+=("$1" "$2"); shift ;;
       --reconfigure) RECONFIGURE=1; PASS_ARGS+=("$1") ;;
+      --smtp-host) need_value "$@"; SMTP_HOST_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --smtp-port) need_value "$@"; SMTP_PORT_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --smtp-secure) need_value "$@"; SMTP_SECURE_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --smtp-user) need_value "$@"; SMTP_USER_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --notify-from) need_value "$@"; NOTIFY_FROM_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --notify-to) need_value "$@"; NOTIFY_TO_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --public-url) need_value "$@"; PUBLIC_URL_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      # Every process on the host can read another's command line; the password comes on stdin instead.
+      --smtp-password|--smtp-password=*) die "the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin" ;;
       --pull) PULL=1; PASS_ARGS+=("$1") ;;
       --no-pull) PULL=0; PASS_ARGS+=("$1") ;;
       --reveal) REVEAL=1; PASS_ARGS+=("$1") ;;
       --confirm) need_value "$@"; CONFIRM=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --wipe) WIPE=1; PASS_ARGS+=("$1") ;;
       --down) DOWN=1; PASS_ARGS+=("$1") ;;
+      --finish) FINISH=1; PASS_ARGS+=("$1") ;;
+      --force) FORCE=1; PASS_ARGS+=("$1") ;;
+      --only) need_value "$@"; ONLY=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --file) need_value "$@"; FILE=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --follow|-f) FOLLOW=1; PASS_ARGS+=("$1") ;;
       --service) need_value "$@"; SERVICE=$2; PASS_ARGS+=("$1" "$2"); shift ;;
@@ -215,14 +265,18 @@ env_get() {
   line=$(grep -E "^$1=" "$file" | tail -n 1 | tr -d '\r')
   line=${line#*=}
   line=${line#\"}; line=${line%\"}
+  # A single-quoted value (the SMTP password) is literal to Compose: no $ interpolation, no # comment.
+  case "$line" in \'*\') line=${line#\'}; line=${line%\'} ;; esac
   printf '%s' "$line"
 }
 
 # env_set KEY VALUE: replace KEY= (or a commented "# KEY="), else append. Keeps the file's mode.
+# The value reaches awk through its environment: awk -v would turn a backslash in it into an escape.
 env_set() {
   local tmp
   tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/deploy-env.XXXXXX") || die "cannot create a temp file"
-  awk -v k="$1" -v v="$2" '
+  ENV_SET_VALUE=$2 awk -v k="$1" '
+    BEGIN { v = ENVIRON["ENV_SET_VALUE"] }
     { sub(/\r$/, "") }
     $0 ~ "^" k "=" { if (!done) { print k "=" v; done = 1 } ; next }
     $0 ~ "^#[ ]*" k "=" && !done { print k "=" v; done = 1; next }
@@ -248,16 +302,63 @@ lock_env() {
 }
 
 # TRUST_PROXY: empty, or IPs and CIDR ranges separated by commas, or `gateway` (the Docker host).
-# Never /0: trusting every address would let any client write its own X-Forwarded-For.
-# frontend/real-ip.sh checks the same at container start.
+# Never a prefix of 0, however spelled (/0, /00): trusting every address would let any client
+# write its own X-Forwarded-For. frontend/real-ip.sh checks the same, the same way, at container start.
+valid_ipv4() {
+  local octet octets
+  case "$1" in *[!0-9.]*|.*|*.|*..*) return 1 ;; esac
+  IFS=. read -r -a octets <<< "$1"
+  [ ${#octets[@]} -eq 4 ] || return 1
+  for octet in "${octets[@]}"; do
+    case "$octet" in ????*) return 1 ;; esac
+    [ "$((10#$octet))" -le 255 ] || return 1
+  done
+}
+
+# Groups of up to four hex digits, eight of them, or fewer around one `::`; the last two may be
+# a dotted IPv4 address. No zone (%eth0) and no brackets: nginx takes neither.
+valid_ipv6() {
+  local a=$1 compressed=0 groups=0 group parts
+  case "$a" in *:*) ;; *) return 1 ;; esac
+  case "$a" in *[!0-9A-Fa-f:.]*|*:::*|*::*::*) return 1 ;; esac
+  case "$a" in *.*) valid_ipv4 "${a##*:}" || return 1; a="${a%:*}:0:0" ;; esac
+  case "$a" in *.*) return 1 ;; esac
+  case "$a" in *::*) compressed=1 ;; esac
+  IFS=: read -r -a parts <<< "$a"
+  for group in "${parts[@]}"; do
+    if [ -z "$group" ]; then [ "$compressed" -eq 1 ] || return 1; continue; fi
+    case "$group" in ?????*) return 1 ;; esac
+    groups=$((groups + 1))
+  done
+  if [ "$compressed" -eq 1 ]; then [ "$groups" -le 7 ]; else [ "$groups" -eq 8 ]; fi
+}
+
+# An address, or ADDRESS/PREFIX with the prefix 1 to 32 (IPv4) or 1 to 128 (IPv6).
+valid_address() {
+  local addr prefix max
+  case "$1" in
+    */*/*) return 1 ;;
+    */*) addr=${1%/*}; prefix=${1#*/} ;;
+    *) addr=$1; prefix="" ;;
+  esac
+  if valid_ipv4 "$addr"; then max=32
+  elif valid_ipv6 "$addr"; then max=128
+  else return 1
+  fi
+  case "$1" in */*) ;; *) return 0 ;; esac
+  case "$prefix" in ''|*[!0-9]*|????*) return 1 ;; esac
+  [ "$((10#$prefix))" -ge 1 ] && [ "$((10#$prefix))" -le "$max" ]
+}
+
 valid_trust_proxy() {
   local entry
   [ -n "$1" ] || return 0
-  # Only address characters, so the unquoted split below cannot glob.
-  printf '%s' "$1" | grep -Eq '^[0-9A-Za-z.:/, ]*$' || return 1
+  # Only address characters, and one line, so the unquoted split below cannot glob and the value
+  # cannot carry a second line into .env.
+  case "$1" in *[!0-9A-Za-z.:/,\ ]*) return 1 ;; esac
   for entry in $(printf '%s' "$1" | tr ',' ' '); do
-    case "$entry" in */0) return 1 ;; gateway) continue ;; esac
-    printf '%s' "$entry" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:.]*(/[0-9]{1,3})?$' || return 1
+    [ "$entry" = gateway ] && continue
+    valid_address "$entry" || return 1
   done
 }
 
@@ -268,8 +369,190 @@ valid_tunable() {
     LEGACY_TIME_ZONE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[A-Za-z0-9_/+:-]+$' ;;
     # MySQL's size syntax: bytes, or a whole number of K, M, or G.
     DB_BUFFER_POOL_SIZE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[1-9][0-9]*[KMG]?$' ;;
+    NOTIFY_COALESCE_SECONDS) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
     *) printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
   esac
+}
+
+# The email settings, as backend/src/config.ts takes them, and nothing that .env or Compose would read
+# as syntax: no quotes, $, #, spaces, or second line. One line each, so `grep -x` holds them whole.
+EMAIL_RE='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z0-9-]+'
+valid_notify() {
+  [ "$(printf '%s' "$2" | wc -l)" -eq 0 ] || return 1
+  case "$1" in
+    SMTP_HOST) printf '%s' "$2" | grep -Eqx '[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?' ;;
+    SMTP_PORT) printf '%s' "$2" | grep -Eqx '[0-9]{1,5}' && [ "$((10#$2))" -ge 1 ] && [ "$((10#$2))" -le 65535 ] ;;
+    SMTP_SECURE) case "$2" in starttls|tls|none) return 0 ;; esac; return 1 ;;
+    # An account name, an address, or DOMAIN\account.
+    SMTP_USER) printf '%s' "$2" | grep -Eqx '[A-Za-z0-9._@+\\-]+' ;;
+    # Written single-quoted, which Compose takes literally; so anything but a quote and a line break.
+    SMTP_PASSWORD) [ -n "$2" ] && case "$2" in *\'*|*$'\r'*) return 1 ;; esac ;;
+    NOTIFY_FROM) printf '%s' "$2" | grep -Eqx "$EMAIL_RE" ;;
+    NOTIFY_TO) printf '%s' "$2" | grep -Eqx "$EMAIL_RE(,$EMAIL_RE)*" ;;
+    PUBLIC_URL) printf '%s' "$2" | grep -Eqx 'https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?' ;;
+    *) return 1 ;;
+  esac
+}
+
+notify_flags_given() {
+  [ -n "$SMTP_HOST_OPT$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT" ]
+}
+
+# The SMTP password into SMTP_PW, never from the command line: a hidden prompt at a terminal, else
+# the first line of stdin. Empty when none was given; the caller decides whether that keeps the old one.
+read_smtp_password() {
+  SMTP_PW=""
+  if interactive; then
+    read -r -s -p "  SMTP password for $1 (not shown${2:+; blank keeps the current one}): " SMTP_PW || true
+    printf '\n' >&2
+  elif [ -t 0 ]; then
+    die "--smtp-user with --yes reads the SMTP password from stdin, and stdin is this terminal. Pipe it in (read -rs PW; printf '%s\\n' \"\$PW\" | deploy/deploy.sh ...), or leave out --yes to type it at a hidden prompt"
+  else
+    IFS= read -r SMTP_PW || true
+  fi
+  # Windows PowerShell pipes lines with CRLF.
+  SMTP_PW=${SMTP_PW%$'\r'}
+}
+
+# Turns email notifications off: every setting of the group emptied, since one left set without
+# SMTP_HOST stops api from starting.
+clear_notify() {
+  local k
+  for k in $NOTIFY_KEYS; do [ -z "$(env_get "$k")" ] || env_set "$k" ""; done
+}
+
+# write_notify HOST PORT SECURE USER PASSWORD FROM TO URL: the whole group at once. An empty port or
+# security mode leaves the backend's default (587, starttls); an empty user drops the login.
+write_notify() {
+  env_set SMTP_HOST "$1"
+  if [ -n "$2" ] || [ -n "$(env_get SMTP_PORT)" ]; then env_set SMTP_PORT "$2"; fi
+  if [ -n "$3" ] || [ -n "$(env_get SMTP_SECURE)" ]; then env_set SMTP_SECURE "$3"; fi
+  if [ -n "$4" ]; then env_set SMTP_USER "$4"; env_set SMTP_PASSWORD "'$5'"
+  else env_set SMTP_USER ""; env_set SMTP_PASSWORD ""; fi
+  env_set NOTIFY_FROM "$6"
+  env_set NOTIFY_TO "$7"
+  env_set PUBLIC_URL "$8"
+}
+
+notify_summary() {
+  local host port secure
+  host=$(env_get SMTP_HOST)
+  if [ -z "$host" ]; then printf 'off (no SMTP_HOST)'; return; fi
+  secure=$(env_get SMTP_SECURE); secure=${secure:-starttls}
+  port=$(env_get SMTP_PORT)
+  [ -n "$port" ] || { [ "$secure" = tls ] && port=465 || port=587; }
+  printf '%s:%s (%s), from %s to %s' "$host" "$port" "$secure" "$(env_get NOTIFY_FROM)" "$(env_get NOTIFY_TO)"
+}
+
+# --smtp-host and friends into .env, each checked first and nothing written unless all pass. A flag
+# not given keeps what .env has, so one setting can change on its own.
+apply_notify_flags() {
+  local host port secure user from to url
+  notify_flags_given || return 0
+  if [ "$SMTP_HOST_OPT" = off ]; then
+    [ -z "$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT" ] \
+      || die "--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it"
+    clear_notify; ok "email notifications off"; return 0
+  fi
+  host=${SMTP_HOST_OPT:-$(env_get SMTP_HOST)}
+  [ -n "$host" ] || die "email notifications are off here; --smtp-host turns them on (with --notify-from, --notify-to, and --public-url)"
+  port=${SMTP_PORT_OPT:-$(env_get SMTP_PORT)}
+  secure=${SMTP_SECURE_OPT:-$(env_get SMTP_SECURE)}
+  user=${SMTP_USER_OPT:-$(env_get SMTP_USER)}
+  from=${NOTIFY_FROM_OPT:-$(env_get NOTIFY_FROM)}
+  to=$(printf '%s' "${NOTIFY_TO_OPT:-$(env_get NOTIFY_TO)}" | tr -d ' ')
+  url=${PUBLIC_URL_OPT:-$(env_get PUBLIC_URL)}
+  url=${url%/}
+  valid_notify SMTP_HOST "$host" || die "--smtp-host: '$host' is not a host name or IPv4 address"
+  [ -z "$port" ] || valid_notify SMTP_PORT "$port" || die "--smtp-port: '$port' is not a port number"
+  [ -z "$secure" ] || valid_notify SMTP_SECURE "$secure" || die "--smtp-secure: '$secure' is not starttls, tls, or none"
+  [ -z "$user" ] || valid_notify SMTP_USER "$user" || die "--smtp-user: '$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\\name)"
+  [ -n "$from" ] || die "--notify-from is required with --smtp-host: the sender address the relay allows"
+  valid_notify NOTIFY_FROM "$from" || die "--notify-from: '$from' is not a bare address like alarms@example.org"
+  [ -n "$to" ] || die "--notify-to is required with --smtp-host: at least one recipient, comma-separated"
+  valid_notify NOTIFY_TO "$to" || die "--notify-to: '$to' is not a comma-separated list of bare addresses"
+  [ -n "$url" ] || die "--public-url is required with --smtp-host: the address technicians open the dashboard at, for links in emails (https://YOUR_DOMAIN)"
+  valid_notify PUBLIC_URL "$url" || die "--public-url: '$url' is not an http:// or https:// address"
+  SMTP_PW=""
+  if [ -n "$SMTP_USER_OPT" ]; then
+    read_smtp_password "$user" "$(env_get SMTP_PASSWORD)"
+  fi
+  if [ -z "$SMTP_PW" ] && [ -n "$user" ]; then
+    SMTP_PW=$(env_get SMTP_PASSWORD)
+    [ -n "$SMTP_PW" ] || die "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin"
+  fi
+  [ -z "$user" ] || valid_notify SMTP_PASSWORD "$SMTP_PW" || die "the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads \$ and # literally)"
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url"
+  SMTP_PW=""
+  ok "email notifications: $(notify_summary)${user:+, login $user}"
+}
+
+# The same, asked at the keyboard, each answer checked as it is typed. Blank turns them off.
+prompt_notifications() {
+  local current value host port secure user from to url login=n
+  interactive || return 0
+  current=$(env_get SMTP_HOST)
+  say "  Incident emails go out through the district's SMTP relay (DEPLOYMENT.md, Email notifications)."
+  while :; do
+    value=$(ask "SMTP relay host for Incident emails (blank: no emails${current:+; off: turn them off})" "$current")
+    if [ -z "$value" ] || [ "$value" = off ] || valid_notify SMTP_HOST "$value"; then break; fi
+    warn "'$value' is not a host name or IPv4 address"
+  done
+  if [ -z "$value" ] || [ "$value" = off ]; then
+    clear_notify; return 0
+  fi
+  host=$value
+  while :; do
+    secure=$(ask "Connection security: starttls, tls (from the first byte), or none" "$(v=$(env_get SMTP_SECURE); printf '%s' "${v:-starttls}")")
+    valid_notify SMTP_SECURE "$secure" && break
+    warn "'$secure' is not starttls, tls, or none"
+  done
+  current=$(env_get SMTP_PORT)
+  [ -n "$current" ] || { [ "$secure" = tls ] && current=465 || current=587; }
+  while :; do
+    port=$(ask "SMTP port (587 for starttls, 465 for tls, 25 for a plain relay)" "$current")
+    valid_notify SMTP_PORT "$port" && break
+    warn "'$port' is not a port number"
+  done
+  user=$(env_get SMTP_USER)
+  [ -n "$user" ] && login=y
+  SMTP_PW=""
+  if confirm "Does the relay need a login (a service account)? Ask the district's mail admin" "$login"; then
+    while :; do
+      user=$(ask "SMTP user" "$user")
+      [ -n "$user" ] && valid_notify SMTP_USER "$user" && break
+      warn "'$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\\name)"
+    done
+    while :; do
+      read_smtp_password "$user" "$(env_get SMTP_PASSWORD)"
+      [ -n "$SMTP_PW" ] || SMTP_PW=$(env_get SMTP_PASSWORD)
+      valid_notify SMTP_PASSWORD "$SMTP_PW" && break
+      warn "a password is needed, without a single quote"
+    done
+  else
+    user=""
+  fi
+  while :; do
+    from=$(ask "Sender address the relay allows" "$(env_get NOTIFY_FROM)")
+    valid_notify NOTIFY_FROM "$from" && break
+    warn "'$from' is not a bare address like alarms@example.org"
+  done
+  while :; do
+    to=$(ask "Recipients, comma-separated (a distribution list is best)" "$(env_get NOTIFY_TO)" | tr -d ' ')
+    valid_notify NOTIFY_TO "$to" && break
+    warn "'$to' is not a comma-separated list of bare addresses"
+  done
+  current=$(env_get PUBLIC_URL)
+  [ -n "$current" ] || current=$(site_url)
+  while :; do
+    url=$(ask "Dashboard address for links in emails (https://YOUR_DOMAIN behind TLS)" "${current%/}")
+    url=${url%/}
+    valid_notify PUBLIC_URL "$url" && break
+    warn "'$url' is not an http:// or https:// address"
+  done
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url"
+  SMTP_PW=""
+  say "  Settings, Notifications, has a \"Send test email\" button once deployed."
 }
 
 known_key() {
@@ -290,6 +573,7 @@ apply_flags_to_env() {
     valid_tunable "$key" "$value" || die "--set: '$value' is not valid for $key"
     env_set "$key" "$value"; ok "$key=$value"
   done
+  apply_notify_flags
 }
 
 prompt_tunables() {
@@ -315,6 +599,7 @@ prompt_tunables() {
   elif [ -n "$current" ]; then
     env_set TRUST_PROXY ""
   fi
+  prompt_notifications
   if confirm "Change the alarm thresholds and retention from their defaults?" n; then
     for k in $TUNABLES; do
       current=$(env_get "$k")
@@ -323,7 +608,7 @@ prompt_tunables() {
         valid_tunable "$k" "$value" && break
         warn "'$value' is not valid for $k"
       done
-      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ]; } && [ -z "$value" ]; then continue; fi
+      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ] || [ "$k" = NOTIFY_COALESCE_SECONDS ]; } && [ -z "$value" ]; then continue; fi
       env_set "$k" "$value"
     done
   fi
@@ -332,6 +617,8 @@ prompt_tunables() {
 fill_missing_secrets() {
   local k filled=""
   for k in $SECRETS; do
+    # An older install's root already has a password, DB_PASSWORD; deploy moves it over (migrate_root_password).
+    if [ "$k" = DB_ROOT_PASSWORD ] && [ "$LEGACY_ROOT" -eq 1 ]; then continue; fi
     if [ -z "$(env_get "$k")" ]; then
       env_set "$k" "$(gen_secret)"; filled="$filled $k"
     fi
@@ -370,6 +657,16 @@ web_host() {
 }
 web_port_num() { local wp; wp=$(web_port_setting); printf '%s' "${wp##*:}"; }
 
+# TRUST_PROXY=gateway believes X-Forwarded-For from the Docker network's gateway. A proxy on this
+# host arrives from there, but so does whatever Docker's userland proxy forwards: every IPv6 client
+# (web listens on IPv4 only), and on hosts without iptables NAT every client. With web published on
+# every address, any of them could claim to be anyone. True when that is the setup.
+gateway_exposed() {
+  case ",$(env_get TRUST_PROXY | tr -d ' ')," in *,gateway,*) ;; *) return 1 ;; esac
+  case "$(web_port_setting)" in 127.*:*|'[::1]:'*|localhost:*) return 1 ;; esac
+  return 0
+}
+
 dc() { docker compose ${DC_ARGS[@]+"${DC_ARGS[@]}"} "$@"; }
 
 running() { [ -n "$(dc ps --status running -q "$1" 2>/dev/null)" ]; }
@@ -401,6 +698,11 @@ do_preflight() {
   if [ -f compose.yaml ] && [ -f .env.example ]; then ok "compose.yaml and .env.example in $REPO_DIR"
   else bad "compose.yaml or .env.example missing in $REPO_DIR"; failed=1; fi
 
+  if gateway_exposed; then
+    bad "TRUST_PROXY=gateway with WEB_PORT=$(web_port_setting): any client reaching the port could claim any address. Keep it on the loopback: --set WEB_PORT=127.0.0.1:$(web_port_num) --reconfigure"
+    failed=1
+  fi
+
   port=$(web_port_num); host=$(web_host)
   if (exec 3<>"/dev/tcp/$host/$port") 2>/dev/null; then
     if running web && docker port "$(dc ps -q web)" 2>/dev/null | grep -q ":$port\$"; then
@@ -429,13 +731,13 @@ do_install() {
   if [ -f "$ENV_FILE" ]; then
     ok ".env exists; keeping it"
     fill_missing_secrets
-    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ]; then
+    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ] || notify_flags_given; then
       if [ "$RECONFIGURE" -eq 1 ] || { interactive && confirm "Write the given settings into the existing .env? Secrets are kept." n; }; then
         apply_flags_to_env
       else
         warn "settings given but .env left unchanged; add --reconfigure to apply them"
       fi
-    elif [ "$RECONFIGURE" -eq 1 ] || { interactive && confirm "Change the port and tunables in the existing .env? Secrets are kept." n; }; then
+    elif [ "$RECONFIGURE" -eq 1 ] || { interactive && confirm "Change the port, email notifications, and tunables in the existing .env? Secrets are kept." n; }; then
       prompt_tunables
     fi
   else
@@ -448,7 +750,7 @@ do_install() {
     name=${PROJECT:-$(project_name)}
     env_set COMPOSE_PROJECT_NAME "$name"
     ok "COMPOSE_PROJECT_NAME=$name (names the database volume, ${name}_db-data)"
-    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ] || ! interactive; then
+    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ] || notify_flags_given || ! interactive; then
       apply_flags_to_env
     else
       prompt_tunables
@@ -456,6 +758,7 @@ do_install() {
   fi
   lock_env
   ok "web port $(web_port_setting), project $(project_name)"
+  notify_flags_given || ok "email notifications: $(notify_summary)"
 }
 
 maybe_pull() {
@@ -480,9 +783,71 @@ maybe_pull() {
   ok "code already up to date"
 }
 
+# The project's database volume, if Compose has made one.
+db_volume_exists() {
+  [ -n "$(docker volume ls -q --filter "label=com.docker.compose.project=$(project_name)" --filter "label=com.docker.compose.volume=db-data" 2>/dev/null)" ]
+}
+
+# An install from before DB_ROOT_PASSWORD keeps root's password, DB_PASSWORD, in its volume: MySQL
+# takes MYSQL_ROOT_PASSWORD only when the volume is first created. Until deploy moves root over, every
+# action runs Compose with DB_ROOT_PASSWORD set to that, from this process's environment, so backups
+# keep working; compose.yaml refuses to start without it otherwise.
+legacy_root_env() {
+  # Called again for the demo's own .env.demo: the real install's value must not carry over.
+  [ "$LEGACY_ROOT" -eq 1 ] && unset DB_ROOT_PASSWORD
+  LEGACY_ROOT=0
+  [ -f "$ENV_FILE" ] || return 0
+  [ -z "$(env_get DB_ROOT_PASSWORD)" ] && [ -n "$(env_get DB_PASSWORD)" ] || return 0
+  DB_ROOT_PASSWORD=$(env_get DB_PASSWORD); export DB_ROOT_PASSWORD
+  if db_volume_exists; then
+    LEGACY_ROOT=1
+    case "$ACTION" in deploy|upgrade|install) ;; *) warn "MySQL root still shares DB_PASSWORD (an install from before DB_ROOT_PASSWORD); deploy.sh deploy gives it its own" ;; esac
+  else
+    unset DB_ROOT_PASSWORD
+  fi
+}
+
+# One time, on an install from before DB_ROOT_PASSWORD: drop root's network login, if the volume
+# predates MYSQL_ROOT_HOST, and give root a password of its own, which api never holds.
+migrate_root_password() {
+  [ "$LEGACY_ROOT" -eq 1 ] || return 0
+  step "Give MySQL root its own password (DB_ROOT_PASSWORD)"
+  say "  This install's database was created when MySQL root shared DB_PASSWORD with api, and older"
+  say "  volumes also let root log in over the network. Once, this:"
+  say "    1. starts db and backs up the database"
+  say "    2. runs, as root inside db:  DROP USER IF EXISTS 'root'@'%';"
+  say "                                 ALTER USER 'root'@'localhost' IDENTIFIED BY '<new password>';"
+  say "    3. writes the new password to .env as DB_ROOT_PASSWORD; api never sees it"
+  say "  To do it by hand instead, see DEPLOYMENT.md, \"Separate MySQL root password\"."
+  typed_confirm "This changes MySQL root's password on the $(project_name) database."
+  dc up -d --wait --wait-timeout 600 db || die "db did not start; nothing was changed"
+  do_backup
+  local new
+  new=$(gen_secret)
+  # .env first, so the new password is never only inside MySQL; put back if MySQL refuses it.
+  env_set DB_ROOT_PASSWORD "$new"
+  # On stdin, so the password is on no command line. DROP first: a failure stops before the ALTER,
+  # leaving root as it was. The password is hex, so needs no quoting in SQL.
+  # shellcheck disable=SC2016 # $MYSQL_ROOT_PASSWORD expands inside the db container
+  printf "DROP USER IF EXISTS 'root'@'%%';\nALTER USER 'root'@'localhost' IDENTIFIED BY '%s';\n" "$new" \
+    | dc exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot'
+  # Whatever mysql said, believe only a login with the new password.
+  # shellcheck disable=SC2016 # $p is read inside the db container
+  if ! printf '%s\n' "$new" | dc exec -T db sh -c 'read -r p; MYSQL_PWD="$p" exec mysql -uroot -e "SELECT 1"' >/dev/null; then
+    env_set DB_ROOT_PASSWORD ""
+    die "MySQL refused the new root password; root is unchanged and .env is as it was. The backup is $LAST_BACKUP"
+  fi
+  unset DB_ROOT_PASSWORD
+  LEGACY_ROOT=0
+  ok "root has its own password (DB_ROOT_PASSWORD in .env) and logs in only inside db"
+}
+
 check_secrets() {
   local k
-  for k in $SECRETS; do [ -n "$(env_get "$k")" ] || die "$k is empty in .env; run: deploy.sh install"; done
+  for k in $SECRETS; do
+    [ "$k" = DB_ROOT_PASSWORD ] && [ "$LEGACY_ROOT" -eq 1 ] && continue
+    [ -n "$(env_get "$k")" ] || die "$k is empty in .env; run: deploy.sh install"
+  done
 }
 
 health() {
@@ -514,6 +879,8 @@ site_url() {
 
 do_deploy() {
   [ -f "$ENV_FILE" ] || do_install
+  migrate_root_password
+  fill_missing_secrets
   check_secrets
   maybe_pull
   do_preflight || die "preflight failed; fix the [FAIL] lines above"
@@ -647,7 +1014,15 @@ do_info() {
   say "  Dashboard     $url"
   say "  Admin token   $(mask "$(env_get ADMIN_TOKEN)")   (Settings page)"
   say "  Device token  $(mask "$(env_get DEVICE_TOKEN)")"
+  [ -n "$(env_get DEVICE_TOKEN_PREVIOUS)" ] && say "  Previous      $(mask "$(env_get DEVICE_TOKEN_PREVIOUS)")   (still accepted: rotate-device-token --finish ends that)"
   say "  DB password   $(mask "$(env_get DB_PASSWORD)")"
+  say "  DB root       $(mask "$(env_get DB_ROOT_PASSWORD)")"
+  say "  Email         $(notify_summary)"
+  # Masked whole: unlike the 64-hex secrets, a chosen password would give away its first and last four.
+  if [ -n "$(env_get SMTP_USER)" ]; then
+    if [ "$REVEAL" -eq 1 ]; then say "  SMTP login    $(env_get SMTP_USER) / $(env_get SMTP_PASSWORD)"
+    else say "  SMTP login    $(env_get SMTP_USER) / ********"; fi
+  fi
   say ""
   say "  For arduino/TemperatureAlarms/config.h:"
   say "    #define SERVER_URL \"$server\""
@@ -655,6 +1030,112 @@ do_info() {
   [ -n "$interval" ] && [ "$interval" != 30 ] && say "    #define REPORT_INTERVAL_SECONDS $interval"
   [ "$REVEAL" -eq 0 ] && say "  ${C_DIM}Masked. Add --reveal to print them in full.${C_OFF}"
   return 0
+}
+
+# --- Device token rotation (docs/adr/0003) ---------------------------------------------
+# Asks api, inside its own container, which Devices still report with the previous token: the
+# Admin token comes from api's environment, so it is on no command line. Prints one line per
+# Device ("previous HOSTNAME" or "unheard HOSTNAME") and exits 0 when there are none, 3 otherwise.
+# Template literals only: no quote characters, which Windows PowerShell 5.1 would mangle on the way.
+# shellcheck disable=SC2016 # JavaScript, run by node inside api
+ROTATION_JS='fetch(`http://127.0.0.1:3001/api/devices/rotation`,{headers:{authorization:`Bearer ${process.env.ADMIN_TOKEN}`}}).then(async(r)=>{if(!r.ok)throw new Error(`GET /api/devices/rotation answered ${r.status}`);const b=await r.json();for(const d of b.previous)console.log(`previous ${d.hostname}`);for(const d of b.unheard)console.log(`unheard ${d.hostname}`);process.exit(b.previous.length+b.unheard.length===0?0:3)}).catch((e)=>{console.error(e.message);process.exit(1)})'
+
+# Recreates whatever the changed .env touches (api for the tokens) and waits for health.
+apply_env() {
+  step "Apply .env (docker compose up -d --wait)"
+  dc up -d --remove-orphans --wait --wait-timeout 600 && health 30
+}
+
+do_rotate_device_token() {
+  [ -f "$ENV_FILE" ] || die "not installed here yet (no .env); run: deploy.sh deploy"
+  check_secrets
+  if [ "$FINISH" -eq 1 ]; then finish_rotation; return; fi
+  step "Rotate the Device token"
+  if [ -n "$(env_get DEVICE_TOKEN_PREVIOUS)" ]; then
+    die "a rotation is already under way; finish it first (deploy.sh rotate-device-token --finish), or the boards still on its previous token would stop reporting"
+  fi
+  running api || die "api is not running; start the stack first (deploy.sh deploy)"
+  confirm "Generate a new Device token? Boards keep reporting with the current one until --finish." y || die "not rotated; nothing was changed"
+  local old
+  old=$(env_get DEVICE_TOKEN)
+  env_set DEVICE_TOKEN_PREVIOUS "$old"
+  env_set DEVICE_TOKEN "$(gen_secret)"
+  ok "DEVICE_TOKEN is new; the old one is DEVICE_TOKEN_PREVIOUS, accepted until --finish"
+  if ! apply_env; then
+    env_set DEVICE_TOKEN "$old"
+    env_set DEVICE_TOKEN_PREVIOUS ""
+    apply_env
+    die "api did not come back with both tokens; .env is back to the old token alone"
+  fi
+  say ""
+  say "  For arduino/TemperatureAlarms/config.h, from now on:"
+  say "    #define DEVICE_TOKEN \"$(mask "$(env_get DEVICE_TOKEN)")\""
+  [ "$REVEAL" -eq 0 ] && say "  ${C_DIM}Masked. deploy.sh info --reveal prints it in full.${C_OFF}"
+  say ""
+  say "  Next:"
+  say "    1. Put the new token in config.h, export a binary, and reflash every board (README,"
+  say "       \"Flashing a batch\"). Until step 3, boards on either token keep reporting."
+  say "    2. Watch Settings: its rotation line lists every Device still on the previous token,"
+  say "       and any not heard since api restarted. Reflash those."
+  say "    3. When that list is empty: deploy.sh rotate-device-token --finish"
+}
+
+finish_rotation() {
+  step "Finish the Device token rotation"
+  if [ -z "$(env_get DEVICE_TOKEN_PREVIOUS)" ]; then
+    ok "no rotation is under way (DEVICE_TOKEN_PREVIOUS is empty)"; return 0
+  fi
+  running api || die "api is not running; start the stack first (deploy.sh deploy)"
+  local out rc=0
+  out=$(dc exec -T api node -e "$ROTATION_JS" 2>&1) || rc=$?
+  case "$rc" in
+    0) ok "every Device has reported with the new token since api started" ;;
+    3)
+      printf '%s\n' "$out" | sed -n 's/^previous /  still on the previous token: /p; s/^unheard /  not heard since api started: /p'
+      if [ "$FORCE" -eq 0 ]; then
+        die "$(printf '%s\n' "$out" | grep -cE '^(previous|unheard) ') Devices may still hold the previous token. Reflash them (or delete in Settings a Device that is gone), wait a Report interval, and run --finish again; --force finishes anyway"
+      fi
+      typed_confirm "The Devices above stop reporting until they are reflashed with the new token."
+      ;;
+    *) die "could not read the rotation list from api: $out" ;;
+  esac
+  env_set DEVICE_TOKEN_PREVIOUS ""
+  apply_env || die "api did not come back healthy; see: deploy.sh logs --service api"
+  ok "the previous Device token is no longer accepted"
+}
+
+# --- Over-the-air firmware (docs/adr/0007) ----------------------------------------------
+# The image goes into api as base64 on stdin and is stored in the database; boards fetch it with the
+# Device token. backend/src/firmwareCli.ts checks it is a signed build with a higher version.
+firmware_cli() {
+  running api || die "api is not running; start the stack first (deploy.sh deploy)"
+  dc exec -T api node dist/firmwareCli.js "$@"
+}
+
+do_publish_firmware() {
+  step "Publish firmware"
+  [ -n "$FILE" ] || die "publish-firmware needs --file PATH: the TemperatureAlarms.ino.bin.signed the build writes"
+  [ -f "$FILE" ] || die "$FILE does not exist"
+  local args=(publish)
+  if [ -n "$ONLY" ]; then
+    case "$ONLY" in *[!A-Za-z0-9_,-]*) die "--only takes Device hostnames, comma-separated (ESP_A1B2C3,ESP_D4E5F6)" ;; esac
+    args+=(--only "$ONLY")
+  fi
+  base64 < "$FILE" | firmware_cli "${args[@]}" || die "not published; see the line above"
+  if [ -n "$ONLY" ]; then
+    say "  Next: watch those Devices (deploy.sh firmware-status, or Settings) for an hour; then publish the"
+    say "  same file again without --only to offer it to every Device."
+  fi
+}
+
+do_firmware_status() {
+  step "Firmware"
+  firmware_cli status
+}
+
+do_withdraw_firmware() {
+  step "Withdraw firmware"
+  firmware_cli withdraw
 }
 
 do_stop() {
@@ -686,6 +1167,8 @@ do_uninstall() {
 use_demo() {
   ENV_FILE=$DEMO_ENV
   DC_ARGS=(-p "$DEMO_PROJECT" --env-file "$DEMO_ENV" -f compose.yaml -f compose.demo.yaml)
+  # A demo from before DB_ROOT_PASSWORD keeps root on DB_PASSWORD; it is throwaway, so it stays so.
+  legacy_root_env
 }
 
 write_demo_env() {
@@ -971,6 +1454,10 @@ run_action() {
     restore) do_restore ;;
     migrate-legacy) do_migrate_legacy ;;
     info) do_info ;;
+    rotate-device-token) do_rotate_device_token ;;
+    publish-firmware) do_publish_firmware ;;
+    firmware-status) do_firmware_status ;;
+    withdraw-firmware) do_withdraw_firmware ;;
     stop) do_stop ;;
     uninstall) do_uninstall ;;
     demo) do_demo ;;
@@ -989,19 +1476,23 @@ menu() {
     say "   5) Logs                     12) Bootstrap this server (Docker, git, cron)"
     say "   6) Back up the database     13) Schedule a nightly backup"
     say "   7) Restore the database     14) Unschedule the nightly backup"
-    say "  15) Demo, no hardware needed  q) Quit"
+    say "  15) Demo, no hardware needed 16) Rotate the Device token"
+    say "  17) Finish the Device token rotation    18) Firmware status"
+    say "  19) Publish firmware (asks for the file)  q) Quit"
     read -r -p "  Choose: " choice || exit 0
     case "$choice" in
       1) action=preflight ;; 2) action=install ;; 3) action=deploy ;; 4) action=status ;;
       5) action=logs ;; 6) action=backup ;; 7) action=restore ;; 8) action=migrate-legacy ;;
       9) action=info ;; 10) action=stop ;; 11) action=uninstall ;; 12) action=bootstrap ;;
       13) action=schedule-backup ;; 14) action=unschedule-backup ;; 15) action=demo ;;
+      16) action=rotate-device-token ;; 17) action=rotate-device-token; FINISH=1 ;;
+      18) action=firmware-status ;; 19) action=publish-firmware; FILE=$(ask "The .bin.signed to publish" "") ;;
       q|Q|quit|exit) exit 0 ;;
       *) warn "no such choice"; continue ;;
     esac
     # A subshell, so a failed action returns to the menu instead of exiting it.
-    ( run_action "$action" ) || warn "$action did not finish"
-    FILE=""; REVEAL=0; WIPE=0
+    ( legacy_root_env; run_action "$action" ) || warn "$action did not finish"
+    FILE=""; REVEAL=0; WIPE=0; FINISH=0
   done
 }
 
@@ -1027,6 +1518,12 @@ if [ ! -d \"\$dir/.git\" ]; then
 fi
 cd \"\$dir\"
 exec $cmd"
+  if [ -n "$SMTP_USER_OPT" ]; then
+    # The SMTP password goes to deploy.sh there as the first line of its stdin, never in the command.
+    # shellcheck disable=SC2086,SC2029 # SSH_OPTS is a list of options; the command is quoted for the server
+    printf '%s\n' "$SMTP_PW" | ssh $SSH_OPTS "$host" "bash -c $(squote "$script")"
+    return
+  fi
   if [ -t 0 ] && [ -t 1 ] && [ "$YES" -eq 0 ]; then tty=(-t); fi
   # shellcheck disable=SC2086,SC2029 # SSH_OPTS is a list of options; the command is quoted for the server
   ssh ${tty[@]+"${tty[@]}"} $SSH_OPTS "$host" "bash -c $(squote "$script")"
@@ -1048,6 +1545,12 @@ remote_bootstrap() {
   ssh ${tty[@]+"${tty[@]}"} $SSH_OPTS "$host" "$cmd"
 }
 
+# USER@SERVER, SERVER, or an ssh config alias. Never starting with `-`, which ssh would take as an
+# option (-oProxyCommand=... runs a command here), and nothing a shell or ssh would read as syntax.
+valid_host() {
+  case "$1" in ''|-*|*[!A-Za-z0-9_.@:%+-]*) return 1 ;; esac
+}
+
 remote_main() {
   local host line results=() failed=0
   if [ -n "$SERVERS_FILE" ]; then
@@ -1058,9 +1561,17 @@ remote_main() {
     done < "$SERVERS_FILE"
   fi
   [ ${#HOSTS[@]} -gt 0 ] || die "no hosts in $SERVERS_FILE"
+  for host in "${HOSTS[@]}"; do
+    valid_host "$host" || die "'$host' is not a host: give USER@SERVER (ssh options go in --ssh-opts)"
+  done
   [ -n "$ACTION" ] || [ ${#HOSTS[@]} -eq 1 ] || die "give an action for more than one host"
   [ -n "$ACTION" ] || interactive || die "give an action, or run interactively for the menu"
   command -v ssh >/dev/null 2>&1 || die "ssh is not installed here"
+  if [ -n "$SMTP_USER_OPT" ]; then
+    # Read once here and handed to each server on stdin (remote_one).
+    read_smtp_password "$SMTP_USER_OPT"
+    [ -n "$SMTP_PW" ] || die "--smtp-user needs the SMTP password: type it at the prompt, or with --yes send it as the first line of stdin"
+  fi
   [ -n "$REPO_URL" ] || REPO_URL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)
   if [ "$BOOTSTRAP" -eq 1 ]; then
     case "$ACTION" in deploy|upgrade) ;; *) die "--bootstrap goes with deploy" ;; esac
@@ -1096,6 +1607,7 @@ main() {
     interactive || { usage; exit 1; }
     menu
   fi
+  legacy_root_env
   run_action "$ACTION"
 }
 

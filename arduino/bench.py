@@ -246,7 +246,7 @@ REPORT_CREATED = "report: 201 created"
 
 STOP_BINARY = "the Device token in the binary is not the server's DEVICE_TOKEN: fix config.h and export the binary again"
 STOP_WIFI = "the first board never joined WiFi: fix the SSID or password in config.h and export the binary again (or start with another board, if this one is suspect)"
-STOP_SERVER = "the server is unreachable from the bench WiFi: fix the server (or SERVER_URL in the binary)"
+STOP_SERVER = "the server is unreachable from the bench WiFi: fix the server (or SERVER_URL in the binary; over https, a certificate that does not chain to a Let's Encrypt root or name SERVER_URL's host, or no time from the server yet, fails the same way)"
 # A report status that stops the batch, and what it says to fix. Neither is the board's fault.
 BATCH_STOP_STATUSES = {"401": STOP_BINARY, "failed": STOP_SERVER}
 
@@ -302,8 +302,18 @@ HTTP_TIMEOUT_SECONDS = 10
 Transport = Callable[[str, str, Optional[dict], str], Tuple[int, Any]]
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: urllib would resend the Admin token to wherever `Location` points, and turn a POST into a GET."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        return None  # the 3xx then surfaces as an HTTPError
+
+
+_opener = urllib.request.build_opener(_RefuseRedirects)
+
+
 def http_transport(method: str, url: str, body: dict | None, token: str) -> tuple[int, Any]:
-    """One request with the standard library; the status and the decoded JSON body (or None)."""
+    """One request with the standard library; the status and the decoded JSON body (or None). A redirect is a BenchError."""
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(url, data=data, method=method)
     if data is not None:
@@ -311,9 +321,12 @@ def http_transport(method: str, url: str, body: dict | None, token: str) -> tupl
     if token:
         request.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+        with _opener.open(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
             return response.status, _decode(response.read())
     except urllib.error.HTTPError as error:
+        if 300 <= error.code < 400:
+            where = error.headers.get("Location", "nowhere")
+            raise BenchError(f"{method} {url} answered {error.code}, a redirect to {where}: give --server the URL it redirects to (https:// behind a TLS proxy)") from error
         return error.code, _decode(error.read())
     except (urllib.error.URLError, OSError) as error:
         raise BenchError(f"{method} {url} failed: {error.reason if hasattr(error, 'reason') else error}") from error

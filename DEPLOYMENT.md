@@ -36,14 +36,16 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 | --- | --- |
 | `bootstrap` | Linux only. Installs Docker Engine, the Compose and buildx plugins, and containerd from Docker's own apt or dnf repository, the way [Docker's install guide](https://docs.docker.com/engine/install/) does it (signed by Docker's GPG key; not the `get.docker.com` script), plus git, curl, and cron (`cronie` on RHEL-family servers, whose minimal images have no cron). Enables and starts `docker` and cron, and adds you (the `sudo` caller) to the `docker` group. Uses `sudo` when not run as root. What is already installed is skipped, so it is safe to repeat. A server with a distribution `docker` but no Compose v2 is refused with the uninstall link rather than replaced |
 | `preflight` | Checks Docker, Compose v2, that the daemon is up and runs Linux containers, that the web port is free (or already this stack's), and disk space |
-| `install` | Creates `.env` from `.env.example` with `ADMIN_TOKEN`, `DEVICE_TOKEN`, and `DB_PASSWORD` from a cryptographic random source, asks for the port and, if you want, the thresholds and retention (`--web-port`, `--set KEY=VALUE` without asking), and limits `.env` to its owner. An existing `.env` is kept: only empty secrets are filled, and nothing else changes without a yes (or `--reconfigure`) |
-| `deploy` | Runs `install` if there is no `.env`, offers `git pull --ff-only` on a clean checkout (`--pull` to do it unasked, `--no-pull` to skip), runs preflight, `docker compose up -d --build --wait`, then checks `/api/health` through `web`. This is also the upgrade |
+| `install` | Creates `.env` from `.env.example` with `ADMIN_TOKEN`, `DEVICE_TOKEN`, `DB_PASSWORD`, and `DB_ROOT_PASSWORD` from a cryptographic random source, 64 hex characters each, asks for the port, the SMTP relay for [email notifications](#email-notifications) (blank for none), and, if you want, the thresholds and retention (`--web-port`, `--smtp-host` and the rest, `--set KEY=VALUE` without asking), and limits `.env` to its owner. An existing `.env` is kept: only empty secrets are filled, and nothing else changes without a yes (or `--reconfigure`) |
+| `deploy` | Runs `install` if there is no `.env`, offers `git pull --ff-only` on a clean checkout (`--pull` to do it unasked, `--no-pull` to skip), runs preflight, `docker compose up -d --build --wait`, then checks `/api/health` through `web`. This is also the upgrade. On an install from before `DB_ROOT_PASSWORD`, it first gives MySQL root a password of its own, once, behind the typed project name ([Separate MySQL root password](#separate-mysql-root-password)) |
 | `status`, `logs` | `docker compose ps` and the health check; recent logs (`--service api`, `--tail 500`, `--follow`) |
 | `backup` | `mysqldump` through the `db` container to `backups/<project>_<date>-<time>.sql.gz`, checked for completeness. `--keep-days N` then deletes this project's backups older than N days |
 | `schedule-backup`, `unschedule-backup` | Adds a line to your crontab that runs `backup --keep-days 7` every night at 02:00 (`--at HH:MM`, `--keep-days N`), logging to `backups/backup.log`; or removes it. Repeating `schedule-backup` replaces its own line, found by a `# temperature-alarms backup: <checkout>` comment, and other crontab lines are never touched. Linux and macOS; in Git Bash or `deploy.ps1` on Windows it prints the `schtasks` command for Task Scheduler instead |
 | `restore` | Replaces the whole database with a backup (`--file`, or pick from a list): it empties the database first, so a table the backup lacks does not survive it, and the api's migrations recreate any newer table, empty. Asks you to type the project name, and backs up the current database first |
 | `migrate-legacy` | Backs up, then runs `npm run migrate:legacy` in `api` (see [Migrating an old database in](#migrating-an-old-database-in)) |
-| `info` | The dashboard URL, the three secrets masked (`--reveal` to print them), and the two `config.h` lines for the firmware |
+| `info` | The dashboard URL, the four secrets (and `DEVICE_TOKEN_PREVIOUS` during a rotation) masked (`--reveal` to print them), the email relay and recipients (or `off`) with the SMTP login, its password masked whole, and the two `config.h` lines for the firmware |
+| `rotate-device-token` | Starts a Device token rotation: the current token becomes `DEVICE_TOKEN_PREVIOUS`, still accepted, a new `DEVICE_TOKEN` is generated, `api` restarts with both, and the new `config.h` line is printed (masked unless `--reveal`). `--finish` ends it once Settings lists no Device on the previous token, and refuses otherwise; `--finish --force` ends it anyway, behind the typed project name ([Rotating the Device token](#rotating-the-device-token)) |
+| `publish-firmware`, `firmware-status`, `withdraw-firmware` | Over-the-air firmware (ADR 0007; README, "Updating boards over the air"). `publish-firmware --file TemperatureAlarms.ino.bin.signed` offers a signed build to every Device, or with `--only ESP_A,ESP_B` to those first; the image goes into `api` on stdin and is checked there (signed, with a version above the published one). `firmware-status` shows the build on offer and the version each Device runs; `withdraw-firmware` stops offering it. The Settings page's Firmware tab does the same from a browser |
 | `stop`, `uninstall` | `docker compose stop`; `docker compose down` and the built images, and the `schedule-backup` crontab line if there is one. `--wipe` also deletes the database volume, behind the typed project name. `.env` and `backups/` stay |
 
 Running `deploy` twice is safe: an unchanged checkout leaves the containers running, and a changed one rebuilds and recreates only what changed. The destructive actions take `--confirm <project>` in place of typing the name, so they can be scripted too. The database volume is named after the Compose project, `<project>_db-data`, and the project is Compose's own default, the checkout's folder name. On first install the script writes that name into `.env` as `COMPOSE_PROJECT_NAME`, so renaming or moving the folder later still finds the same volume; it never rewrites the line. Pass `-p` only for a second stack on the same machine, and never to an existing install. An install made by hand before the script has no such line and keeps using the folder name; see [Docker Compose by hand](#docker-compose-by-hand) to pin it.
@@ -142,15 +144,16 @@ cp .env.example .env
 nano .env
 ```
 
-Set the three secrets; `docker compose up` refuses to start and names any that is empty:
+Set the four secrets; `docker compose up` refuses to start and names any that is empty:
 
 | Variable | Value |
 | --- | --- |
 | `ADMIN_TOKEN` | The secret the Settings page sends with every change. Generate it with `openssl rand -hex 32` and hand it to the people who administer Campuses and Devices |
-| `DEVICE_TOKEN` | The secret every Device sends with every Reading. Generate another one; it goes into each board's `config.h`, so rotating it means reflashing every Device (ADR 0003) |
-| `DB_PASSWORD` | The password of the database user, and of MySQL root inside the stack. Generate a third one; nothing outside the stack can reach the database |
+| `DEVICE_TOKEN` | The secret every Device sends with every Reading. Generate another one; it goes into each board's `config.h`, so rotating it means reflashing every Device, which `DEVICE_TOKEN_PREVIOUS` makes a rolling job rather than a flag day ([Rotating the Device token](#rotating-the-device-token)) |
+| `DB_PASSWORD` | The password of the database user `api` connects as. Generate a third one; nothing outside the stack can reach the database |
+| `DB_ROOT_PASSWORD` | The password of MySQL root, which logs in only inside the `db` container, for backups and restores. Generate a fourth one. Only `db` gets it, never `api`, so a bug in `api` cannot become MySQL root. MySQL takes it when the volume is first created; changing it later is the procedure in [Separate MySQL root password](#separate-mysql-root-password) |
 
-`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. `TRUST_PROXY` stays empty unless a TLS proxy sits in front of the stack ([TLS in front of the stack](#tls-in-front-of-the-stack)). Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). `.env` is gitignored.
+`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. `TRUST_PROXY` stays empty unless a TLS proxy sits in front of the stack ([TLS in front of the stack](#tls-in-front-of-the-stack)). Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). The `SMTP_*`, `NOTIFY_*`, and `PUBLIC_URL` lines stay commented until you turn on [email notifications](#email-notifications). `.env` is gitignored.
 
 ### First run
 
@@ -205,24 +208,44 @@ docker compose up -d --build
 docker image prune -f             # drop the previous images
 ```
 
-Compose rebuilds what changed and recreates only those containers. New schema migrations run on the first start of the new `api`, and the data on the volume is untouched. A change to `.env` needs `docker compose up -d` as well; Compose recreates the containers whose environment changed. Run every upgrade from the same folder, or with `COMPOSE_PROJECT_NAME` set as described above: a stack first started from a differently named folder keeps its old volume name, and `docker volume ls` shows which one holds the data.
+Compose rebuilds what changed and recreates only those containers. New schema migrations run on the first start of the new `api`, and the data on the volume is untouched. A change to `.env` needs `docker compose up -d` as well; Compose recreates the containers whose environment changed. Run every upgrade from the same folder, or with `COMPOSE_PROJECT_NAME` set as described above: a stack first started from a differently named folder keeps its old volume name, and `docker volume ls` shows which one holds the data. An install from before `DB_ROOT_PASSWORD` (2026-10-06) stops at `docker compose build` with `Set DB_ROOT_PASSWORD in .env`: move root over once, as [Separate MySQL root password](#separate-mysql-root-password) describes, then carry on.
 
 An upgrade that adds an index to `readings` takes `api` off the air while it builds, since migrations run before it listens: migration `0006-readings-covering-index` took 33 s at 26 M Readings (90 days of 100 Devices), so each Device misses about one Reading. To lose none, build it first by hand while the old `api` keeps serving; MySQL builds it online, ingest kept working throughout (all 201s, p99 0.36 s during the 32 s build), and the migration then finds it done:
 
 ```bash
-set -a; source .env; set +a
-docker compose exec db mysql -uroot -p"$DB_PASSWORD" temperature_alarms -e "ALTER TABLE readings ADD INDEX ix_readings_device_recorded_temp (device_id, recorded_at, id, temp_f), DROP INDEX ix_readings_device_recorded, ALGORITHM=INPLACE, LOCK=NONE"
+docker compose exec db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms -e "ALTER TABLE readings ADD INDEX ix_readings_device_recorded_temp (device_id, recorded_at, id, temp_f), DROP INDEX ix_readings_device_recorded, ALGORITHM=INPLACE, LOCK=NONE"'
 ```
 
 The migration runner holds a MySQL lock while it works, so a second runner, such as `npm run migrate:legacy` started while `api` is still converting a large old database, waits for the first to finish. After ten minutes it gives up with `Another migration run still holds the lock`; run it again once the first has finished.
 
-### Backups and restore
+### Separate MySQL root password
 
-Everything lives in the `db-data` volume. Dump it through the `db` container:
+Since 2026-10-06 MySQL root has its own password, `DB_ROOT_PASSWORD`, which only the `db` container holds, and logs in only through the socket inside it. Before that, root shared `DB_PASSWORD` with `api`, and volumes created before `MYSQL_ROOT_HOST` also let root log in over the stack's network, so a code-execution bug in `api` was a MySQL root login away from every schema and user.
+
+MySQL reads the root password only when the volume is first created, so an existing install has to move over once. `compose.yaml` refuses to start without `DB_ROOT_PASSWORD`, and says so. `deploy.sh deploy` (or `deploy.ps1`) does the move for you: it explains it, asks for the project name to be typed (`--confirm <project>` with `--yes`), starts `db`, takes a backup, drops `root@'%'` if it exists, sets the new root password, writes it to `.env`, and only then deploys. Until that deploy, the script's other actions, backups included, keep working with the old shared password. `install` never generates a root password for an existing volume, since the volume would not have it.
+
+By hand instead, from the checkout, with `.env` holding no `DB_ROOT_PASSWORD` yet (the old password is `DB_PASSWORD`, so it is given to Compose for this once):
 
 ```bash
-set -a; source .env; set +a
-docker compose exec db mysqldump -uroot -p"$DB_PASSWORD" temperature_alarms | gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz
+set -a; . ./.env; set +a                          # DB_PASSWORD, for the next lines only
+NEW=$(openssl rand -hex 32)
+DB_ROOT_PASSWORD="$DB_PASSWORD" docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot' <<SQL
+DROP USER IF EXISTS 'root'@'%';
+ALTER USER 'root'@'localhost' IDENTIFIED BY '$NEW';
+SQL
+echo "DB_ROOT_PASSWORD=$NEW" >> .env
+docker compose up -d                              # recreates db with the new MYSQL_ROOT_PASSWORD
+unset NEW DB_PASSWORD
+```
+
+The heredoc keeps the new password off every command line. Check it took: `docker compose exec db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "SELECT user, host FROM mysql.user"'` lists `root` at `localhost` only.
+
+### Backups and restore
+
+Everything lives in the `db-data` volume. Dump it through the `db` container. Every command in this guide hands MySQL its password inside the container, from the container's own `MYSQL_ROOT_PASSWORD`, so it is never on a command line that the host's `ps` or your shell history would show; the single quotes keep your shell from expanding it:
+
+```bash
+(umask 077; docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction temperature_alarms' | gzip > backup_$(date +%Y%m%d_%H%M%S).sql.gz)
 ```
 
 For a nightly copy on a server, put that line in a script and run it from cron, keeping the last week:
@@ -231,23 +254,22 @@ For a nightly copy on a server, put that line in a script and run it from cron, 
 sudo tee /usr/local/bin/backup-temperature-db.sh >/dev/null <<'EOS'
 #!/bin/bash
 cd /path/to/temperature-alarms || exit 1
-set -a; source .env; set +a
+umask 077
 DIR=/var/backups/temperature-alarms
 mkdir -p "$DIR"
-docker compose exec -T db mysqldump -uroot -p"$DB_PASSWORD" temperature_alarms | gzip > "$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction temperature_alarms' | gzip > "$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
 find "$DIR" -name 'backup_*.sql.gz' -mtime +7 -delete
 EOS
 sudo chmod +x /usr/local/bin/backup-temperature-db.sh
 # crontab -e:  0 2 * * * /usr/local/bin/backup-temperature-db.sh
 ```
 
-Restore into a running stack (the `-T` matters, it lets the file stream in). Every command here that names `$DB_PASSWORD` needs `.env` loaded into the shell first, or MySQL is sent an empty password and refuses; `deploy/deploy.sh backup` and `restore` do all of this for you:
+Restore into a running stack (the `-T` matters, it lets the file stream in). `deploy/deploy.sh backup` and `restore` do all of this for you, and `restore` backs up first:
 
 ```bash
-set -a; source .env; set +a
 docker compose stop api
-docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" -e 'DROP DATABASE temperature_alarms; CREATE DATABASE temperature_alarms'
-gunzip -c backup_20260909_020000.sql.gz | docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" temperature_alarms
+docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot -e "DROP DATABASE temperature_alarms; CREATE DATABASE temperature_alarms"'
+gunzip -c backup_20260909_020000.sql.gz | docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms'
 docker compose start api
 ```
 
@@ -288,9 +310,8 @@ A database from the PHP era or the first Node backend holds `devices`, `location
 3. Start only the database and restore into it:
 
    ```bash
-   set -a; source .env; set +a
    docker compose up -d --wait db
-   docker compose exec -T db mysql -uroot -p"$DB_PASSWORD" temperature_alarms < old.sql
+   docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms' < old.sql
    ```
 
 4. Start the rest: `docker compose up -d --build` (or `deploy/deploy.sh deploy`). The first start of `api` renames the old tables, builds the new ones, and copies every row; watch `docker compose logs api` for lines starting `legacy:`, each naming a row it could not read and skipped. `api` starts listening only once the copy is done. A database that takes longer than about a minute outlasts the healthcheck, so `up` reports `api` unhealthy and leaves `web` stopped. That is harmless: wait for `Server is running on port 3001` in `docker compose logs api`, then run the same command again.
@@ -303,8 +324,7 @@ A database from the PHP era or the first Node backend holds `devices`, `location
 6. Verify the counts with the SQL in the section linked above, then drop the legacy tables by hand. Open the MySQL prompt with:
 
    ```bash
-   set -a; source .env; set +a
-   docker compose exec db mysql -uroot -p"$DB_PASSWORD" temperature_alarms
+   docker compose exec db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms'
    ```
 
 ### TLS in front of the stack
@@ -346,7 +366,7 @@ http:// {
 
 With nginx and certbot instead, follow steps 5 and 6 of the [manual install](#5-nginx), which give the same split, with every `proxy_pass` pointed at `http://127.0.0.1:8080` and the snippet's `root`, `index`, and asset locations replaced by a single `location /` carrying the same `proxy_*` lines as its `/api/` block.
 
-No Device needs to change at certificate renewal: one with an `https://` server URL sends over TLS without checking the certificate (see the firmware section of the README). One with `http://YOUR_DOMAIN`, or `http://` and the server's address, keeps posting over plain HTTP through the blocks above; with the stack on `127.0.0.1:8080`, the proxy is now the only way in.
+Boards with an `https://` server URL check the certificate against Let's Encrypt's roots and the hostname (README, Transport for production boards), so any renewal, Caddy's or certbot's, is fine for them. The Firmware tab uploads a build of about 430 KB to `/api/firmware`: Caddy has no body limit, and an nginx in front needs `client_max_body_size 1m;` in its HTTPS server, since its default is exactly 1 MB and a bigger build would be refused. One with `http://YOUR_DOMAIN`, or `http://` and the server's address, keeps posting over plain HTTP through the blocks above; with the stack on `127.0.0.1:8080`, the proxy is now the only way in.
 
 #### Client addresses behind the proxy: `TRUST_PROXY`
 
@@ -360,12 +380,74 @@ Set `TRUST_PROXY` in `.env` to the proxy's address, then run `docker compose up 
 
 | Where the proxy runs | `TRUST_PROXY` |
 | --- | --- |
-| On this host, as above (Caddy or nginx proxying to `127.0.0.1:8080`) | `gateway`. A host proxy reaches the container through the Docker network's gateway; nginx looks that address up when it starts |
+| On this host, as above (Caddy or nginx proxying to `127.0.0.1:8080`) | `gateway`. A host proxy reaches the container through the Docker network's gateway; nginx looks that address up when it starts. Only with `WEB_PORT=127.0.0.1:PORT`: Docker's userland proxy delivers other connections from the gateway too (every IPv6 client, since `web` listens on IPv4, and on hosts without iptables NAT every client), so with the port open to the network any of them could claim to be anyone. `deploy.sh` and `deploy.ps1` refuse to deploy `gateway` with the port open |
 | On another machine, or in a container on the stack's network | Its IP address, or several, comma-separated: `10.20.0.5,10.20.0.6`. CIDR ranges work too: `10.20.0.0/29` |
 
 Leave it empty with no proxy in front. That is the default, and nginx then counts the address it sees, as without the setting. `deploy/deploy.sh install` asks for the value only when you say a proxy is in front; non-interactively, use `--set TRUST_PROXY=gateway` (with `--reconfigure` on an existing `.env`). `docker compose logs web` shows what nginx trusts, as a line starting `real-ip:`.
 
 nginx believes `X-Forwarded-For` only on connections from the addresses you list. It reads the header from the right and stops at the first address it does not trust, so a value a browser wrote itself is ignored, and so is any request that skips the proxy. The backend trusts one hop, the stack's nginx, so it sees the address nginx settled on. Never list an address that ordinary clients connect from, such as the LAN's whole range when `WEB_PORT` is open to the LAN. Anyone at a listed address can claim to be any client. `0.0.0.0/0` is refused for that reason, and so is any value that is not an address: `web` does not start and its log says why.
+
+### Rotating the Device token
+
+Every board carries the one Device token, so a lost or stolen board, or a token seen where it should not be, means a new token in every board's flash. The backend accepts a second, previous token while that happens (ADR 0003), so no board goes dark:
+
+1. `deploy/deploy.sh rotate-device-token`: the current token moves to `DEVICE_TOKEN_PREVIOUS` in `.env`, a new `DEVICE_TOKEN` is generated, and `api` restarts with both. If `api` does not come back healthy, `.env` goes back to the old token alone. The new `config.h` line is printed masked; `deploy.sh info --reveal` prints it in full.
+2. Reflash every board with the new token (README, "Flashing a batch"). Boards on either token keep reporting meanwhile.
+3. Settings, with the Admin token, shows the rotation: each Device whose latest Reading still came with the previous token, and each Device not heard since `api` last started (whose token it cannot know yet). `api`'s log names each Device still on the previous token once an hour, by hostname, never the token. The same list is `GET /api/devices/rotation` with the Admin token.
+4. When the list is empty, `deploy/deploy.sh rotate-device-token --finish` clears `DEVICE_TOKEN_PREVIOUS` and restarts `api`; the old token is refused from then on. While any Device is listed it refuses, naming them: reflash them, or delete in Settings a Device that is gone for good, and run it again a Report interval later. `--finish --force` (typed project name) ends the rotation anyway, and the boards still on the old token stop reporting until reflashed.
+
+Only Readings with neither token count toward the wrong-token limit (100 per address per 15 minutes), so boards on the previous token never lock out their campus. The backend refuses to start if `DEVICE_TOKEN_PREVIOUS` equals `DEVICE_TOKEN` or `ADMIN_TOKEN`. A second rotation is refused until the first is finished; the list lives in `api`'s memory, so after a restart every Device is "not heard" until its next Reading, within one Report interval.
+
+### Email notifications
+
+The server emails a fixed list of recipients when an Incident opens, gets worse (its level rises), or closes, through the district's SMTP relay (ADR 0008). Changes within a minute of each other arrive as one email, worst first, so a campus power cut is one email, not twenty. Devices on the Bench never email. It is off until `SMTP_HOST` is set, and the Settings page says so.
+
+**Ask the district's mail admin first.** Four answers decide the settings:
+
+- **The relay** (`SMTP_HOST`) and its port. Usually an internal relay, or the Exchange or Microsoft 365 connector the district already uses for printers and scanners.
+- **Allowed sender or service account.** Does the relay accept mail from this server's address without a login (an allowed-sender or relay rule for its IP), or does it need a service account? With a rule, leave `SMTP_USER` and `SMTP_PASSWORD` empty; with an account, set both. The address the relay sees is the host's, not the container's.
+- **The sender address** the relay lets this server send as (`NOTIFY_FROM`), such as `temperature-alarms@YOUR_DOMAIN`.
+- **A distribution list** for `NOTIFY_TO`, such as `network-techs@YOUR_DOMAIN`, so who receives alerts changes in Exchange, not in `.env`. Several addresses, comma-separated, work too.
+
+**Ports and the district firewall.** `api` connects out to the relay; nothing connects in. Pick the port with the mail admin:
+
+| Port | `SMTP_SECURE` | When |
+| --- | --- | --- |
+| 587 | `starttls` (the default) | Submission, encrypted with STARTTLS. The usual choice, and the one a service account needs. The server refuses to send if the relay does not offer STARTTLS, rather than send in plain text |
+| 465 | `tls` | TLS from the first byte, for a relay that offers it instead of 587 |
+| 25 | `none` (or `starttls` if the relay offers it) | An internal relay that accepts plain SMTP from allowed addresses. Many district firewalls block port 25 out of server VLANs, to stop infected machines sending spam; ask for this server to reach the relay on it |
+
+Whichever port, the firewall between this server and the relay must allow it. From the server, `nc -vz RELAY 587` (or the port you chose) should connect; `openssl s_client -starttls smtp -connect RELAY:587 -brief </dev/null` shows the relay's certificate for STARTTLS.
+
+**Turn it on** with the deploy script. Interactively, `deploy/deploy.sh install --reconfigure` asks for each value, the password at a hidden prompt; leave the relay blank for no email. Non-interactively:
+
+```bash
+# A relay that accepts this server's address (no login):
+deploy/deploy.sh install --reconfigure --yes \
+  --smtp-host relay.YOUR_DOMAIN --notify-from temperature-alarms@YOUR_DOMAIN \
+  --notify-to network-techs@YOUR_DOMAIN --public-url https://YOUR_DOMAIN
+# With a service account: the password goes in on stdin, never on the command line, where any
+# process on the host could read it. read and printf are bash builtins, so they show it nowhere.
+read -rs PW && printf '%s\n' "$PW" | deploy/deploy.sh install --reconfigure --yes \
+  --smtp-host relay.YOUR_DOMAIN --smtp-user svc-temperature-alarms \
+  --notify-from temperature-alarms@YOUR_DOMAIN --notify-to network-techs@YOUR_DOMAIN \
+  --public-url https://YOUR_DOMAIN; unset PW
+deploy/deploy.sh deploy --yes            # recreates api with the new settings
+```
+
+```powershell
+$pw = Read-Host -AsSecureString 'SMTP password'
+[Net.NetworkCredential]::new('', $pw).Password | .\deploy\deploy.ps1 install --reconfigure --yes `
+  --smtp-host relay.YOUR_DOMAIN --smtp-user svc-temperature-alarms `
+  --notify-from temperature-alarms@YOUR_DOMAIN --notify-to network-techs@YOUR_DOMAIN --public-url https://YOUR_DOMAIN
+.\deploy\deploy.ps1 deploy --yes
+```
+
+`--smtp-port` and `--smtp-secure` take the table's values; without them it is 587 and STARTTLS. `--public-url` is the address technicians open the dashboard at, used for the History links in each email: `https://YOUR_DOMAIN` behind the [TLS proxy](#tls-in-front-of-the-stack). Each flag changes only its own setting, so `install --reconfigure --yes --notify-to oncall@YOUR_DOMAIN` changes the recipients alone, and `--smtp-user` again with nothing on stdin keeps the current password. `--smtp-host off` turns email off and empties the rest of the group. With `--host`, the password is read once here and handed to each server on its ssh stdin. `install` only writes `.env`; `deploy` (or `docker compose up -d`) applies it. `--smtp-password` is refused.
+
+By hand, uncomment the lines at the end of `.env` and run `docker compose up -d`, which recreates only `api`. Put the password in single quotes, `SMTP_PASSWORD='...'`, so Compose reads a `$` or `#` in it as itself; it cannot then contain a single quote. `api` refuses to start on a half-set group: `SMTP_HOST` without `NOTIFY_FROM`, `NOTIFY_TO`, or `PUBLIC_URL`, a user without a password, or any of those set without `SMTP_HOST`. `docker compose logs api` names every problem at once, never the password.
+
+**Prove it** from Settings, Notifications, with the Admin token: "Send test email" sends one now, straight to the relay, and shows the relay's reply or its reason for refusing. It allows one a minute, since every press emails every recipient. The same tab shows whether email is on, the relay, the sender and recipients, and the last send and the last failure. An SMTP outage delays Incident emails rather than losing them: the server keeps retrying for 24 hours, and the failure shows on that tab. `deploy.sh info` prints the relay and recipients, and the login with its password masked.
 
 ### Security
 
@@ -378,7 +460,12 @@ What the stack does by itself:
 What it needs from you:
 
 - **Keep technicians out of the `docker` group.** The secrets are environment variables, so `docker inspect` shows them, and the group is root on the host anyway. Give technicians the dashboard, and the Admin token if they manage Campuses and Devices.
-- **Put the boards on their own VLAN or SSID with client isolation** when Devices post over plain HTTP. Anyone who can see a board's traffic can read the Device token, and with it post false Readings (it cannot change Campuses or Devices, or read anything the dashboard does not already show). A Device with an `https://` server URL sends over TLS instead (see TLS in front of the stack).
+- **Production boards post over HTTPS and check the certificate** (ADR 0001, 2026-10-06), at `https://YOUR_DOMAIN`, the same name the dashboard is served at. The boards trust Let's Encrypt's roots and the name, nothing about this server's key, so renewals and key changes never need a reflash. Before flashing day:
+  - [ ] The server has a Let's Encrypt certificate for `YOUR_DOMAIN` ([step 6](#6-tls)); `sudo certbot renew --dry-run` passes. If the name is not reachable from the internet, use a DNS challenge.
+  - [ ] The boards have an SSID and VLAN of their own with client isolation, whose DNS resolves `YOUR_DOMAIN` to the server, and which reaches only the server on TCP 443 and that DNS resolver. The boards take the time from the server, so no time server is needed. If the SSID is open (Devices admitted by MAC allowlist), it must be that same VLAN: MACs are easy to copy.
+  - [ ] From a machine on that VLAN: `nslookup YOUR_DOMAIN` gives the server's address, `curl -i https://YOUR_DOMAIN/api/health` answers 200, `openssl s_client -connect YOUR_DOMAIN:443 -servername YOUR_DOMAIN -verify_return_error </dev/null 2>&1 | grep -E 'Verify return code|i:'` shows `Verify return code: 0 (ok)`, and nothing else answers.
+  - What it buys: the token is encrypted, and goes only to a server with a valid certificate for the name, so a wrong DNS answer or a rogue access point fails the handshake instead of collecting the token. What it needs: the time, which the board reads from the server's `Date` header; until it has it, it sends nothing.
+- **Run `arduino\bench.py` with `--server https://YOUR_DOMAIN`** once TLS is in front: it sends the Admin token with every registration, and it refuses to follow the proxy's redirect from `http://`.
 - Run every upgrade through `deploy.sh deploy` or with `docker compose build --pull` first, so the base images pick up their security patches.
 
 ## Upgrading a database from the old per-Device tables
@@ -474,7 +561,8 @@ The backend refuses to start until these are set, naming whatever is missing:
 | Variable | Value |
 | --- | --- |
 | `DB_USER`, `DB_PASSWORD`, `DB_NAME` | The MySQL user and database from step 2 (`DB_HOST` and `DB_PORT` default to `localhost:3306`) |
-| `ADMIN_TOKEN`, `DEVICE_TOKEN` | The two shared secrets, as in the Compose [setup](#setup) table |
+| `ADMIN_TOKEN`, `DEVICE_TOKEN` | The two shared secrets, as in the Compose [setup](#setup) table. `DEVICE_TOKEN_PREVIOUS`, set only during a [rotation](#rotating-the-device-token), is the old Device token still accepted; set it to the old value, put the new one in `DEVICE_TOKEN`, `pm2 restart`, and clear it once every board reports with the new one |
+| `SMTP_HOST` and the rest | Optional [email notifications](#email-notifications), listed commented at the end of `backend/.env.example`; off while `SMTP_HOST` is unset |
 
 `CORS_ORIGIN` can stay unset: through the nginx below the dashboard and the API share one origin, which the backend always accepts. Set it only if the dashboard is served from somewhere else. Leave `REPORT_INTERVAL_SECONDS` at 30 unless the firmware interval changes with it, and set `LEGACY_TIME_ZONE` only when upgrading an old database (step 2). Every other setting has a default that `.env.example` shows.
 
@@ -611,7 +699,7 @@ server {
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Certbot installs a systemd timer that renews the certificate before it expires, and the deploy hook reloads nginx so the new one is served; `systemctl list-timers certbot.timer` shows the next run, and the dry run above proves the renewal works. No Device needs to change at renewal: one with an `https://` server URL sends over TLS without checking the certificate (see the firmware section of the README), and one with `http://` keeps posting through the HTTP server above.
+Certbot installs a systemd timer that renews the certificate before it expires, and the deploy hook reloads nginx so the new one is served; `systemctl list-timers certbot.timer` shows the next run, and the dry run above proves the renewal works. A renewal changes nothing for the boards: one with an `https://` server URL checks the certificate against Let's Encrypt's roots and the hostname, not against this server's key, so a new key or a rebuilt server is fine too (README, Transport for production boards). Keep `ssl_certificate` on `fullchain.pem`: the boards need the intermediate the server sends with it. A Device with `http://` keeps posting through the HTTP server above.
 
 ### 7. Firewall
 

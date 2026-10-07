@@ -3,6 +3,9 @@ import rateLimit from 'express-rate-limit';
 import type { AppDeps, RouteDeps } from './deps';
 import { createBroadcaster } from './sse';
 import { createIngestHealth } from './ingestHealth';
+import { createTokenRotation } from './tokenRotation';
+import { createDeviceAuth } from './deviceAuth';
+import { createDeviceSightings } from './deviceSightings';
 import { MonotonicStore } from './monotonicStore';
 import { corsMiddleware, CorsError } from './cors';
 import { healthRouter } from './routes/health';
@@ -11,6 +14,9 @@ import { campusOverviewRouter } from './routes/campusOverview';
 import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
 import { incidentsRouter } from './routes/incidents';
+import { firmwareRouter } from './routes/firmware';
+import { notificationsRouter } from './routes/notifications';
+import { createMailer } from './mailer';
 
 /**
  * Per address per 15 minutes on /api/. Reads: 30 Campuses tabs, the busiest page, make about
@@ -22,11 +28,16 @@ export const WRITE_LIMIT = 500;
 
 /** The Express app, without a listening socket, so tests can drive it directly. */
 export function createApp(appDeps: AppDeps): Express {
+  const sightings = appDeps.sightings ?? createDeviceSightings();
   const deps: RouteDeps = {
     ...appDeps,
     sse: appDeps.sse ?? createBroadcaster(),
     // Two Report intervals: long enough that a failure is seen by the next healthcheck, short enough to clear on its own.
     ingest: appDeps.ingest ?? createIngestHealth(2 * appDeps.config.reportIntervalSeconds * 1000),
+    rotation: appDeps.rotation ?? createTokenRotation(),
+    sightings,
+    deviceAuth: createDeviceAuth(appDeps.config, sightings),
+    mailer: appDeps.mailer ?? (appDeps.config.notifications === undefined ? undefined : createMailer(appDeps.config.notifications)),
   };
   const app = express();
   // Naming the framework only helps someone matching it to an advisory.
@@ -80,6 +91,8 @@ export function createApp(appDeps: AppDeps): Express {
   app.use('/api/readings', readingsRouter(deps));
   app.use('/api/dashboard', dashboardRouter(deps));
   app.use('/api/incidents', incidentsRouter(deps));
+  app.use('/api/firmware', firmwareRouter(deps));
+  app.use('/api/notifications', notificationsRouter(deps));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });
