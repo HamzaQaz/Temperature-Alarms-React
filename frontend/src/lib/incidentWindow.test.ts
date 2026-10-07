@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { durationOf, formatDuration, latestDate, overlaps, parseWindowKind, spanLayout, ticks, windowBounds, worstIncident } from './incidentWindow.ts';
+import { durationOf, formatDuration, latestDate, overlaps, parseWindowKind, rulerKinds, spanLayout, ticks, windowBounds, worstIncident } from './incidentWindow.ts';
 
 const local = (y: number, m: number, d: number, h = 0, min = 0) => new Date(y, m - 1, d, h, min);
 
@@ -97,5 +97,39 @@ describe('durations and the worst incident', () => {
     assert.equal(worstIncident([a, b, c], now), c);
     assert.equal(durationOf(c, now), 3_600_000);
     assert.equal(worstIncident([], now), undefined);
+  });
+});
+
+describe('rulerKinds', () => {
+  const from = local(2026, 10, 3, 18).getTime();
+  const to = local(2026, 10, 4, 8).getTime();
+  const now = local(2026, 10, 4, 7).getTime();
+  const iso = (h: number, d = 3) => local(2026, 10, d, h).toISOString();
+
+  it('names each colour on the ruler once, levels worst first and Sensor fault after them', () => {
+    const kinds = rulerKinds(
+      [
+        { condition: 'Sensor fault', segments: [{ level: 'critical', start: iso(22), end: iso(23) }] },
+        { condition: 'Hot', segments: [{ level: 'warning', start: iso(19), end: iso(20) }, { level: 'critical', start: iso(20), end: iso(21) }] },
+        { condition: 'Offline', segments: [{ level: 'warning', start: iso(2, 4), end: null }] },
+      ],
+      from,
+      to,
+      now,
+    );
+    assert.deepEqual(kinds, ['critical', 'warning', 'Sensor fault']);
+  });
+
+  it('leaves out a stretch outside the window, so a Sensor fault critical alone is not called critical', () => {
+    const kinds = rulerKinds(
+      [
+        { condition: 'Sensor fault', segments: [{ level: 'critical', start: iso(1, 4), end: iso(2, 4) }] },
+        { condition: 'Mold risk', segments: [{ level: 'high', start: iso(10), end: iso(12) }] },
+      ],
+      from,
+      to,
+      now,
+    );
+    assert.deepEqual(kinds, ['Sensor fault']);
   });
 });

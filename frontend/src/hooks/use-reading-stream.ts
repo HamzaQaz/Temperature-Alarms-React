@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { openDashboardStream } from '@/api';
-import type { IncidentEvent, ReadingEvent } from '@/types';
+import type { FaultEvent, IncidentEvent, ReadingEvent } from '@/types';
 
 /**
  * connecting: no stream yet. live: Readings arrive as they happen.
@@ -10,6 +10,8 @@ export type StreamStatus = 'connecting' | 'live' | 'reconnecting';
 
 interface ReadingStreamHandlers {
   onReading?: (event: ReadingEvent) => void;
+  /** A Device posted a fault report: heard from, with no Reading (docs/adr/0009). */
+  onFault?: (event: FaultEvent) => void;
   /** An incident opened, changed level, or closed. */
   onIncident?: (event: IncidentEvent) => void;
   /** The stream is open again after a drop. Reload, because anything sent meanwhile was missed. */
@@ -25,12 +27,12 @@ const REOPEN_AFTER_MS = 5_000;
  * gives up on (a non-200 answer, as from a proxy mid-restart) is reopened here after a
  * pause, so a dashboard on a wall screen never needs a hand.
  */
-export function useReadingStream({ onReading, onIncident, onReconnect }: ReadingStreamHandlers): StreamStatus {
+export function useReadingStream({ onReading, onFault, onIncident, onReconnect }: ReadingStreamHandlers): StreamStatus {
   const [status, setStatus] = useState<StreamStatus>('connecting');
   // Handlers change identity on every render; the stream must not.
-  const handlers = useRef({ onReading, onIncident, onReconnect });
+  const handlers = useRef({ onReading, onFault, onIncident, onReconnect });
   useEffect(() => {
-    handlers.current = { onReading, onIncident, onReconnect };
+    handlers.current = { onReading, onFault, onIncident, onReconnect };
   });
 
   useEffect(() => {
@@ -48,13 +50,14 @@ export function useReadingStream({ onReading, onIncident, onReconnect }: Reading
         }
       };
       stream.onmessage = (message: MessageEvent<string>) => {
-        let event: ReadingEvent | IncidentEvent;
+        let event: ReadingEvent | FaultEvent | IncidentEvent;
         try {
-          event = JSON.parse(message.data) as ReadingEvent | IncidentEvent;
+          event = JSON.parse(message.data) as ReadingEvent | FaultEvent | IncidentEvent;
         } catch {
           return;
         }
         if (event.type === 'reading') handlers.current.onReading?.(event);
+        else if (event.type === 'fault') handlers.current.onFault?.(event);
         else if (event.type === 'incident') handlers.current.onIncident?.(event);
       };
       stream.onerror = () => {

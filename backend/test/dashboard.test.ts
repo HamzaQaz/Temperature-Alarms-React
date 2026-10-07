@@ -52,6 +52,8 @@ describe('GET /api/dashboard', () => {
       latestReading: latest.reading,
       online: true,
       secondsSinceReading: entry.secondsSinceReading,
+      lastReportAt: latest.reading.recordedAt,
+      secondsSinceReport: entry.secondsSinceReport,
       conditions: [],
     });
     assert.ok(entry.secondsSinceReading !== null && entry.secondsSinceReading >= 0 && entry.secondsSinceReading <= 5, `just posted: ${entry.secondsSinceReading}`);
@@ -84,6 +86,8 @@ describe('GET /api/dashboard', () => {
         latestReading: null,
         online: false,
         secondsSinceReading: null,
+        lastReportAt: null,
+        secondsSinceReport: null,
         conditions: [{ name: 'Offline', level: 'warning' }],
       },
     ]);

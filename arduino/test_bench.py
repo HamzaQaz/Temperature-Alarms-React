@@ -157,6 +157,10 @@ class SerialVerdict(unittest.TestCase):
         verdict = self.judge(boot_log(sensor="sensor: read failed (NaN), sample skipped"))
         self.assertEqual((verdict.kind, verdict.reason), ("FAIL", "bad sensor"))
 
+    def test_firmware_5_fault_report_is_still_fail_bad_sensor(self):
+        verdict = self.judge(boot_log(sensor="sensor: read failed (NaN), sample skipped", report="report: 202 sensor fault reported"))
+        self.assertEqual((verdict.kind, verdict.reason), ("FAIL", "bad sensor"))
+
     def test_no_device_line_is_fail_did_not_boot(self):
         verdict = self.judge(["���"], first_board=True)
         self.assertEqual((verdict.kind, verdict.reason), ("FAIL", "did not boot"))

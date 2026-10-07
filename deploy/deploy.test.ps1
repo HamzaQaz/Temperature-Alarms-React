@@ -82,10 +82,10 @@ $run = {
     function Invoke-MaybePull { }
     function Invoke-Backup { $fake.Log += 'backup'; $script:LastBackup = 'backups\ta-test.sql.gz' }
     function Write-Host { $fake.Out += @("$args") }
+    # Stdin is [Console]::In, which Invoke-FakeStdin points at a string; never the test's own console.
+    function Test-StdinRedirected { return $true }
     $fake.Out = @()
-    Read-Args $Arguments
-    $O.Yes = $true
-    try { Set-LegacyRootEnv; Invoke-Action $O.Action; return $true }
+    try { Read-Args $Arguments; $O.Yes = $true; Set-LegacyRootEnv; Invoke-Action $O.Action; return $true }
     catch { $fake.Out += "Error: $($_.Exception.Message)"; return $false }
 }
 function Invoke-Fake([string[]]$Arguments) {
@@ -102,6 +102,12 @@ function SetEnvLine([string]$Key, [string]$Value) {
     Set-Content -LiteralPath $envFile -Value @(Read-Lines $envFile | ForEach-Object { if ($_.StartsWith("$Key=")) { "$Key=$Value" } else { $_ } })
 }
 function Hex64([string]$Value) { return $Value -cmatch '\A[0-9a-f]{64}\z' }
+$consoleIn = [Console]::In
+function Invoke-FakeStdin([string]$Stdin, [string[]]$Arguments) {
+    [Console]::SetIn((New-Object IO.StringReader $Stdin))
+    try { return (Invoke-Fake $Arguments) } finally { [Console]::SetIn($consoleIn) }
+}
+function Get-EnvText { return ((Read-Lines $envFile) -join "`n") }
 $said = { ($fake.Out -join "`n") }
 $secretNames = 'ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD'
 
@@ -113,6 +119,71 @@ try {
     Expect (Invoke-Fake @('info')) $true 'info failed'
     foreach ($k in $secretNames) { Expect ((& $said).Contains((EnvOf $k))) $false "info: $k printed in full without --reveal" }
     Expect ((& $said) -match 'DB root') $true 'info: no DB root line'
+
+    # Email notifications (docs/adr/0008); deploy.test.sh says why each case matters.
+    $notifyNames = 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_COALESCE_SECONDS'
+    foreach ($k in $notifyNames) { Expect ((EnvOf $k) -eq '') $true "install: $k has a value without --smtp-host" }
+    Expect ((& $said) -match 'Email +off') $true 'info: notifications not shown as off'
+
+    $before = Get-EnvText
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'relay.example.org', '--smtp-password', 'hunter2')) $false '--smtp-password: succeeded'
+    Expect ((& $said) -match 'never taken on the command line') $true '--smtp-password: no explanation'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'relay.example.org', '--notify-from', 'alarms@example.org', '--notify-to', 'techs@example.org')) $false 'no --public-url: succeeded'
+    Expect ((& $said) -match '--public-url is required') $true 'no --public-url: no explanation'
+    $okFlags = @('--smtp-host', 'relay.example.org', '--notify-from', 'alarms@example.org', '--notify-to', 'techs@example.org', '--public-url', 'https://alarms.example.org')
+    foreach ($bad in @(@('--smtp-port', '70000'), @('--smtp-secure', 'ssl'), @('--notify-to', 'not-an-address'), @('--notify-from', 'a@b.c,d@e.f'), @('--public-url', 'ftp://alarms.example.org'), @('--smtp-host', 'relay.example.org;id'), @('--notify-to', "a@example.org`nADMIN_TOKEN=x"))) {
+        Expect (Invoke-FakeStdin '' (@('install', '--reconfigure') + $okFlags + $bad)) $false "$($bad -join ' '): succeeded"
+        Expect ((& $said).Contains($bad[0])) $true "$($bad -join ' '): the flag is not named"
+    }
+    Expect (Invoke-FakeStdin "it's`n" (@('install', '--reconfigure') + $okFlags + @('--smtp-user', 'svc'))) $false 'a password with a single quote: succeeded'
+    Expect ((Get-EnvText) -eq $before) $true 'refused settings: .env changed'
+
+    # On, with a login: the password is the first line of stdin, written single-quoted, never printed.
+    $pw = 'p@ss $HOME #1 \t\\x "q"'
+    Expect (Invoke-FakeStdin "$pw`r`n" (@('install', '--reconfigure') + $okFlags + @('--smtp-port', '465', '--smtp-secure', 'tls', '--smtp-user', 'DISTRICT\svc-alarms', '--notify-to', 'techs@example.org, noc@example.org'))) $true "notify on failed: $(& $said)"
+    Expect ((EnvOf 'SMTP_HOST') -eq 'relay.example.org') $true 'notify on: SMTP_HOST'
+    Expect ((EnvOf 'SMTP_PORT') -eq '465' -and (EnvOf 'SMTP_SECURE') -eq 'tls') $true 'notify on: port or security not written'
+    Expect ((EnvOf 'SMTP_USER') -eq 'DISTRICT\svc-alarms') $true 'notify on: SMTP_USER'
+    Expect ((EnvOf 'SMTP_PASSWORD') -ceq "'$pw'") $true "notify on: SMTP_PASSWORD is not the stdin line, single-quoted: $(EnvOf 'SMTP_PASSWORD')"
+    Expect ((EnvOf 'NOTIFY_TO') -eq 'techs@example.org,noc@example.org') $true 'notify on: NOTIFY_TO'
+    Expect ((EnvOf 'PUBLIC_URL') -eq 'https://alarms.example.org') $true 'notify on: PUBLIC_URL'
+    Expect ((& $said).Contains('p@ss')) $false 'notify on: the password is in the output'
+    Expect (($fake.Log -join "`n").Contains('p@ss')) $false 'notify on: the password is on a docker command line'
+    Expect (Invoke-Fake @('info')) $true 'info with notify failed'
+    Expect ((& $said).Contains('relay.example.org:465 (tls)')) $true 'info: no relay line'
+    Expect ((& $said).Contains('DISTRICT\svc-alarms / ********')) $true 'info: no masked login line'
+    Expect ((& $said).Contains('p@ss')) $false 'info: the SMTP password (or its start) printed without --reveal'
+    Expect (Invoke-Fake @('info', '--reveal')) $true 'info --reveal failed'
+    Expect ((& $said).Contains($pw)) $true 'info --reveal: the SMTP password not shown'
+
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-to', 'oncall@example.org')) $true "notify-to alone failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_TO') -eq 'oncall@example.org' -and (EnvOf 'SMTP_HOST') -eq 'relay.example.org') $true 'notify-to alone: not applied on its own'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-user', 'other-svc')) $true "smtp-user, empty stdin failed: $(& $said)"
+    Expect ((EnvOf 'SMTP_USER') -eq 'other-svc' -and (EnvOf 'SMTP_PASSWORD') -ceq "'$pw'") $true 'smtp-user, empty stdin: password not kept'
+    Expect (Invoke-FakeStdin '' @('install', '--smtp-host', 'off')) $true 'off without --reconfigure failed'
+    Expect ((EnvOf 'SMTP_HOST') -eq 'relay.example.org') $true 'off without --reconfigure: .env changed'
+
+    # Remote: the password reaches the server on ssh's stdin, never in its arguments.
+    $fake.SshArgs = @(); $fake.SshStdin = @()
+    $remote = {
+        param([string[]]$Arguments, [string]$Password)
+        foreach ($statement in $ast.EndBlock.Statements) {
+            if ($statement -is [System.Management.Automation.Language.AssignmentStatementAst]) { try { . ([scriptblock]::Create($statement.Extent.Text)) } catch { } }
+        }
+        foreach ($fn in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+        function ssh { $fake.SshArgs += "$args"; $fake.SshStdin += @($input | ForEach-Object { "$_" }); $global:LASTEXITCODE = 0 }
+        Read-Args $Arguments
+        $O.Yes = $true
+        $script:SmtpPw = $Password
+        Invoke-RemoteHost 'admin@a.example.org'
+    }
+    & $remote @('install', '--reconfigure', '--smtp-user', 'svc') $pw
+    Expect ($fake.SshStdin -ccontains $pw) $true 'remote smtp-user: the password did not reach the server on stdin'
+    Expect (($fake.SshArgs -join "`n").Contains('p@ss')) $false 'remote smtp-user: the password is in ssh''s arguments'
+
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'off')) $true "off failed: $(& $said)"
+    foreach ($k in $notifyNames) { Expect ((EnvOf $k) -eq '') $true "off: $k still set" }
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'off', '--notify-to', 'a@example.org')) $false 'off with another flag: succeeded'
 
     # rotate-device-token
     $old = EnvOf 'DEVICE_TOKEN'

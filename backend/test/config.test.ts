@@ -129,6 +129,95 @@ describe('loadConfig', () => {
   });
 });
 
+describe('loadConfig: email notifications', () => {
+  const smtp = {
+    ...complete,
+    SMTP_HOST: 'relay.example.test',
+    NOTIFY_FROM: 'alarms@example.test',
+    NOTIFY_TO: 'techs@example.test',
+    PUBLIC_URL: 'https://alarms.example.test',
+  };
+
+  test('off without SMTP_HOST', () => {
+    assert.equal(loadConfig(complete).notifications, undefined);
+    assert.equal(loadConfig({ ...complete, SMTP_HOST: '  ' }).notifications, undefined);
+  });
+
+  test('on with SMTP_HOST, applying defaults: port 587, STARTTLS, no login, a 60 s coalescing window', () => {
+    assert.deepEqual(loadConfig(smtp).notifications, {
+      smtp: { host: 'relay.example.test', port: 587, secure: 'starttls', auth: undefined },
+      from: 'alarms@example.test',
+      to: ['techs@example.test'],
+      publicUrl: 'https://alarms.example.test',
+      coalesceSeconds: 60,
+    });
+  });
+
+  test('honours every override, and reads a comma-separated recipient list', () => {
+    const notifications = loadConfig({
+      ...smtp,
+      SMTP_PORT: '2525',
+      SMTP_SECURE: 'none',
+      SMTP_USER: 'svc-alarms',
+      SMTP_PASSWORD: 'smtp-secret',
+      NOTIFY_TO: ' techs@example.test, oncall@example.test ,',
+      PUBLIC_URL: 'http://10.0.0.5:8080/',
+      NOTIFY_COALESCE_SECONDS: '0',
+    }).notifications;
+    assert.deepEqual(notifications, {
+      smtp: { host: 'relay.example.test', port: 2525, secure: 'none', auth: { user: 'svc-alarms', password: 'smtp-secret' } },
+      from: 'alarms@example.test',
+      to: ['techs@example.test', 'oncall@example.test'],
+      publicUrl: 'http://10.0.0.5:8080',
+      coalesceSeconds: 0,
+    });
+  });
+
+  test('implicit TLS defaults to port 465', () => {
+    assert.equal(loadConfig({ ...smtp, SMTP_SECURE: 'tls' }).notifications?.smtp.port, 465);
+    assert.equal(loadConfig({ ...smtp, SMTP_SECURE: 'TLS', SMTP_PORT: '587' }).notifications?.smtp.port, 587);
+  });
+
+  const refuses = (env: Record<string, string>, pattern: RegExp) =>
+    assert.throws(
+      () => loadConfig(env),
+      (err: unknown) => err instanceof ConfigError && pattern.test(err.message) && !err.message.includes('smtp-secret'),
+      `expected a ConfigError matching ${pattern}`,
+    );
+
+  test('refuses a half-set group, naming what is missing', () => {
+    refuses({ ...smtp, NOTIFY_TO: '' }, /NOTIFY_TO/);
+    refuses({ ...smtp, NOTIFY_FROM: '' }, /NOTIFY_FROM/);
+    refuses({ ...smtp, PUBLIC_URL: '' }, /PUBLIC_URL/);
+    refuses({ ...smtp, SMTP_USER: 'svc-alarms' }, /SMTP_USER and SMTP_PASSWORD/);
+    refuses({ ...smtp, SMTP_PASSWORD: 'smtp-secret' }, /SMTP_USER and SMTP_PASSWORD/);
+    // Every problem at once, as with the required variables.
+    refuses({ ...complete, SMTP_HOST: 'relay.example.test' }, /NOTIFY_FROM.*NOTIFY_TO.*PUBLIC_URL/s);
+  });
+
+  test('refuses notification settings without SMTP_HOST, rather than staying silently off', () => {
+    refuses({ ...complete, NOTIFY_TO: 'techs@example.test' }, /SMTP_HOST/);
+    refuses({ ...complete, SMTP_USER: 'svc-alarms', SMTP_PASSWORD: 'smtp-secret' }, /SMTP_HOST/);
+  });
+
+  test('refuses a bad address, security mode, port, URL, or window', () => {
+    refuses({ ...smtp, NOTIFY_TO: 'techs@example.test, not-an-address' }, /NOTIFY_TO.*not-an-address/);
+    refuses({ ...smtp, NOTIFY_TO: ' , ' }, /NOTIFY_TO/);
+    refuses({ ...smtp, NOTIFY_FROM: 'Alarms <alarms@example.test>' }, /NOTIFY_FROM/);
+    refuses({ ...smtp, SMTP_SECURE: 'ssl' }, /SMTP_SECURE.*starttls, tls, or none/);
+    refuses({ ...smtp, SMTP_PORT: '0' }, /SMTP_PORT/);
+    refuses({ ...smtp, SMTP_PORT: '70000' }, /SMTP_PORT/);
+    refuses({ ...smtp, PUBLIC_URL: 'alarms.example.test' }, /PUBLIC_URL/);
+    refuses({ ...smtp, PUBLIC_URL: 'ftp://alarms.example.test' }, /PUBLIC_URL/);
+    refuses({ ...smtp, NOTIFY_COALESCE_SECONDS: '-1' }, /NOTIFY_COALESCE_SECONDS/);
+  });
+
+  test('never prints the SMTP password', () => {
+    refuses({ ...smtp, SMTP_USER: 'svc-alarms', SMTP_PASSWORD: 'smtp-secret', NOTIFY_TO: '' }, /NOTIFY_TO/);
+    refuses({ ...complete, SMTP_PASSWORD: 'smtp-secret' }, /SMTP_HOST/);
+  });
+});
+
 describe('startup', () => {
   test('exits with a clear message when required config is missing', () => {
     const backendDir = path.resolve(__dirname, '..');

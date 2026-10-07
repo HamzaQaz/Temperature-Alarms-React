@@ -4,7 +4,8 @@
  * conditions.ts, whose output these rules read and never re-derive.
  *
  * Pure functions only: no I/O, no clock. The database layer (incidentStore.ts) loads the open
- * incidents, asks these rules what a Reading or a silence does to them, and saves the answer.
+ * incidents, asks these rules what a Reading, a fault report, or a silence does to them, and
+ * saves the answer.
  * The demo replays its backfilled week through `replayIncidents`, so the two cannot disagree.
  */
 import {
@@ -41,7 +42,7 @@ export interface IncidentState {
   start: Date;
   /** Null while the incident is open. */
   end: Date | null;
-  /** The worst Reading during the incident; for Offline, the last Reading before it. */
+  /** The worst Reading during the incident; for Offline and Sensor fault, the last good Reading before it. */
   peak: TimedReading;
   /** Oldest first; only the last can be open. */
   segments: Segment[];
@@ -71,27 +72,33 @@ export const isIncidentLevel = (level: ConditionLevel): boolean => rank(level) <
 
 /**
  * The Conditions a just-arrived Reading puts the Device in at incident level, by name. Offline
- * is never among them: a Reading is proof the Device is talking.
+ * is never among them: a Reading is proof the Device is talking. Nor is Sensor fault: a Reading
+ * is proof the sensor answers.
  */
 export function incidentConditions(reading: Omit<TimedReading, 'recordedAt'>, rules: ConditionRules): Map<ConditionName, ConditionLevel> {
-  const found = conditionsFor({ reading, secondsSinceReading: 0, ...rules });
+  const found = conditionsFor({ reading, secondsSinceReport: 0, ...rules });
   return new Map(found.filter((c) => c.name !== 'Offline' && isIncidentLevel(c.level)).map((c) => [c.name, c.level]));
 }
 
+/** The Conditions judged on a Reading's values, as opposed to on the Device's reports. */
+type ValueCondition = Exclude<ConditionName, 'Offline' | 'Sensor fault'>;
+
+const isValueCondition = (condition: ConditionName): condition is ValueCondition => condition !== 'Offline' && condition !== 'Sensor fault';
+
 /** The number a Condition is judged on, and which way is worse: higher (+1) or lower (-1). */
-const MEASURE: Record<Exclude<ConditionName, 'Offline'>, { value: (r: TimedReading) => number | null; worse: 1 | -1 }> = {
+const MEASURE: Record<ValueCondition, { value: (r: TimedReading) => number | null; worse: 1 | -1 }> = {
   Hot: { value: (r) => r.tempF, worse: 1 },
   Cold: { value: (r) => r.tempF, worse: -1 },
   Dry: { value: (r) => r.humidity, worse: -1 },
   'Mold risk': { value: (r) => r.humidity, worse: 1 },
 };
 
-/** The value the peak Reading is reported by: °F for Hot and Cold, percent for Dry and Mold risk, null for Offline. */
+/** The value the peak Reading is reported by: °F for Hot and Cold, percent for Dry and Mold risk, null for Offline and Sensor fault. */
 export function peakValue(condition: ConditionName, peak: TimedReading): number | null {
-  return condition === 'Offline' ? null : MEASURE[condition].value(peak);
+  return isValueCondition(condition) ? MEASURE[condition].value(peak) : null;
 }
 
-function isWorsePeak(condition: Exclude<ConditionName, 'Offline'>, candidate: TimedReading, peak: TimedReading): boolean {
+function isWorsePeak(condition: ValueCondition, candidate: TimedReading, peak: TimedReading): boolean {
   const { value, worse } = MEASURE[condition];
   const a = value(candidate);
   const b = value(peak);
@@ -134,7 +141,7 @@ function stepOne(incident: IncidentState, reading: TimedReading, now: Map<Condit
     if (rank(level) < rank(incident.level)) next.level = level;
     change = 'level';
   }
-  if (isWorsePeak(incident.condition, reading, incident.peak)) next = { ...next, peak: reading };
+  if (isValueCondition(incident.condition) && isWorsePeak(incident.condition, reading, incident.peak)) next = { ...next, peak: reading };
   const dirty = change !== null || next.peak !== incident.peak || incident.cleanReadings !== 0;
   return { incident: next, change, dirty };
 }
@@ -142,7 +149,8 @@ function stepOne(incident: IncidentState, reading: TimedReading, now: Map<Condit
 /**
  * What a Reading does to a Device's open incidents: each continues, changes level, counts a
  * clean Reading, or closes, and any Condition at warning or worse with no open incident opens
- * one. Returns a step per incident touched, the closed ones included.
+ * one. Returns a step per incident touched, the closed ones included. An open Sensor fault
+ * counts the Reading as clean, so two good Readings in a row close it like any other.
  */
 export function applyReading(open: IncidentState[], reading: TimedReading, rules: ConditionRules): IncidentStep[] {
   const now = incidentConditions(reading, rules);
@@ -155,6 +163,43 @@ export function applyReading(open: IncidentState[], reading: TimedReading, rules
 }
 
 /**
+ * What a fault report (docs/adr/0009) does to a Device's open incidents. `sensorFaults` is the
+ * count including this report. It is hearing from the board, so an open Offline incident ends
+ * here. An open Sensor fault continues, and its clean count starts again: the sensor failed
+ * between good Readings. Value incidents are left as they are, their clean count frozen until
+ * Readings resume. Sensor fault opens on the report that brings the count to the threshold,
+ * judged by conditions.ts, peaking at `lastReading`, the last good Reading. A Device that has
+ * never sent a Reading has nothing to peak at, so it opens none; its Condition still shows.
+ */
+export function applyFaultReport(
+  open: IncidentState[],
+  { at, sensorFaults }: { at: Date; sensorFaults: number },
+  lastReading: TimedReading | null,
+  rules: ConditionRules,
+): IncidentStep[] {
+  const steps = open.map((incident): IncidentStep => {
+    if (incident.condition === 'Offline') return close(incident, at);
+    if (incident.condition !== 'Sensor fault' || incident.cleanReadings === 0) return { incident, change: null, dirty: false };
+    return { incident: { ...incident, cleanReadings: 0, firstCleanAt: null }, change: null, dirty: true };
+  });
+  const fault = conditionsFor({ reading: null, secondsSinceReport: 0, sensorFaults, ...rules }).find((c) => c.name === 'Sensor fault');
+  if (fault !== undefined && lastReading !== null && !open.some((i) => i.condition === 'Sensor fault')) {
+    steps.push(opened('Sensor fault', fault.level, at, lastReading));
+  }
+  return steps;
+}
+
+/**
+ * When a Device last reported, a Reading or a fault report, and its last good Reading: Offline
+ * counts silence from the one and reports the other as its peak.
+ */
+export interface LastReport {
+  at: Date;
+  /** Null when the Device has only ever sent fault reports. */
+  reading: TimedReading | null;
+}
+
+/**
  * The first whole second at which conditions.ts reports the Device Offline after `last`
  * (Offline begins *after* the allowed missed reports).
  */
@@ -163,7 +208,7 @@ export function offlineStartsAt(last: Date, rules: ConditionRules): Date {
 }
 
 /**
- * When a Device's silence began, as far as the server can tell: its last Reading, or the moment
+ * When a Device's silence began, as far as the server can tell: its last report, or the moment
  * the server could hear it again (`heardSince`, listening.ts) if that is later. The server's own
  * downtime is not the Device's silence.
  */
@@ -172,29 +217,30 @@ const silentSince = (last: Date, heardSince: Date | undefined): Date =>
 
 /**
  * The Offline incident a silence opens, or null while the Device is still Online at `now`. A
- * Device that has never reported has no Offline incident: there is nothing to have lost.
+ * Device that has never reported has no Offline incident: there is nothing to have lost. Nor
+ * has one that has never sent a Reading, which leaves it no peak.
  */
-export function offlineIncident(last: TimedReading | null, now: Date, rules: ConditionRules, heardSince?: Date): IncidentStep | null {
-  if (last === null) return null;
-  const start = offlineStartsAt(silentSince(last.recordedAt, heardSince), rules);
+export function offlineIncident(last: LastReport | null, now: Date, rules: ConditionRules, heardSince?: Date): IncidentStep | null {
+  if (last === null || last.reading === null) return null;
+  const start = offlineStartsAt(silentSince(last.at, heardSince), rules);
   if (start.getTime() > now.getTime()) return null;
-  return opened('Offline', 'warning', start, last);
+  return opened('Offline', 'warning', start, last.reading);
 }
 
 /**
- * The Offline stretch a Reading ends that the sweep never got to open: the Device went Offline
- * after `previous` and is back before the next pass. Recorded already closed, from when the
- * server would first have reported it Offline to this Reading. Only a stretch that began within
- * the last `sweepSeconds` counts: an older one with nothing open means no sweep was running, so
- * the silence was the server's own (a restart, an outage), not the Device's. Silence counts from `heardSince`
- * when that is later than `previous`, as in offlineIncident.
+ * The Offline stretch a report arriving `at` (a Reading or a fault report) ends that the sweep
+ * never got to open: the Device went Offline after `previous` and is back before the next pass.
+ * Recorded already closed, from when the server would first have reported it Offline to this
+ * report. Only a stretch that began within the last `sweepSeconds` counts: an older one with
+ * nothing open means no sweep was running, so the silence was the server's own (a restart, an
+ * outage), not the Device's. Silence counts from `heardSince` when that is later than
+ * `previous`, as in offlineIncident.
  */
-export function missedOffline(previous: TimedReading | null, reading: TimedReading, rules: ConditionRules, sweepSeconds: number, heardSince?: Date): IncidentStep | null {
-  if (previous === null) return null;
-  const start = offlineStartsAt(silentSince(previous.recordedAt, heardSince), rules);
-  const at = reading.recordedAt.getTime();
-  if (start.getTime() > at || start.getTime() < at - sweepSeconds * 1000) return null;
-  return close(opened('Offline', 'warning', start, previous).incident, reading.recordedAt);
+export function missedOffline(previous: LastReport | null, at: Date, rules: ConditionRules, sweepSeconds: number, heardSince?: Date): IncidentStep | null {
+  if (previous === null || previous.reading === null) return null;
+  const start = offlineStartsAt(silentSince(previous.at, heardSince), rules);
+  if (start.getTime() > at.getTime() || start.getTime() < at.getTime() - sweepSeconds * 1000) return null;
+  return close(opened('Offline', 'warning', start, previous.reading).incident, at);
 }
 
 /**
@@ -216,7 +262,7 @@ export function replayIncidents(readings: TimedReading[], rules: ConditionRules,
   };
   const silence = (at: Date) => {
     if (open.some((i) => i.condition === 'Offline')) return;
-    const offline = offlineIncident(last, at, rules);
+    const offline = offlineIncident(last === null ? null : { at: last.recordedAt, reading: last }, at, rules);
     if (offline !== null) open.push(offline.incident);
   };
   for (const reading of readings) {

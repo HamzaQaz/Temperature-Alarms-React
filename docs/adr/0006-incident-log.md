@@ -13,6 +13,10 @@ Technicians open the Incidents page in the morning to read what happened overnig
 - **The peak.** The worst Reading during the incident: the highest temperature for Hot, the lowest for Cold and the lowest humidity for Dry, the highest humidity for Mold risk. For Offline it is the last Reading before the silence.
 - **How long they are kept.** As long as Readings: an incident that ended before the retention window (ADR 0004, 90 days) is deleted by the same daily job, after the Readings. An ongoing incident stays however old it is.
 
+## Update 2026-10-06: Sensor fault, and silence counted from the last report
+
+ADR 0009 adds a Condition, **Sensor fault** (critical), raised by three fault reports in a row from a board whose sensor does not answer. It is an incident like the others: it opens on the third fault report, closes after two good Readings in a row ending at the first (a fault report between them starts that count again), and its peak is the last good Reading, as Offline's is. Fault reports are judged under the same Device row lock as Readings. While it lasts, open value incidents keep their clean count frozen, since no Readings arrive. Offline now counts silence from the Device's last report, a Reading or a fault report, so a fault report also closes an Offline incident; the "heard since" rule above is unchanged. A Device that has never sent a Reading opens neither incident, having no peak.
+
 ## How it is stored
 
 Two tables, `incidents` and `incident_segments`, both deleted with their Device (and the segments with their incident) by `ON DELETE CASCADE`, as Readings are. Segments are rows of their own rather than a JSON column or a fixed set of columns because an incident has any number of them (a closet swinging between Hot warning and critical gets one per swing), and the timeline reads them in order by incident. The incident row carries what the rules need between Readings: the clean-Reading count, the time of the first clean Reading, and the peak so far.

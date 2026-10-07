@@ -9,7 +9,9 @@ description: Deploy the Temperature Alarms stack to this machine or district ser
 
 ## Secrets stay on the server
 
-The Admin token, Device token, and database password live only in each server's `.env`. Keep them out of the conversation: show `info --yes`, which masks them, and leave `.env` unread. When the operator needs one in full (the Settings page, a board's `config.h`), give them the command to run in their own terminal on the server: `deploy/deploy.sh info --reveal`.
+The Admin token, Device token, database passwords, and SMTP password live only in each server's `.env`. Keep them out of the conversation: show `info --yes`, which masks them, and leave `.env` unread. When the operator needs one in full (the Settings page, a board's `config.h`), give them the command to run in their own terminal on the server: `deploy/deploy.sh info --reveal`.
+
+Never ask for the SMTP password in the chat, and never put it on a command line: the scripts refuse `--smtp-password`. When the relay needs a login, hand the operator the command to run in their own terminal, where it reads the password at a hidden prompt (the same command without `--yes`), or from stdin: `read -rs PW && printf '%s\n' "$PW" | deploy/deploy.sh install --reconfigure --yes --smtp-user USER …; unset PW`, or in PowerShell `[Net.NetworkCredential]::new('', (Read-Host -AsSecureString)).Password | .\deploy\deploy.ps1 install --reconfigure --yes --smtp-user USER …`. With `--host`, the password is read once on this machine and handed to each server on its ssh stdin.
 
 ## Steps
 
@@ -35,6 +37,8 @@ The Admin token, Device token, and database password live only in each server's 
    | restore | `restore --file backups/NAME.sql.gz --yes --confirm PROJECT` |
    | status, logs | `status --yes`; `logs --yes --service api --tail 200` |
    | migrate the old database | `migrate-legacy --yes` |
+   | turn on email notifications, change the recipients | `install --reconfigure --yes --smtp-host RELAY --notify-from ADDR --notify-to LIST --public-url URL`, plus `--smtp-port` and `--smtp-secure starttls\|tls\|none` if they named them, then `deploy --yes` to apply. Each flag changes only its own setting, so `--notify-to LIST` alone changes the recipients. With a login (`--smtp-user USER`), the operator runs it, as above. Ask for what is missing; DEPLOYMENT.md, "Email notifications", lists the questions for the district's mail admin. Then tell them to press "Send test email" on Settings, Notifications |
+   | turn email off | `install --reconfigure --yes --smtp-host off`, then `deploy --yes` |
    | stop, take it down | `stop --yes`; `uninstall --yes` |
    | wipe it | `uninstall --yes --wipe --confirm PROJECT` |
 

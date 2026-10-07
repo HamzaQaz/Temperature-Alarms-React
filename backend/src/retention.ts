@@ -1,6 +1,7 @@
 /**
  * Daily deletion of Readings past the retention window (docs/adr/0004), and of the incidents
  * that ended before it (docs/adr/0006): an incident is kept exactly as long as its Readings.
+ * Notifications sent or given up on are kept a week, for the Settings status (docs/adr/0008).
  *
  * The window is `config.retentionDays` before now. Readings go in bounded batches, with a
  * short pause between full ones, so no single DELETE holds the table for long while Devices
@@ -9,6 +10,7 @@
 import type { ResultSetHeader } from 'mysql2/promise';
 import type { AppDeps } from './deps';
 import { deleteIncidentsEndedBefore } from './incidentStore';
+import { deleteNotificationsBefore, NOTIFICATION_KEEP_DAYS } from './outboxStore';
 
 const DAY_MS = 86_400_000;
 const DEFAULT_BATCH_SIZE = 5_000;
@@ -43,13 +45,15 @@ export function retentionCutoff(now: Date, retentionDays: number): Date {
 
 /**
  * Delete every Reading past the window, then every incident that ended before it (an ongoing
- * one stays however old), `batchSize` at a time, and log the totals. Returns the Readings removed.
+ * one stays however old), `batchSize` at a time, then every notification sent or given up on
+ * more than a week ago, and log the totals. Returns the Readings removed.
  */
 export async function deleteReadingsPastWindow(
   { pool, config, now = () => new Date() }: RetentionDeps,
   { batchSize = DEFAULT_BATCH_SIZE, log = console.log }: Pick<RetentionOptions, 'batchSize' | 'log'> = {},
 ): Promise<number> {
-  const cutoff = retentionCutoff(now(), config.retentionDays);
+  const at = now();
+  const cutoff = retentionCutoff(at, config.retentionDays);
   let removed = 0;
   for (;;) {
     const [result] = await pool.query<ResultSetHeader>('DELETE FROM readings WHERE recorded_at < ? LIMIT ?', [cutoff, batchSize]);
@@ -64,8 +68,13 @@ export async function deleteReadingsPastWindow(
     if (affected < batchSize) break;
     await pause(BATCH_PAUSE_MS);
   }
+  // A week's worth is a few hundred rows at most, so one statement.
+  const notifications = await deleteNotificationsBefore(pool, retentionCutoff(at, NOTIFICATION_KEEP_DAYS));
   const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
-  log(`retention: removed ${plural(removed, 'reading')} and ${plural(incidents, 'incident')} older than ${cutoff.toISOString()} (${config.retentionDays} days)`);
+  log(
+    `retention: removed ${plural(removed, 'reading')} and ${plural(incidents, 'incident')} older than ${cutoff.toISOString()} (${config.retentionDays} days), ` +
+      `and ${plural(notifications, 'notification')} sent or given up on more than ${NOTIFICATION_KEEP_DAYS} days ago`,
+  );
   return removed;
 }
 

@@ -36,14 +36,14 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 | --- | --- |
 | `bootstrap` | Linux only. Installs Docker Engine, the Compose and buildx plugins, and containerd from Docker's own apt or dnf repository, the way [Docker's install guide](https://docs.docker.com/engine/install/) does it (signed by Docker's GPG key; not the `get.docker.com` script), plus git, curl, and cron (`cronie` on RHEL-family servers, whose minimal images have no cron). Enables and starts `docker` and cron, and adds you (the `sudo` caller) to the `docker` group. Uses `sudo` when not run as root. What is already installed is skipped, so it is safe to repeat. A server with a distribution `docker` but no Compose v2 is refused with the uninstall link rather than replaced |
 | `preflight` | Checks Docker, Compose v2, that the daemon is up and runs Linux containers, that the web port is free (or already this stack's), and disk space |
-| `install` | Creates `.env` from `.env.example` with `ADMIN_TOKEN`, `DEVICE_TOKEN`, `DB_PASSWORD`, and `DB_ROOT_PASSWORD` from a cryptographic random source, 64 hex characters each, asks for the port and, if you want, the thresholds and retention (`--web-port`, `--set KEY=VALUE` without asking), and limits `.env` to its owner. An existing `.env` is kept: only empty secrets are filled, and nothing else changes without a yes (or `--reconfigure`) |
+| `install` | Creates `.env` from `.env.example` with `ADMIN_TOKEN`, `DEVICE_TOKEN`, `DB_PASSWORD`, and `DB_ROOT_PASSWORD` from a cryptographic random source, 64 hex characters each, asks for the port, the SMTP relay for [email notifications](#email-notifications) (blank for none), and, if you want, the thresholds and retention (`--web-port`, `--smtp-host` and the rest, `--set KEY=VALUE` without asking), and limits `.env` to its owner. An existing `.env` is kept: only empty secrets are filled, and nothing else changes without a yes (or `--reconfigure`) |
 | `deploy` | Runs `install` if there is no `.env`, offers `git pull --ff-only` on a clean checkout (`--pull` to do it unasked, `--no-pull` to skip), runs preflight, `docker compose up -d --build --wait`, then checks `/api/health` through `web`. This is also the upgrade. On an install from before `DB_ROOT_PASSWORD`, it first gives MySQL root a password of its own, once, behind the typed project name ([Separate MySQL root password](#separate-mysql-root-password)) |
 | `status`, `logs` | `docker compose ps` and the health check; recent logs (`--service api`, `--tail 500`, `--follow`) |
 | `backup` | `mysqldump` through the `db` container to `backups/<project>_<date>-<time>.sql.gz`, checked for completeness. `--keep-days N` then deletes this project's backups older than N days |
 | `schedule-backup`, `unschedule-backup` | Adds a line to your crontab that runs `backup --keep-days 7` every night at 02:00 (`--at HH:MM`, `--keep-days N`), logging to `backups/backup.log`; or removes it. Repeating `schedule-backup` replaces its own line, found by a `# temperature-alarms backup: <checkout>` comment, and other crontab lines are never touched. Linux and macOS; in Git Bash or `deploy.ps1` on Windows it prints the `schtasks` command for Task Scheduler instead |
 | `restore` | Replaces the whole database with a backup (`--file`, or pick from a list): it empties the database first, so a table the backup lacks does not survive it, and the api's migrations recreate any newer table, empty. Asks you to type the project name, and backs up the current database first |
 | `migrate-legacy` | Backs up, then runs `npm run migrate:legacy` in `api` (see [Migrating an old database in](#migrating-an-old-database-in)) |
-| `info` | The dashboard URL, the four secrets (and `DEVICE_TOKEN_PREVIOUS` during a rotation) masked (`--reveal` to print them), and the two `config.h` lines for the firmware |
+| `info` | The dashboard URL, the four secrets (and `DEVICE_TOKEN_PREVIOUS` during a rotation) masked (`--reveal` to print them), the email relay and recipients (or `off`) with the SMTP login, its password masked whole, and the two `config.h` lines for the firmware |
 | `rotate-device-token` | Starts a Device token rotation: the current token becomes `DEVICE_TOKEN_PREVIOUS`, still accepted, a new `DEVICE_TOKEN` is generated, `api` restarts with both, and the new `config.h` line is printed (masked unless `--reveal`). `--finish` ends it once Settings lists no Device on the previous token, and refuses otherwise; `--finish --force` ends it anyway, behind the typed project name ([Rotating the Device token](#rotating-the-device-token)) |
 | `publish-firmware`, `firmware-status`, `withdraw-firmware` | Over-the-air firmware (ADR 0007; README, "Updating boards over the air"). `publish-firmware --file TemperatureAlarms.ino.bin.signed` offers a signed build to every Device, or with `--only ESP_A,ESP_B` to those first; the image goes into `api` on stdin and is checked there (signed, with a version above the published one). `firmware-status` shows the build on offer and the version each Device runs; `withdraw-firmware` stops offering it. The Settings page's Firmware tab does the same from a browser |
 | `stop`, `uninstall` | `docker compose stop`; `docker compose down` and the built images, and the `schedule-backup` crontab line if there is one. `--wipe` also deletes the database volume, behind the typed project name. `.env` and `backups/` stay |
@@ -153,7 +153,7 @@ Set the four secrets; `docker compose up` refuses to start and names any that is
 | `DB_PASSWORD` | The password of the database user `api` connects as. Generate a third one; nothing outside the stack can reach the database |
 | `DB_ROOT_PASSWORD` | The password of MySQL root, which logs in only inside the `db` container, for backups and restores. Generate a fourth one. Only `db` gets it, never `api`, so a bug in `api` cannot become MySQL root. MySQL takes it when the volume is first created; changing it later is the procedure in [Separate MySQL root password](#separate-mysql-root-password) |
 
-`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. `TRUST_PROXY` stays empty unless a TLS proxy sits in front of the stack ([TLS in front of the stack](#tls-in-front-of-the-stack)). Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). `.env` is gitignored.
+`WEB_PORT` is the only port published; leave it at 80 so boards and browsers need no port in their URL. `TRUST_PROXY` stays empty unless a TLS proxy sits in front of the stack ([TLS in front of the stack](#tls-in-front-of-the-stack)). Every other setting in `.env.example` is the backend's and has the default shown; set `LEGACY_TIME_ZONE` only when [migrating an old database in](#migrating-an-old-database-in). The `SMTP_*`, `NOTIFY_*`, and `PUBLIC_URL` lines stay commented until you turn on [email notifications](#email-notifications). `.env` is gitignored.
 
 ### First run
 
@@ -398,6 +398,57 @@ Every board carries the one Device token, so a lost or stolen board, or a token 
 
 Only Readings with neither token count toward the wrong-token limit (100 per address per 15 minutes), so boards on the previous token never lock out their campus. The backend refuses to start if `DEVICE_TOKEN_PREVIOUS` equals `DEVICE_TOKEN` or `ADMIN_TOKEN`. A second rotation is refused until the first is finished; the list lives in `api`'s memory, so after a restart every Device is "not heard" until its next Reading, within one Report interval.
 
+### Email notifications
+
+The server emails a fixed list of recipients when an Incident opens, gets worse (its level rises), or closes, through the district's SMTP relay (ADR 0008). Changes within a minute of each other arrive as one email, worst first, so a campus power cut is one email, not twenty. Devices on the Bench never email. It is off until `SMTP_HOST` is set, and the Settings page says so.
+
+**Ask the district's mail admin first.** Four answers decide the settings:
+
+- **The relay** (`SMTP_HOST`) and its port. Usually an internal relay, or the Exchange or Microsoft 365 connector the district already uses for printers and scanners.
+- **Allowed sender or service account.** Does the relay accept mail from this server's address without a login (an allowed-sender or relay rule for its IP), or does it need a service account? With a rule, leave `SMTP_USER` and `SMTP_PASSWORD` empty; with an account, set both. The address the relay sees is the host's, not the container's.
+- **The sender address** the relay lets this server send as (`NOTIFY_FROM`), such as `temperature-alarms@YOUR_DOMAIN`.
+- **A distribution list** for `NOTIFY_TO`, such as `network-techs@YOUR_DOMAIN`, so who receives alerts changes in Exchange, not in `.env`. Several addresses, comma-separated, work too.
+
+**Ports and the district firewall.** `api` connects out to the relay; nothing connects in. Pick the port with the mail admin:
+
+| Port | `SMTP_SECURE` | When |
+| --- | --- | --- |
+| 587 | `starttls` (the default) | Submission, encrypted with STARTTLS. The usual choice, and the one a service account needs. The server refuses to send if the relay does not offer STARTTLS, rather than send in plain text |
+| 465 | `tls` | TLS from the first byte, for a relay that offers it instead of 587 |
+| 25 | `none` (or `starttls` if the relay offers it) | An internal relay that accepts plain SMTP from allowed addresses. Many district firewalls block port 25 out of server VLANs, to stop infected machines sending spam; ask for this server to reach the relay on it |
+
+Whichever port, the firewall between this server and the relay must allow it. From the server, `nc -vz RELAY 587` (or the port you chose) should connect; `openssl s_client -starttls smtp -connect RELAY:587 -brief </dev/null` shows the relay's certificate for STARTTLS.
+
+**Turn it on** with the deploy script. Interactively, `deploy/deploy.sh install --reconfigure` asks for each value, the password at a hidden prompt; leave the relay blank for no email. Non-interactively:
+
+```bash
+# A relay that accepts this server's address (no login):
+deploy/deploy.sh install --reconfigure --yes \
+  --smtp-host relay.YOUR_DOMAIN --notify-from temperature-alarms@YOUR_DOMAIN \
+  --notify-to network-techs@YOUR_DOMAIN --public-url https://YOUR_DOMAIN
+# With a service account: the password goes in on stdin, never on the command line, where any
+# process on the host could read it. read and printf are bash builtins, so they show it nowhere.
+read -rs PW && printf '%s\n' "$PW" | deploy/deploy.sh install --reconfigure --yes \
+  --smtp-host relay.YOUR_DOMAIN --smtp-user svc-temperature-alarms \
+  --notify-from temperature-alarms@YOUR_DOMAIN --notify-to network-techs@YOUR_DOMAIN \
+  --public-url https://YOUR_DOMAIN; unset PW
+deploy/deploy.sh deploy --yes            # recreates api with the new settings
+```
+
+```powershell
+$pw = Read-Host -AsSecureString 'SMTP password'
+[Net.NetworkCredential]::new('', $pw).Password | .\deploy\deploy.ps1 install --reconfigure --yes `
+  --smtp-host relay.YOUR_DOMAIN --smtp-user svc-temperature-alarms `
+  --notify-from temperature-alarms@YOUR_DOMAIN --notify-to network-techs@YOUR_DOMAIN --public-url https://YOUR_DOMAIN
+.\deploy\deploy.ps1 deploy --yes
+```
+
+`--smtp-port` and `--smtp-secure` take the table's values; without them it is 587 and STARTTLS. `--public-url` is the address technicians open the dashboard at, used for the History links in each email: `https://YOUR_DOMAIN` behind the [TLS proxy](#tls-in-front-of-the-stack). Each flag changes only its own setting, so `install --reconfigure --yes --notify-to oncall@YOUR_DOMAIN` changes the recipients alone, and `--smtp-user` again with nothing on stdin keeps the current password. `--smtp-host off` turns email off and empties the rest of the group. With `--host`, the password is read once here and handed to each server on its ssh stdin. `install` only writes `.env`; `deploy` (or `docker compose up -d`) applies it. `--smtp-password` is refused.
+
+By hand, uncomment the lines at the end of `.env` and run `docker compose up -d`, which recreates only `api`. Put the password in single quotes, `SMTP_PASSWORD='...'`, so Compose reads a `$` or `#` in it as itself; it cannot then contain a single quote. `api` refuses to start on a half-set group: `SMTP_HOST` without `NOTIFY_FROM`, `NOTIFY_TO`, or `PUBLIC_URL`, a user without a password, or any of those set without `SMTP_HOST`. `docker compose logs api` names every problem at once, never the password.
+
+**Prove it** from Settings, Notifications, with the Admin token: "Send test email" sends one now, straight to the relay, and shows the relay's reply or its reason for refusing. It allows one a minute, since every press emails every recipient. The same tab shows whether email is on, the relay, the sender and recipients, and the last send and the last failure. An SMTP outage delays Incident emails rather than losing them: the server keeps retrying for 24 hours, and the failure shows on that tab. `deploy.sh info` prints the relay and recipients, and the login with its password masked.
+
 ### Security
 
 What the stack does by itself:
@@ -511,6 +562,7 @@ The backend refuses to start until these are set, naming whatever is missing:
 | --- | --- |
 | `DB_USER`, `DB_PASSWORD`, `DB_NAME` | The MySQL user and database from step 2 (`DB_HOST` and `DB_PORT` default to `localhost:3306`) |
 | `ADMIN_TOKEN`, `DEVICE_TOKEN` | The two shared secrets, as in the Compose [setup](#setup) table. `DEVICE_TOKEN_PREVIOUS`, set only during a [rotation](#rotating-the-device-token), is the old Device token still accepted; set it to the old value, put the new one in `DEVICE_TOKEN`, `pm2 restart`, and clear it once every board reports with the new one |
+| `SMTP_HOST` and the rest | Optional [email notifications](#email-notifications), listed commented at the end of `backend/.env.example`; off while `SMTP_HOST` is unset |
 
 `CORS_ORIGIN` can stay unset: through the nginx below the dashboard and the API share one origin, which the backend always accepts. Set it only if the dashboard is served from somewhere else. Leave `REPORT_INTERVAL_SECONDS` at 30 unless the firmware interval changes with it, and set `LEGACY_TIME_ZONE` only when upgrading an old database (step 2). Every other setting has a default that `.env.example` shows.
 

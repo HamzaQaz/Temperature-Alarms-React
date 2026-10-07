@@ -21,13 +21,16 @@
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
-    "mysql2": "^3.15.3"
+    "mysql2": "^3.15.3",
+    "nodemailer": "^10.0.15"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.5",
     "@types/node": "^24.10.0",
+    "@types/smtp-server": "^3.5.13",
     "nodemon": "^3.1.10",
+    "smtp-server": "^3.19.17",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   }

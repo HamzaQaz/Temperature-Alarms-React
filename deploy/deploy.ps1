@@ -20,7 +20,12 @@ $ExamplePath = Join-Path $RepoDir '.env.example'
 $BackupDir = Join-Path $RepoDir 'backups'
 $DbName = 'temperature_alarms'
 $Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD')
-$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE')
+$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS')
+# Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
+# flags or the install prompts, never with --set; the password never comes from the command line.
+$NotifyKeys = @('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL')
+# The SMTP password once read from stdin or the hidden prompt (Read-SmtpPassword); never from the arguments.
+$SmtpPw = ''
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
 # repeated deploy leaves the running containers alone instead of recreating them.
 if (-not $env:BUILDX_NO_DEFAULT_ATTESTATIONS) { $env:BUILDX_NO_DEFAULT_ATTESTATIONS = '1' }
@@ -41,8 +46,13 @@ $O = @{
     Service = ''; Hosts = @(); Servers = ''; Dir = 'temperature-alarms'; Repo = ''; Branch = ''
     SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'; Down = $false
     Finish = $false; Force = $false; Only = ''
+    SmtpHost = ''; SmtpPort = ''; SmtpSecure = ''; SmtpUser = ''; NotifyFrom = ''; NotifyTo = ''; PublicUrl = ''
 }
 $OrigArgs = @($args | ForEach-Object { "$_" })
+# What is piped to the script, read only when the SMTP password is wanted (Read-SmtpPassword): a pipe
+# inside a PowerShell session, or stdin under -File. Never read up front, or an open stdin would block.
+$ScriptInput = $input
+$ScriptExpectingInput = [bool]$MyInvocation.ExpectingInput
 
 # --- output ----------------------------------------------------------------------------
 function Write-Line([string]$Text, [string]$Colour) {
@@ -99,7 +109,16 @@ Options:
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
       --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
                         TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
-      --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
+      --reconfigure     Apply --web-port/--set/--smtp-*/--notify-* to an existing .env (secrets are kept)
+Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off unless --smtp-host:
+      --smtp-host HOST    The district's SMTP relay; `off` turns email off and clears the rest
+      --smtp-port PORT    Default 587, or 465 with --smtp-secure tls
+      --smtp-secure MODE  starttls (default), tls, or none
+      --smtp-user USER    Only for a relay that needs a login. The password is read from a hidden
+                          prompt, or with --yes from the first line of stdin; never from the command line
+      --notify-from ADDR  The sender address the relay allows (required with --smtp-host)
+      --notify-to LIST    Recipients, comma-separated; a distribution list (required with --smtp-host)
+      --public-url URL    The dashboard's address, for links in emails (required with --smtp-host)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
@@ -138,6 +157,15 @@ function Read-Args([string[]]$List) {
                 'webport' { $takesValue = $true; $O.WebPort = $next; $O.Pass += @('--web-port', $next) }
                 'set' { $takesValue = $true; $O.Sets += $next; $O.Pass += @('--set', $next) }
                 'reconfigure' { $O.Reconfigure = $true; $O.Pass += '--reconfigure' }
+                'smtphost' { $takesValue = $true; $O.SmtpHost = $next; $O.Pass += @('--smtp-host', $next) }
+                'smtpport' { $takesValue = $true; $O.SmtpPort = $next; $O.Pass += @('--smtp-port', $next) }
+                'smtpsecure' { $takesValue = $true; $O.SmtpSecure = $next; $O.Pass += @('--smtp-secure', $next) }
+                'smtpuser' { $takesValue = $true; $O.SmtpUser = $next; $O.Pass += @('--smtp-user', $next) }
+                'notifyfrom' { $takesValue = $true; $O.NotifyFrom = $next; $O.Pass += @('--notify-from', $next) }
+                'notifyto' { $takesValue = $true; $O.NotifyTo = $next; $O.Pass += @('--notify-to', $next) }
+                'publicurl' { $takesValue = $true; $O.PublicUrl = $next; $O.Pass += @('--public-url', $next) }
+                # Every process on the host can read another's command line; the password comes on stdin instead.
+                { $_ -like 'smtppassword*' } { Fail 'the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin' }
                 'pull' { $O.Pull = $true; $O.Pass += '--pull' }
                 'nopull' { $O.Pull = $false; $O.Pass += '--no-pull' }
                 'reveal' { $O.Reveal = $true; $O.Pass += '--reveal' }
@@ -220,6 +248,8 @@ function Get-EnvValue([string]$Key) {
     foreach ($line in (Read-Lines $EnvPath)) {
         if ($line.StartsWith("$Key=")) { $value = $line.Substring($Key.Length + 1).Trim().Trim('"') }
     }
+    # A single-quoted value (the SMTP password) is literal to Compose: no $ interpolation, no # comment.
+    if ($value.Length -ge 2 -and $value.StartsWith("'") -and $value.EndsWith("'")) { $value = $value.Substring(1, $value.Length - 2) }
     return $value
 }
 
@@ -323,8 +353,183 @@ function Test-Setting([string]$Key, [string]$Value) {
         'LEGACY_TIME_ZONE' { return ($Value -eq '') -or ($Value -match '^[A-Za-z0-9_/+:-]+$') }
         # MySQL's size syntax: bytes, or a whole number of K, M, or G.
         'DB_BUFFER_POOL_SIZE' { return ($Value -eq '') -or ($Value -cmatch '^[1-9][0-9]*[KMG]?$') }
+        'NOTIFY_COALESCE_SECONDS' { return ($Value -eq '') -or ($Value -match '^[0-9]+$') }
         default { return $Value -match '^[0-9]+$' }
     }
+}
+
+# The email settings, as backend/src/config.ts takes them, and nothing that .env or Compose would read
+# as syntax: no quotes, $, #, spaces, or second line (\A and \z, never ^ and $, which allow a newline).
+$EmailRe = '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z0-9-]+'
+function Test-NotifySetting([string]$Key, [string]$Value) {
+    switch ($Key) {
+        'SMTP_HOST' { return $Value -match '\A[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\z' }
+        'SMTP_PORT' { return ($Value -match '\A[0-9]{1,5}\z') -and ([int]$Value -ge 1) -and ([int]$Value -le 65535) }
+        'SMTP_SECURE' { return $Value -cin @('starttls', 'tls', 'none') }
+        # An account name, an address, or DOMAIN\account.
+        'SMTP_USER' { return $Value -match '\A[A-Za-z0-9._@+\\-]+\z' }
+        # Written single-quoted, which Compose takes literally; so anything but a quote and a line break.
+        'SMTP_PASSWORD' { return ($Value -ne '') -and ($Value -notmatch "['`r`n]") }
+        'NOTIFY_FROM' { return $Value -match "\A$EmailRe\z" }
+        'NOTIFY_TO' { return $Value -match "\A$EmailRe(,$EmailRe)*\z" }
+        'PUBLIC_URL' { return $Value -match '\Ahttps?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?\z' }
+        default { return $false }
+    }
+}
+
+function Test-NotifyFlags { return [bool]("$($O.SmtpHost)$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)") }
+
+function Test-StdinRedirected { return [Console]::IsInputRedirected }
+
+# The SMTP password into $script:SmtpPw, never from the command line: a hidden prompt at a console, else
+# the first line piped to the script (or of stdin). Empty when none was given; the caller decides whether
+# that keeps the old one.
+function Read-SmtpPassword([string]$User, [bool]$HasCurrent) {
+    $script:SmtpPw = ''
+    if (Test-Interactive) {
+        $hint = if ($HasCurrent) { '; blank keeps the current one' } else { '' }
+        $secure = Read-Host "  SMTP password for $User (not shown$hint)" -AsSecureString
+        if ($secure -and $secure.Length -gt 0) { $script:SmtpPw = (New-Object System.Management.Automation.PSCredential 'smtp', $secure).GetNetworkCredential().Password }
+        return
+    }
+    $line = $null
+    if ($script:ScriptExpectingInput -and $script:ScriptInput -and $script:ScriptInput.MoveNext()) { $line = "$($script:ScriptInput.Current)" }
+    elseif (Test-StdinRedirected) { $line = [Console]::In.ReadLine() }
+    elseif (-not $script:ScriptExpectingInput) {
+        Fail "--smtp-user with --yes reads the SMTP password from a pipe, and nothing is piped in. Pipe it (`$pw = Read-Host -AsSecureString; [Net.NetworkCredential]::new('', `$pw).Password | .\deploy\deploy.ps1 ...), or leave out --yes to type it at a hidden prompt"
+    }
+    # Windows PowerShell pipes lines with CRLF.
+    if ($null -ne $line) { $script:SmtpPw = $line.TrimEnd("`r") }
+}
+
+# Turns email notifications off: every setting of the group emptied, since one left set without
+# SMTP_HOST stops api from starting.
+function Clear-Notify {
+    foreach ($k in $NotifyKeys) { if (Get-EnvValue $k) { Set-EnvValue $k '' } }
+}
+
+# The whole group at once. An empty port or security mode leaves the backend's default (587, starttls);
+# an empty user drops the login.
+function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string]$User, [string]$Password, [string]$From, [string]$To, [string]$Url) {
+    Set-EnvValue 'SMTP_HOST' $SmtpHost
+    if ($Port -or (Get-EnvValue 'SMTP_PORT')) { Set-EnvValue 'SMTP_PORT' $Port }
+    if ($Secure -or (Get-EnvValue 'SMTP_SECURE')) { Set-EnvValue 'SMTP_SECURE' $Secure }
+    if ($User) { Set-EnvValue 'SMTP_USER' $User; Set-EnvValue 'SMTP_PASSWORD' "'$Password'" }
+    else { Set-EnvValue 'SMTP_USER' ''; Set-EnvValue 'SMTP_PASSWORD' '' }
+    Set-EnvValue 'NOTIFY_FROM' $From
+    Set-EnvValue 'NOTIFY_TO' $To
+    Set-EnvValue 'PUBLIC_URL' $Url
+}
+
+function Get-NotifySummary {
+    $smtpHost = Get-EnvValue 'SMTP_HOST'
+    if (-not $smtpHost) { return 'off (no SMTP_HOST)' }
+    $secure = Get-EnvValue 'SMTP_SECURE'; if (-not $secure) { $secure = 'starttls' }
+    $port = Get-EnvValue 'SMTP_PORT'; if (-not $port) { $port = if ($secure -eq 'tls') { '465' } else { '587' } }
+    return "${smtpHost}:$port ($secure), from $(Get-EnvValue 'NOTIFY_FROM') to $(Get-EnvValue 'NOTIFY_TO')"
+}
+
+function Get-FlagOrEnv([string]$Flag, [string]$Key) { if ($Flag) { return $Flag } else { return Get-EnvValue $Key } }
+
+# --smtp-host and friends into .env, each checked first and nothing written unless all pass. A flag
+# not given keeps what .env has, so one setting can change on its own.
+function Set-NotifyFlagsInEnv {
+    if (-not (Test-NotifyFlags)) { return }
+    if ($O.SmtpHost -eq 'off') {
+        if ("$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)") { Fail '--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it' }
+        Clear-Notify; Ok 'email notifications off'; return
+    }
+    $smtpHost = Get-FlagOrEnv $O.SmtpHost 'SMTP_HOST'
+    if (-not $smtpHost) { Fail 'email notifications are off here; --smtp-host turns them on (with --notify-from, --notify-to, and --public-url)' }
+    $port = Get-FlagOrEnv $O.SmtpPort 'SMTP_PORT'
+    $secure = Get-FlagOrEnv $O.SmtpSecure 'SMTP_SECURE'
+    $user = Get-FlagOrEnv $O.SmtpUser 'SMTP_USER'
+    $from = Get-FlagOrEnv $O.NotifyFrom 'NOTIFY_FROM'
+    $to = (Get-FlagOrEnv $O.NotifyTo 'NOTIFY_TO').Replace(' ', '')
+    $url = (Get-FlagOrEnv $O.PublicUrl 'PUBLIC_URL').TrimEnd('/')
+    if (-not (Test-NotifySetting 'SMTP_HOST' $smtpHost)) { Fail "--smtp-host: '$smtpHost' is not a host name or IPv4 address" }
+    if ($port -and -not (Test-NotifySetting 'SMTP_PORT' $port)) { Fail "--smtp-port: '$port' is not a port number" }
+    if ($secure -and -not (Test-NotifySetting 'SMTP_SECURE' $secure)) { Fail "--smtp-secure: '$secure' is not starttls, tls, or none" }
+    if ($user -and -not (Test-NotifySetting 'SMTP_USER' $user)) { Fail "--smtp-user: '$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\name)" }
+    if (-not $from) { Fail '--notify-from is required with --smtp-host: the sender address the relay allows' }
+    if (-not (Test-NotifySetting 'NOTIFY_FROM' $from)) { Fail "--notify-from: '$from' is not a bare address like alarms@example.org" }
+    if (-not $to) { Fail '--notify-to is required with --smtp-host: at least one recipient, comma-separated' }
+    if (-not (Test-NotifySetting 'NOTIFY_TO' $to)) { Fail "--notify-to: '$to' is not a comma-separated list of bare addresses" }
+    if (-not $url) { Fail '--public-url is required with --smtp-host: the address technicians open the dashboard at, for links in emails (https://YOUR_DOMAIN)' }
+    if (-not (Test-NotifySetting 'PUBLIC_URL' $url)) { Fail "--public-url: '$url' is not an http:// or https:// address" }
+    $script:SmtpPw = ''
+    if ($O.SmtpUser) { Read-SmtpPassword $user ([bool](Get-EnvValue 'SMTP_PASSWORD')) }
+    if (-not $script:SmtpPw -and $user) {
+        $script:SmtpPw = Get-EnvValue 'SMTP_PASSWORD'
+        if (-not $script:SmtpPw) { Fail "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin" }
+    }
+    if ($user -and -not (Test-NotifySetting 'SMTP_PASSWORD' $script:SmtpPw)) { Fail 'the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads $ and # literally)' }
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url
+    $script:SmtpPw = ''
+    $login = if ($user) { ", login $user" } else { '' }
+    Ok "email notifications: $(Get-NotifySummary)$login"
+}
+
+# The same, asked at the keyboard, each answer checked as it is typed. Blank turns them off.
+function Read-Notifications {
+    if (-not (Test-Interactive)) { return }
+    $current = Get-EnvValue 'SMTP_HOST'
+    Write-Host "  Incident emails go out through the district's SMTP relay (DEPLOYMENT.md, Email notifications)."
+    $offHint = if ($current) { '; off: turn them off' } else { '' }
+    while ($true) {
+        $value = Ask "SMTP relay host for Incident emails (blank: no emails$offHint)" $current
+        if (-not $value -or $value -eq 'off' -or (Test-NotifySetting 'SMTP_HOST' $value)) { break }
+        Warn "'$value' is not a host name or IPv4 address"
+    }
+    if (-not $value -or $value -eq 'off') { Clear-Notify; return }
+    $smtpHost = $value
+    $current = Get-EnvValue 'SMTP_SECURE'; if (-not $current) { $current = 'starttls' }
+    while ($true) {
+        $secure = Ask 'Connection security: starttls, tls (from the first byte), or none' $current
+        if (Test-NotifySetting 'SMTP_SECURE' $secure) { break }
+        Warn "'$secure' is not starttls, tls, or none"
+    }
+    $current = Get-EnvValue 'SMTP_PORT'; if (-not $current) { $current = if ($secure -eq 'tls') { '465' } else { '587' } }
+    while ($true) {
+        $port = Ask 'SMTP port (587 for starttls, 465 for tls, 25 for a plain relay)' $current
+        if (Test-NotifySetting 'SMTP_PORT' $port) { break }
+        Warn "'$port' is not a port number"
+    }
+    $user = Get-EnvValue 'SMTP_USER'
+    $script:SmtpPw = ''
+    if (Confirm-Choice "Does the relay need a login (a service account)? Ask the district's mail admin" ([bool]$user)) {
+        while ($true) {
+            $user = Ask 'SMTP user' $user
+            if ($user -and (Test-NotifySetting 'SMTP_USER' $user)) { break }
+            Warn "'$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\name)"
+        }
+        while ($true) {
+            Read-SmtpPassword $user ([bool](Get-EnvValue 'SMTP_PASSWORD'))
+            if (-not $script:SmtpPw) { $script:SmtpPw = Get-EnvValue 'SMTP_PASSWORD' }
+            if (Test-NotifySetting 'SMTP_PASSWORD' $script:SmtpPw) { break }
+            Warn 'a password is needed, without a single quote'
+        }
+    }
+    else { $user = '' }
+    while ($true) {
+        $from = Ask 'Sender address the relay allows' (Get-EnvValue 'NOTIFY_FROM')
+        if (Test-NotifySetting 'NOTIFY_FROM' $from) { break }
+        Warn "'$from' is not a bare address like alarms@example.org"
+    }
+    while ($true) {
+        $to = (Ask 'Recipients, comma-separated (a distribution list is best)' (Get-EnvValue 'NOTIFY_TO')).Replace(' ', '')
+        if (Test-NotifySetting 'NOTIFY_TO' $to) { break }
+        Warn "'$to' is not a comma-separated list of bare addresses"
+    }
+    $current = Get-EnvValue 'PUBLIC_URL'; if (-not $current) { $current = Get-SiteUrl }
+    while ($true) {
+        $url = (Ask 'Dashboard address for links in emails (https://YOUR_DOMAIN behind TLS)' $current.TrimEnd('/')).TrimEnd('/')
+        if (Test-NotifySetting 'PUBLIC_URL' $url) { break }
+        Warn "'$url' is not an http:// or https:// address"
+    }
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url
+    $script:SmtpPw = ''
+    Write-Host '  Settings, Notifications, has a "Send test email" button once deployed.'
 }
 
 function Set-FlagsInEnv {
@@ -339,6 +544,7 @@ function Set-FlagsInEnv {
         if (-not (Test-Setting $key $value)) { Fail "--set: '$value' is not valid for $key" }
         Set-EnvValue $key $value; Ok "$key=$value"
     }
+    Set-NotifyFlagsInEnv
 }
 
 function Read-Tunables {
@@ -363,6 +569,7 @@ function Read-Tunables {
         Set-EnvValue 'TRUST_PROXY' $value
     }
     elseif ($current) { Set-EnvValue 'TRUST_PROXY' '' }
+    Read-Notifications
     if (Confirm-Choice 'Change the alarm thresholds and retention from their defaults?' $false) {
         foreach ($k in $Tunables) {
             $current = Get-EnvValue $k
@@ -371,7 +578,7 @@ function Read-Tunables {
                 if (Test-Setting $k $value) { break }
                 Warn "'$value' is not valid for $k"
             }
-            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE') -and -not $value) { continue }
+            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS') -and -not $value) { continue }
             Set-EnvValue $k $value
         }
     }
@@ -491,11 +698,11 @@ function Invoke-Install {
     if (Test-Path -LiteralPath $EnvPath) {
         Ok '.env exists; keeping it'
         Add-MissingSecrets
-        if ($O.WebPort -or $O.Sets.Count -gt 0) {
+        if ($O.WebPort -or $O.Sets.Count -gt 0 -or (Test-NotifyFlags)) {
             if ($O.Reconfigure -or ((Test-Interactive) -and (Confirm-Choice 'Write the given settings into the existing .env? Secrets are kept.' $false))) { Set-FlagsInEnv }
             else { Warn 'settings given but .env left unchanged; add --reconfigure to apply them' }
         }
-        elseif ($O.Reconfigure -or ((Test-Interactive) -and (Confirm-Choice 'Change the port and tunables in the existing .env? Secrets are kept.' $false))) {
+        elseif ($O.Reconfigure -or ((Test-Interactive) -and (Confirm-Choice 'Change the port, email notifications, and tunables in the existing .env? Secrets are kept.' $false))) {
             Read-Tunables
         }
     }
@@ -509,10 +716,11 @@ function Invoke-Install {
         $name = if ($O.Project) { $O.Project } else { Get-ProjectName }
         Set-EnvValue 'COMPOSE_PROJECT_NAME' $name
         Ok "COMPOSE_PROJECT_NAME=$name (names the database volume, ${name}_db-data)"
-        if ($O.WebPort -or $O.Sets.Count -gt 0 -or -not (Test-Interactive)) { Set-FlagsInEnv } else { Read-Tunables }
+        if ($O.WebPort -or $O.Sets.Count -gt 0 -or (Test-NotifyFlags) -or -not (Test-Interactive)) { Set-FlagsInEnv } else { Read-Tunables }
     }
     Protect-EnvFile
     Ok "web port $(Get-WebPortSetting), project $(Get-ProjectName)"
+    if (-not (Test-NotifyFlags)) { Ok "email notifications: $(Get-NotifySummary)" }
 }
 
 function Invoke-MaybePull {
@@ -762,6 +970,13 @@ function Invoke-Info {
     if ($previous) { Write-Host "  Previous      $(Hide-Secret $previous)   (still accepted: rotate-device-token --finish ends that)" }
     Write-Host "  DB password   $(Hide-Secret (Get-EnvValue 'DB_PASSWORD'))"
     Write-Host "  DB root       $(Hide-Secret (Get-EnvValue 'DB_ROOT_PASSWORD'))"
+    Write-Host "  Email         $(Get-NotifySummary)"
+    # Masked whole: unlike the 64-hex secrets, a chosen password would give away its first and last four.
+    $smtpUser = Get-EnvValue 'SMTP_USER'
+    if ($smtpUser) {
+        $smtpPassword = if ($O.Reveal) { Get-EnvValue 'SMTP_PASSWORD' } else { '********' }
+        Write-Host "  SMTP login    $smtpUser / $smtpPassword"
+    }
     Write-Host ''
     Write-Host '  For arduino/TemperatureAlarms/config.h:'
     Write-Host "    #define SERVER_URL `"$($url.TrimEnd('/'))`""
@@ -1058,12 +1273,18 @@ function Invoke-RemoteHost([string]$Target) {
     $b64 = [Convert]::ToBase64String($Utf8NoBom.GetBytes($remote + "`n"))
     $wrapper = "f=`$(mktemp) && echo $b64 | base64 -d > `$f && bash `$f; rc=`$?; rm -f `$f; exit `$rc"
     $sshArgs = @()
-    if ((Test-Interactive) -and -not [Console]::IsOutputRedirected) { $sshArgs += '-t' }
+    if ((Test-Interactive) -and -not [Console]::IsOutputRedirected -and -not $O.SmtpUser) { $sshArgs += '-t' }
     if ($O.SshOpts) { $sshArgs += @($O.SshOpts -split '\s+' | Where-Object { $_ }) }
     $sshArgs += @($Target, $wrapper)
     # Called as a statement, so ssh writes straight to the console (prompts included) and
     # only the exit code comes back, through $script:RemoteExit.
-    & ssh @sshArgs
+    if ($O.SmtpUser) {
+        # The SMTP password goes to deploy.sh there as the first line of its stdin, never in the command.
+        # UTF-8, not Windows PowerShell 5.1's ASCII default, so a non-ASCII password arrives intact.
+        $OutputEncoding = $Utf8NoBom
+        $script:SmtpPw | & ssh @sshArgs
+    }
+    else { & ssh @sshArgs }
     $script:RemoteExit = $LASTEXITCODE
 }
 
@@ -1101,6 +1322,11 @@ function Invoke-Remote {
     if (-not $O.Action -and $O.Hosts.Count -gt 1) { Fail 'give an action for more than one host' }
     if (-not $O.Action -and -not (Test-Interactive)) { Fail 'give an action, or run interactively for the menu' }
     if (-not (Get-Command ssh -ErrorAction SilentlyContinue)) { Fail 'ssh is not installed here (Windows: Settings > Optional features > OpenSSH Client)' }
+    if ($O.SmtpUser) {
+        # Read once here and handed to each server on stdin (Invoke-RemoteHost).
+        Read-SmtpPassword $O.SmtpUser $false
+        if (-not $script:SmtpPw) { Fail '--smtp-user needs the SMTP password: type it at the prompt, or with --yes send it as the first line of stdin' }
+    }
     if (-not $O.Repo) { $O.Repo = "$(& git -C $RepoDir remote get-url origin 2>$null)" }
     $results = @(); $failed = $false
     $label = if ($O.Action) { $O.Action } else { 'menu' }

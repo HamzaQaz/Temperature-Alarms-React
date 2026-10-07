@@ -10,22 +10,39 @@ import type { Config } from '../config';
 import { isTimeZone, localDay, serverTimeZone, todayIn, type LocalDay } from '../localDay';
 import type { ReadingPayload } from '../sse';
 import { MonotonicStore } from '../monotonicStore';
-import { LATEST_READING_ID, latestAllowed } from '../latestReading';
+import { LATEST_READING_ID, lastReportAt, latestAllowed } from '../latestReading';
 import { notePending } from '../pendingDevices';
 import { parseDeviceInfo } from '../deviceInfo';
 import { cachedRelease, offers } from '../firmwareStore';
 import type { DeviceSightings } from '../deviceSightings';
-import { broadcastIncidentChanges, deleteDeviceIncidents, recordReadingIncidents, type ChangedIncident } from '../incidentStore';
+import type { TimedReading } from '../incidents';
+import {
+  broadcastIncidentChanges,
+  deleteDeviceIncidents,
+  latestReadingOf,
+  recordFaultIncidents,
+  recordReadingIncidents,
+  type ChangedIncident,
+} from '../incidentStore';
+import { enqueueNotifications } from '../outboxStore';
 
 interface DeviceIdRow extends RowDataPacket {
   id: number;
   hostname: string;
+  lastReportAt: Date | null;
+  sensorFaults: number;
 }
 
 interface ReadingInput {
   hostname: string;
   tempF: number;
   humidity: number;
+}
+
+/** A board saying its sensor did not answer this Report interval (firmware 5 and later, docs/adr/0009). */
+interface FaultInput {
+  hostname: string;
+  fault: 'sensor';
 }
 
 /**
@@ -49,11 +66,19 @@ const HUMIDITY_RANGE = { min: 0, max: 100 } as const;
 
 const within = (value: number, { min, max }: { min: number; max: number }): boolean => value >= min && value <= max;
 
-/** Normalised reading input, or the message explaining why the body is not one. */
-function parseReading(body: unknown): ReadingInput | { error: string } {
-  const { device, temp, humidity } = (body ?? {}) as Record<string, unknown>;
+/**
+ * Normalised reading input, or a fault report (`fault: "sensor"` and no values), or the message
+ * explaining why the body is neither.
+ */
+function parseReading(body: unknown): ReadingInput | FaultInput | { error: string } {
+  const { device, temp, humidity, fault } = (body ?? {}) as Record<string, unknown>;
   const hostname = typeof device === 'string' ? normaliseHostname(device) : '';
   if (hostname === '') return { error: 'A reading needs the device hostname' };
+  if (fault !== undefined) {
+    if (fault !== 'sensor') return { error: 'fault must be "sensor"' };
+    if (temp !== undefined || humidity !== undefined) return { error: 'A fault report carries no temp or humidity' };
+    return { hostname, fault };
+  }
   if (!isNumeric(temp)) return { error: 'temp must be a number' };
   if (!within(temp, TEMP_F_RANGE)) return { error: `temp must be between ${TEMP_F_RANGE.min} and ${TEMP_F_RANGE.max} °F` };
   if (!isNumeric(humidity)) return { error: 'humidity must be a number' };
@@ -76,7 +101,9 @@ export { DEVICE_AUTH_FAILURE_LIMIT } from '../deviceAuth';
 
 /**
  * Reading ingest (POST /api/readings): a Device posts `{device, temp, humidity}` with the
- * Device token. Each recorded Reading is broadcast to every open dashboard.
+ * Device token. Each recorded Reading is broadcast to every open dashboard. A board whose sensor
+ * did not answer (firmware 5) posts `{device, fault: "sensor"}` instead: a fault report, 202,
+ * keeping it Online and counting toward Sensor fault, with no Reading written (docs/adr/0009).
  */
 export function readingsRouter({ pool, config, sse, ingest, listening, rotation, sightings, deviceAuth }: RouteDeps): Router {
   const router = Router();
@@ -106,23 +133,30 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       res.status(422).json({ error: parsed.error });
       return;
     }
-    const { hostname, tempF, humidity } = parsed;
+    const { hostname } = parsed;
+    // Null for a fault report: the sensor did not answer, so there is nothing to record.
+    const values = 'fault' in parsed ? null : { tempF: parsed.tempF, humidity: parsed.humidity };
     const info = parseDeviceInfo(req.body);
     try {
-      // The Reading and what it does to the Device's incidents commit together, under the Device's
-      // row lock, so two Readings of one Device are never judged at once (docs/adr/0006).
+      // The report and what it does to the Device's incidents commit together, under the Device's
+      // row lock, so two reports of one Device are never judged at once (docs/adr/0006, 0009).
       const conn = await pool.getConnection();
       let device: DeviceIdRow | undefined;
       let recordedAt: Date;
+      let sensorFaults: number;
+      let lastReading: TimedReading | null = null;
       let changed: ChangedIncident[];
       try {
         await conn.beginTransaction();
-        const [devices] = await conn.query<DeviceIdRow[]>('SELECT id, hostname FROM devices WHERE hostname = ? FOR UPDATE', [hostname]);
+        const [devices] = await conn.query<DeviceIdRow[]>(
+          'SELECT id, hostname, last_report_at AS lastReportAt, sensor_faults AS sensorFaults FROM devices WHERE hostname = ? FOR UPDATE',
+          [hostname],
+        );
         device = devices[0];
         if (device === undefined) {
           await conn.rollback();
           // A board with the Device token that nobody has registered: listed in Settings to be adopted.
-          await notePending(pool, { hostname, reading: { tempF, humidity }, address: req.ip ?? null }).catch((error: unknown) =>
+          await notePending(pool, { hostname, reading: values, address: req.ip ?? null }).catch((error: unknown) =>
             console.error('Could not list an unregistered board:', error instanceof Error ? error.message : error),
           );
           res.status(404).json({ error: `No device is registered with the hostname ${hostname}` });
@@ -131,10 +165,18 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         recordedAt = serverNow();
         // The database answers again: a silence before this is the server's, not the Device's (listening.ts).
         listening?.regained(recordedAt);
-        await conn.query<ResultSetHeader>(
-          'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
-          [device.id, tempF, humidity, recordedAt],
-        );
+        if (values !== null) {
+          await conn.query<ResultSetHeader>(
+            'INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES (?, ?, ?, ?)',
+            [device.id, values.tempF, values.humidity, recordedAt],
+          );
+        } else {
+          // What the card keeps showing, and the peak a Sensor fault incident reports.
+          lastReading = await latestReadingOf(conn, device.id, recordedAt);
+        }
+        // Either is a report, so the Device is heard from now. A Reading clears the fault count; a fault report adds one.
+        sensorFaults = values === null ? device.sensorFaults + 1 : 0;
+        await conn.query('UPDATE devices SET last_report_at = ?, sensor_faults = ? WHERE id = ?', [recordedAt, sensorFaults, device.id]);
         // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware tab.
         if (info !== null) {
           await conn.query(
@@ -143,7 +185,12 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
             [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, recordedAt, device.id],
           );
         }
-        changed = await recordReadingIncidents(conn, device.id, { tempF, humidity, recordedAt }, rules, listening?.since());
+        changed =
+          values === null
+            ? await recordFaultIncidents(conn, device.id, { at: recordedAt, sensorFaults }, lastReading, device.lastReportAt, rules, listening?.since())
+            : await recordReadingIncidents(conn, device.id, { ...values, recordedAt }, device.lastReportAt, rules, listening?.since());
+        // Queued with the change it reports, so neither commits without the other (docs/adr/0008).
+        if (config.notifications !== undefined) await enqueueNotifications(conn, changed, recordedAt);
         await conn.commit();
       } catch (error) {
         await conn.rollback();
@@ -151,24 +198,35 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       } finally {
         conn.release();
       }
-      ingest.succeeded();
+      // Only a Reading proves the readings table takes writes (ingestHealth.ts); a fault report wrote none.
+      if (values !== null) ingest.succeeded();
       // Only for a registered Device, so neither the log nor the list can be filled with made-up hostnames.
       rotation.heard(device.hostname, deviceTokenOf(res));
       sightings.accepted(device.hostname);
-      const reading: ReadingPayload = { tempF, humidity, recordedAt: recordedAt.toISOString() };
       // A newer build waiting for this board: said in a header, so the board checks for it now instead
       // of at its hourly check. Only for a board that says its version, the firmware that can act on it.
+      // A board with a dead sensor gets it too: it can still be updated.
       if (info?.firmwareVersion != null) {
         const release = await cachedRelease(pool).catch(() => null);
         if (release !== null && offers(release, device.hostname, info.firmwareVersion)) res.set('X-Firmware-Available', String(release.version));
       }
-      res.status(201).json({ device: device.hostname, reading });
-      // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
-      const conditions = conditionsFor({ reading: { tempF, humidity }, secondsSinceReading: 0, ...rules });
-      sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions });
+      const reportedAt = recordedAt.toISOString();
+      if (values === null) {
+        // 202: heard, and nothing created.
+        res.status(202).json({ device: device.hostname, fault: 'sensor' });
+        // Heard from just now; the last good Reading is judged only until the count reaches a Sensor fault.
+        const conditions = conditionsFor({ reading: lastReading, secondsSinceReport: 0, sensorFaults, ...rules });
+        sse.broadcast({ type: 'fault', device: device.hostname, fault: 'sensor', online: !isOffline(conditions), conditions, lastReportAt: reportedAt });
+      } else {
+        const reading: ReadingPayload = { ...values, recordedAt: reportedAt };
+        res.status(201).json({ device: device.hostname, reading });
+        // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
+        const conditions = conditionsFor({ reading: values, secondsSinceReport: 0, ...rules });
+        sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions, lastReportAt: reportedAt });
+      }
       await broadcastIncidentChanges(pool, sse, changed);
     } catch (error) {
-      // Only before the 201: a failed broadcast afterwards is not a Reading lost.
+      // Only before the 201 or 202: a failed broadcast afterwards is not a report lost.
       if (!res.headersSent) {
         ingest.failed();
         listening?.lost();
@@ -190,23 +248,32 @@ interface DashboardRow extends RowDataPacket {
   tempF: number | null;
   humidity: number | null;
   recordedAt: Date | null;
+  lastReportAt: Date | null;
+  sensorFaults: number;
 }
 
 /** Every Device with its latest Reading, in one statement: one step back along the index per Device (latestReading.ts). */
 const SELECT_DASHBOARD = `
   SELECT d.id, d.hostname, d.closet,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode,
-         r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt
+         r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt,
+         d.last_report_at AS lastReportAt, d.sensor_faults AS sensorFaults
   FROM devices d
   JOIN campuses c ON c.id = d.campus_id
   LEFT JOIN readings r ON r.id = (${LATEST_READING_ID})`;
 const ORDER_DASHBOARD = 'ORDER BY c.name, d.closet, d.hostname';
 
+/** Whole seconds from `then` to `now` by the server's clock, never negative; null with no `then`. */
+const secondsSince = (then: Date | null, now: Date): number | null =>
+  then === null ? null : Math.max(0, Math.floor((now.getTime() - then.getTime()) / 1000));
+
 function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, sightings: DeviceSightings) {
-  const { id, hostname, closet, campusId, campusName, campusShortcode, tempF, humidity, recordedAt } = row;
+  const { id, hostname, closet, campusId, campusName, campusShortcode, tempF, humidity, recordedAt, sensorFaults } = row;
   const latest = recordedAt === null || tempF === null ? null : { tempF, humidity, recordedAt };
-  const secondsSinceReading = latest === null ? null : Math.max(0, Math.floor((now.getTime() - latest.recordedAt.getTime()) / 1000));
-  const conditions = conditionsFor({ reading: latest, secondsSinceReading, ...rules });
+  const secondsSinceReading = secondsSince(latest?.recordedAt ?? null, now);
+  const reportedAt = lastReportAt(row.lastReportAt, latest?.recordedAt ?? null, now);
+  const secondsSinceReport = secondsSince(reportedAt, now);
+  const conditions = conditionsFor({ reading: latest, secondsSinceReport, sensorFaults, ...rules });
   return {
     id,
     hostname,
@@ -216,6 +283,10 @@ function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, 
     latestReading: latest === null ? null : ({ ...latest, recordedAt: latest.recordedAt.toISOString() } satisfies ReadingPayload),
     online: !isOffline(conditions),
     secondsSinceReading,
+    /** When the board last reported, a Reading or a fault report (docs/adr/0009); Online and Offline count from it. */
+    lastReportAt: reportedAt?.toISOString() ?? null,
+    /** By the server's clock, so the browser ages it from when it fetched, never against its own clock. */
+    secondsSinceReport,
     /** Worst first; the browser renders these and computes none of its own. */
     conditions,
     /** When the board was last refused for its Device token, within the last 15 minutes; null otherwise. */

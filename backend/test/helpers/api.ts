@@ -26,7 +26,7 @@ export interface RecordedReading {
 }
 
 export interface Condition {
-  name: 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Offline';
+  name: 'Hot' | 'Cold' | 'Dry' | 'Mold risk' | 'Sensor fault' | 'Offline';
   level: 'critical' | 'high' | 'warning' | 'moderate';
 }
 
@@ -39,6 +39,9 @@ export interface DashboardDevice {
   latestReading: Reading | null;
   online: boolean;
   secondsSinceReading: number | null;
+  /** When the board last reported, a Reading or a fault report; null when it never has. */
+  lastReportAt: string | null;
+  secondsSinceReport: number | null;
   /** Every Condition the Device is in, worst first. */
   conditions: Condition[];
 }

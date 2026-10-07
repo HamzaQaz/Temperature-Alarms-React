@@ -7,6 +7,7 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { ConditionLevel, ConditionName, ConditionRules } from './conditions';
 import {
+  applyFaultReport,
   applyReading,
   missedOffline,
   offlineIncident,
@@ -14,19 +15,23 @@ import {
   type IncidentChange,
   type IncidentState,
   type IncidentStep,
+  type LastReport,
   type Segment,
   type TimedReading,
 } from './incidents';
 import type { Broadcaster, IncidentPayload } from './sse';
-import { LATEST_READING_ID, latestAllowed } from './latestReading';
+import { LATEST_READING_ID, lastReportAt, latestAllowed } from './latestReading';
+import { enqueueNotifications } from './outboxStore';
 
 /** A pool or one of its connections: anything that runs a statement. */
 type Db = Pool | PoolConnection;
 
-/** An incident whose change a browser should hear about. */
+/** An incident whose change a browser should hear about, and the outbox may email. */
 export interface ChangedIncident {
   id: number;
   change: IncidentChange;
+  /** True when this change also wrote the incident, as for an Offline stretch ingest records already closed. */
+  created: boolean;
 }
 
 interface IncidentRow extends RowDataPacket {
@@ -130,34 +135,80 @@ async function saveSteps(db: Db, deviceId: number, steps: IncidentStep[]): Promi
     if (!step.dirty) continue;
     const id = step.incident.id ?? (await insertIncident(db, deviceId, step.incident));
     if (step.incident.id !== undefined) await updateIncident(db, step);
-    if (step.change !== null) changed.push({ id, change: step.change });
+    if (step.change !== null) changed.push({ id, change: step.change, created: step.incident.id === undefined });
   }
   return changed;
 }
 
 /**
+ * A Device's latest Reading at `at`, or with `skip` the one that many steps before it: one step
+ * back along the index from the latest (latestReading.ts).
+ */
+export async function latestReadingOf(conn: PoolConnection, deviceId: number, at: Date, skip = 0): Promise<TimedReading | null> {
+  const [rows] = await conn.query<LatestReadingRow[]>(
+    `SELECT temp_f AS tempF, humidity, recorded_at AS recordedAt FROM readings
+     WHERE device_id = ? AND recorded_at <= ? ORDER BY device_id DESC, recorded_at DESC, id DESC LIMIT 1 OFFSET ?`,
+    [deviceId, latestAllowed(at), skip],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * The Offline stretch a report arriving `at` ends that the sweep never opened, if any, with no
+ * Offline incident open. `storedReportAt` is the Device's `last_report_at` before this report;
+ * `lastReading` its latest Reading before it.
+ */
+function missedBy(at: Date, storedReportAt: Date | null, lastReading: TimedReading | null, rules: ConditionRules, heardSince?: Date): IncidentStep | null {
+  const last = lastReportAt(storedReportAt, lastReading?.recordedAt ?? null, at);
+  const previous: LastReport | null = last === null ? null : { at: last, reading: lastReading };
+  // The sweep runs once every Report interval (offlineSweep.ts).
+  return missedOffline(previous, at, rules, rules.reportIntervalSeconds, heardSince);
+}
+
+/**
  * Run a just-recorded Reading through the incident rules. Call it on the connection that
  * inserted the Reading, inside its transaction, holding the Device's row lock, so two Readings
- * of one Device are never judged at once.
+ * of one Device are never judged at once. `storedReportAt` is the Device's last report before
+ * this Reading, as its row held it.
  */
 export async function recordReadingIncidents(
   conn: PoolConnection,
   deviceId: number,
   reading: TimedReading,
+  storedReportAt: Date | null,
   rules: ConditionRules,
   heardSince?: Date,
 ): Promise<ChangedIncident[]> {
   const open = await loadOpenIncidents(conn, deviceId);
   const steps = applyReading(open, reading, rules);
   if (!open.some((i) => i.condition === 'Offline')) {
-    // The Reading before this one, one step back along the index from the latest (latestReading.ts).
-    const [previous] = await conn.query<LatestReadingRow[]>(
-      `SELECT temp_f AS tempF, humidity, recorded_at AS recordedAt FROM readings
-       WHERE device_id = ? AND recorded_at <= ? ORDER BY device_id DESC, recorded_at DESC, id DESC LIMIT 1 OFFSET 1`,
-      [deviceId, latestAllowed(reading.recordedAt)],
-    );
-    // The sweep runs once every Report interval (offlineSweep.ts).
-    const missed = missedOffline(previous[0] ?? null, reading, rules, rules.reportIntervalSeconds, heardSince);
+    // The Reading before this one.
+    const previous = await latestReadingOf(conn, deviceId, reading.recordedAt, 1);
+    const missed = missedBy(reading.recordedAt, storedReportAt, previous, rules, heardSince);
+    if (missed !== null) steps.unshift(missed);
+  }
+  return saveSteps(conn, deviceId, steps);
+}
+
+/**
+ * Run a fault report (docs/adr/0009) through the incident rules, under the same row lock and in
+ * the same transaction as the count it raised. `sensorFaults` includes this report; `lastReading`
+ * is the Device's latest Reading, its last good one (latestReadingOf); `storedReportAt` is its
+ * last report before this one, as its row held it.
+ */
+export async function recordFaultIncidents(
+  conn: PoolConnection,
+  deviceId: number,
+  report: { at: Date; sensorFaults: number },
+  lastReading: TimedReading | null,
+  storedReportAt: Date | null,
+  rules: ConditionRules,
+  heardSince?: Date,
+): Promise<ChangedIncident[]> {
+  const open = await loadOpenIncidents(conn, deviceId);
+  const steps = applyFaultReport(open, report, lastReading, rules);
+  if (!open.some((i) => i.condition === 'Offline')) {
+    const missed = missedBy(report.at, storedReportAt, lastReading, rules, heardSince);
     if (missed !== null) steps.unshift(missed);
   }
   return saveSteps(conn, deviceId, steps);
@@ -168,26 +219,35 @@ interface LatestReadingRow extends RowDataPacket {
   tempF: number;
   humidity: number | null;
   recordedAt: Date;
+  /** The Device's `last_report_at`, where the query reads it. */
+  lastReportAt?: Date | null;
 }
 
 
 /**
  * Open an Offline incident for every Device the server would now report Offline that has none
  * open. One indexed lookup per Device finds the candidates; each is then rechecked under its
- * row lock, so a Reading that lands meanwhile wins. Silence counts from `heardSince` when that is
- * later than a Device's last Reading (listening.ts).
+ * row lock, so a report that lands meanwhile wins. Silence counts from a Device's last report, a
+ * Reading or a fault report (docs/adr/0009), or from `heardSince` when that is later
+ * (listening.ts). Only a Device with a Reading is a candidate: the last one is the peak. With
+ * `notify`, each opening is queued for email in the same transaction (docs/adr/0008).
  */
-export async function sweepOffline(pool: Pool, rules: ConditionRules, now: Date, heardSince?: Date): Promise<ChangedIncident[]> {
+export async function sweepOffline(pool: Pool, rules: ConditionRules, now: Date, heardSince?: Date, notify = false): Promise<ChangedIncident[]> {
   const [candidates] = await pool.query<LatestReadingRow[]>(
-    `SELECT d.id AS deviceId, r.recorded_at AS recordedAt
+    `SELECT d.id AS deviceId, d.last_report_at AS lastReportAt, r.recorded_at AS recordedAt
      FROM devices d
      JOIN readings r ON r.id = (${LATEST_READING_ID})
      WHERE NOT EXISTS (SELECT 1 FROM incidents i WHERE i.device_id = d.id AND i.open_condition = 'Offline')`,
     [latestAllowed(now)],
   );
+  const lastOf = (row: Pick<LatestReadingRow, 'lastReportAt' | 'tempF' | 'humidity' | 'recordedAt'>): LastReport => ({
+    at: lastReportAt(row.lastReportAt ?? null, row.recordedAt, now) ?? row.recordedAt,
+    reading: { tempF: row.tempF, humidity: row.humidity, recordedAt: row.recordedAt },
+  });
   const changed: ChangedIncident[] = [];
-  for (const { deviceId, recordedAt } of candidates) {
-    if (offlineIncident({ tempF: 0, humidity: null, recordedAt }, now, rules, heardSince) === null) continue;
+  for (const { deviceId, lastReportAt: reportAt, recordedAt } of candidates) {
+    // Only the times count here; the values are read under the lock.
+    if (offlineIncident(lastOf({ lastReportAt: reportAt, tempF: 0, humidity: null, recordedAt }), now, rules, heardSince) === null) continue;
     const conn = await pool.getConnection();
     try {
       await conn.beginTransaction();
@@ -197,13 +257,17 @@ export async function sweepOffline(pool: Pool, rules: ConditionRules, now: Date,
         device.length === 0
           ? [[] as LatestReadingRow[]]
           : await conn.query<LatestReadingRow[]>(
-              `SELECT d.id AS deviceId, r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt
+              `SELECT d.id AS deviceId, d.last_report_at AS lastReportAt, r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt
                FROM devices d JOIN readings r ON r.id = (${LATEST_READING_ID}) WHERE d.id = ?`,
               [latestAllowed(now), deviceId],
             );
       const open = latest.length === 0 ? [] : await loadOpenIncidents(conn, deviceId);
-      const step = latest.length === 0 || open.some((i) => i.condition === 'Offline') ? null : offlineIncident(latest[0], now, rules, heardSince);
-      if (step !== null) changed.push(...(await saveSteps(conn, deviceId, [step])));
+      const step = latest.length === 0 || open.some((i) => i.condition === 'Offline') ? null : offlineIncident(lastOf(latest[0]), now, rules, heardSince);
+      if (step !== null) {
+        const saved = await saveSteps(conn, deviceId, [step]);
+        if (notify) await enqueueNotifications(conn, saved, now);
+        changed.push(...saved);
+      }
       await conn.commit();
     } catch (error) {
       await conn.rollback();

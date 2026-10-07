@@ -17,9 +17,18 @@ void sensorBegin() {
   dht.begin();
 }
 
+// The DHT11 cannot be read again sooner than this.
+static const unsigned long RETRY_AFTER_MS = 2 * 1000UL;
+
 bool sensorRead(Sample& out) {
   float tempF = dht.readTemperature(true);  // true: Fahrenheit
   float humidity = dht.readHumidity();
+  if (isnan(tempF) || isnan(humidity)) {
+    Serial.println(F("sensor: read failed (NaN), trying once more"));
+    delay(RETRY_AFTER_MS);
+    tempF = dht.readTemperature(true, true);  // force: the library would hand back its cached NaN
+    humidity = dht.readHumidity();
+  }
   if (isnan(tempF) || isnan(humidity)) {
     Serial.println(F("sensor: read failed (NaN), sample skipped"));
     return false;

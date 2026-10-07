@@ -96,6 +96,7 @@ describe('GET /api/dashboard/stream', () => {
       reading: posted.reading,
       online: true,
       conditions: [],
+      lastReportAt: posted.reading.recordedAt,
     });
 
     // A Reading in a Condition carries it, so the card can update its badges without a fetch.

@@ -10,7 +10,17 @@ import { subscribe, type SseClient } from './helpers/sse';
 import { createBroadcaster, type IncidentEvent } from '../src/sse';
 import { runOfflineSweep, startOfflineSweep } from '../src/offlineSweep';
 import { insertIncident } from '../src/incidentStore';
-import { replayIncidents, type IncidentState } from '../src/incidents';
+import {
+  applyFaultReport,
+  applyReading,
+  missedOffline,
+  offlineIncident,
+  peakValue,
+  replayIncidents,
+  type IncidentState,
+  type IncidentStep,
+  type TimedReading,
+} from '../src/incidents';
 import { DEFAULT_THRESHOLDS } from '../src/conditions';
 import { deleteReadingsPastWindow } from '../src/retention';
 
@@ -499,5 +509,81 @@ describe('replayIncidents (what the demo writes for its backfilled week)', () =>
     const incidents = replayIncidents([reading(0, 72)], rules, new Date(start + 600_000));
     assert.equal(incidents.length, 1);
     assert.equal(incidents[0].end, null);
+  });
+});
+
+describe('fault reports (the rules alone, docs/adr/0009)', () => {
+  const rules = { reportIntervalSeconds: 30, thresholds: DEFAULT_THRESHOLDS };
+  const start = new Date('2026-10-01T00:00:00Z').getTime();
+  const at = (seconds: number) => new Date(start + seconds * 1000);
+  const reading = (seconds: number, tempF: number, humidity = 40) => ({ tempF, humidity, recordedAt: at(seconds) });
+  const fault = (open: IncidentState[], seconds: number, sensorFaults: number, last: TimedReading | null = reading(0, 72)) =>
+    applyFaultReport(open, { at: at(seconds), sensorFaults }, last, rules);
+  const stillOpen = (steps: IncidentStep[]) => steps.map((s) => s.incident).filter((i) => i.end === null);
+
+  test('two in a row open nothing; the third opens Sensor fault at critical, peaking at the last good Reading', () => {
+    const last = reading(0, 72);
+    assert.deepEqual(fault([], 30, 1, last), []);
+    assert.deepEqual(fault([], 60, 2, last), []);
+    const [step] = fault([], 90, 3, last);
+    assert.equal(step.change, 'opened');
+    assert.equal(step.incident.condition, 'Sensor fault');
+    assert.equal(step.incident.level, 'critical');
+    assert.deepEqual(step.incident.start, at(90));
+    assert.deepEqual(step.incident.peak, last);
+    assert.equal(peakValue('Sensor fault', last), null);
+  });
+
+  test('a Device that has never sent a Reading has nothing to peak at, so no incident (the Condition still shows)', () => {
+    assert.deepEqual(fault([], 90, 3, null), []);
+  });
+
+  test('two good Readings close it, ending at the first; a fault report between them starts the count again', () => {
+    let open = stillOpen(fault([], 90, 3));
+    open = stillOpen(fault(open, 120, 4));
+    assert.equal(open.length, 1, 'later fault reports continue the one incident');
+    open = stillOpen(applyReading(open, reading(150, 72), rules));
+    open = stillOpen(fault(open, 180, 1));
+    open = stillOpen(applyReading(open, reading(210, 72), rules));
+    assert.equal(open.length, 1, 'good, fault, good is not two good Readings in a row');
+    const [closed] = applyReading(open, reading(240, 72), rules);
+    assert.equal(closed.change, 'closed');
+    assert.deepEqual(closed.incident.end, at(210));
+  });
+
+  test('a value incident open when the sensor died keeps its clean count frozen, and closes once Readings resume', () => {
+    let open = stillOpen(applyReading([], reading(0, 85), rules));
+    open = stillOpen(applyReading(open, reading(30, 72), rules));
+    assert.equal(open[0].cleanReadings, 1);
+    for (let n = 1; n <= 5; n += 1) {
+      const steps = fault(open, 30 + n * 30, n, reading(30, 72));
+      assert.ok(steps.filter((s) => s.incident.condition === 'Hot').every((s) => !s.dirty && s.change === null), `fault report ${n} leaves Hot alone`);
+      open = stillOpen(steps);
+    }
+    const hot = open.find((i) => i.condition === 'Hot');
+    assert.equal(hot?.cleanReadings, 1);
+    assert.deepEqual(hot?.firstCleanAt, at(30));
+    const steps = applyReading(open, reading(300, 72), rules);
+    assert.deepEqual(steps.find((s) => s.incident.condition === 'Hot')?.incident.end, at(30), 'the second clean Reading closes it, ending at the first');
+  });
+
+  test('a fault report ends an open Offline incident: the board is heard from', () => {
+    const offline = offlineIncident({ at: at(0), reading: reading(0, 72) }, at(200), rules);
+    assert.ok(offline !== null);
+    const [step] = fault([offline.incident], 300, 1);
+    assert.equal(step.change, 'closed');
+    assert.deepEqual(step.incident.end, at(300));
+  });
+
+  test('silence counts from the last report, fault reports included, and the peak is still the last good Reading', () => {
+    const last = { at: at(300), reading: reading(0, 72) };
+    assert.equal(offlineIncident(last, at(390), rules), null, 'three intervals after the last fault report is still Online');
+    const offline = offlineIncident(last, at(391), rules);
+    assert.deepEqual(offline?.incident.start, at(391));
+    assert.deepEqual(offline?.incident.peak, reading(0, 72));
+    const missed = missedOffline(last, at(395), rules, 30);
+    assert.deepEqual(missed?.incident.start, at(391));
+    assert.deepEqual(missed?.incident.end, at(395));
+    assert.equal(missedOffline(last, at(380), rules, 30), null, 'back before Offline began');
   });
 });

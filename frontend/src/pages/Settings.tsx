@@ -7,11 +7,12 @@ import { CampusesSection } from '@/components/settings/CampusesSection';
 import { DevicesSection } from '@/components/settings/DevicesSection';
 import { FirmwareSection } from '@/components/settings/FirmwareSection';
 import { NewDevicesSection } from '@/components/settings/NewDevicesSection';
+import { NotificationsSection } from '@/components/settings/NotificationsSection';
 import { RotationLine } from '@/components/settings/RotationLine';
 import { useAdminToken } from '@/hooks/use-admin-token';
 import { clearAdminToken, setAdminToken } from '@/lib/adminToken';
 
-const TABS = ['campuses', 'devices', 'new', 'firmware'] as const;
+const TABS = ['campuses', 'devices', 'new', 'firmware', 'notifications'] as const;
 type Tab = (typeof TABS)[number];
 
 function isTab(value: string | null): value is Tab {
@@ -19,7 +20,7 @@ function isTab(value: string | null): value is Tab {
 }
 
 /**
- * Settings: Campuses, Devices, firmware, and the Admin token that authorises changes to them.
+ * Settings: Campuses, Devices, firmware, notifications, and the Admin token that authorises changes to them.
  * Anyone can read the lists; the token is asked for once and kept in this browser.
  */
 export default function Settings() {
@@ -57,11 +58,12 @@ export default function Settings() {
       {token !== null && <RotationLine />}
 
       <Tabs value={tab} onValueChange={(next) => setSearchParams(next === 'campuses' ? {} : { tab: next }, { replace: true })}>
-        <TabsList aria-label="Settings sections">
+        <TabsList aria-label="Settings sections" className="max-w-full justify-start overflow-x-auto">
           <TabsTrigger value="campuses">Campuses</TabsTrigger>
           <TabsTrigger value="devices">Devices</TabsTrigger>
           <TabsTrigger value="new">New devices</TabsTrigger>
           <TabsTrigger value="firmware">Firmware</TabsTrigger>
+          <TabsTrigger value="notifications">Notifications</TabsTrigger>
         </TabsList>
         <TabsContent value="campuses" tabIndex={-1} className="pt-4">
           <CampusesSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
@@ -74,6 +76,9 @@ export default function Settings() {
         </TabsContent>
         <TabsContent value="firmware" tabIndex={-1} className="pt-4">
           <FirmwareSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
+        </TabsContent>
+        <TabsContent value="notifications" tabIndex={-1} className="pt-4">
+          <NotificationsSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
         </TabsContent>
       </Tabs>
     </div>

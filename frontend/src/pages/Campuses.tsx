@@ -17,6 +17,7 @@ import { useReadingStream } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
 import type { HistorySeed } from '@/lib/card-morph';
 import { levelLook } from '@/lib/conditions';
+import { formatStaleAge, hasSensorFault } from '@/lib/faultReport';
 import {
   CHART,
   CHART_WIDTH,
@@ -79,7 +80,7 @@ export default function Campuses() {
       void reload();
     }, wait);
   }, [reload]);
-  const stream = useReadingStream({ onReading: refresh, onIncident: refresh, onReconnect: refresh });
+  const stream = useReadingStream({ onReading: refresh, onFault: refresh, onIncident: refresh, onReconnect: refresh });
 
   const loaded = state.status === 'ready' ? state.data : undefined;
 
@@ -294,13 +295,17 @@ function WorstCell({ campus, age }: { campus: CampusOverview; age: (secondsAtFet
   const { worst } = campus;
   if (worst === null) return <span className="text-sm text-muted-foreground">No closets</span>;
   const reading = worst.latestReading;
-  const current = reading !== null && !worst.offline;
+  // A Sensor fault keeps the last good Reading, but it is not the closet now: a dash, as for Offline, with its age beside the name.
+  const fault = hasSensorFault(worst.conditions);
+  const current = reading !== null && !worst.offline && !fault;
   const detail =
     reading === null
       ? 'No Readings yet'
       : worst.offline
         ? `Offline, last Reading ${formatGap(age(worst.secondsSinceReading ?? 0) * 1000)} ago`
-        : reading.humidity === null
+        : fault
+          ? `Sensor fault, last good Reading ${formatStaleAge(age(worst.secondsSinceReading ?? 0))}`
+          : reading.humidity === null
           ? 'No humidity'
           : `Humidity ${figure(reading.humidity)}%`;
   const seed: HistorySeed = {

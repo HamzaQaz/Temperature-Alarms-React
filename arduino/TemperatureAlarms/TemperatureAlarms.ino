@@ -3,8 +3,9 @@
 //
 // Copy config.example.h to config.h before compiling. Each module has one job:
 //   network.*  connect to WiFi, reconnect in the loop, know the Device hostname
-//   sensor.*   read the DHT11 and skip bad samples
-//   reporter.* build the JSON Reading and POST it, logging the HTTP status
+//   sensor.*   read the DHT11, once more on a failed read, and skip bad samples
+//   reporter.* build the JSON Reading (or a fault report, when the sensor did not answer) and POST
+//              it, logging the HTTP status
 //   server.*   where SERVER_URL is, and a TLS client that checks its certificate (roots.*)
 //   updater.*  check hourly for a newer signed build and install it (over the air)
 
@@ -52,6 +53,7 @@ void loop() {
   lastAttemptAt = millis();
 
   Sample sample;
-  if (!sensorRead(sample)) return;
-  reportReading(deviceHostname(), sample);
+  // A sensor that does not answer is still reported, so the server can tell it from a silent board.
+  if (sensorRead(sample)) reportReading(deviceHostname(), sample);
+  else reportFault(deviceHostname());
 }

@@ -15,6 +15,8 @@ import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
 import { incidentsRouter } from './routes/incidents';
 import { firmwareRouter } from './routes/firmware';
+import { notificationsRouter } from './routes/notifications';
+import { createMailer } from './mailer';
 
 /**
  * Per address per 15 minutes on /api/. Reads: 30 Campuses tabs, the busiest page, make about
@@ -35,6 +37,7 @@ export function createApp(appDeps: AppDeps): Express {
     rotation: appDeps.rotation ?? createTokenRotation(),
     sightings,
     deviceAuth: createDeviceAuth(appDeps.config, sightings),
+    mailer: appDeps.mailer ?? (appDeps.config.notifications === undefined ? undefined : createMailer(appDeps.config.notifications)),
   };
   const app = express();
   // Naming the framework only helps someone matching it to an advisory.
@@ -89,6 +92,7 @@ export function createApp(appDeps: AppDeps): Express {
   app.use('/api/dashboard', dashboardRouter(deps));
   app.use('/api/incidents', incidentsRouter(deps));
   app.use('/api/firmware', firmwareRouter(deps));
+  app.use('/api/notifications', notificationsRouter(deps));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });

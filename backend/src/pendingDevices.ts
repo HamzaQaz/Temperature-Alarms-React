@@ -14,7 +14,7 @@ const MAX_PENDING = 500;
 
 export interface Sighting {
   hostname: string;
-  /** The Reading it sent, or null for a firmware check. */
+  /** The Reading it sent, or null for a firmware check or a fault report. */
   reading: { tempF: number; humidity: number } | null;
   address: string | null;
 }

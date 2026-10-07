@@ -5,7 +5,7 @@
  * only places what it sent. Days are YYYY-MM-DD in this browser's zone, as on History.
  */
 import { addDays, formatDayShort, toDateString } from './localDate.ts';
-import { levelRank } from './conditions.ts';
+import { levelRank, spanKind, SPAN_KINDS, type SpanKind } from './conditions.ts';
 import type { ConditionLevel, Incident } from '../types.ts';
 
 /** Overnight is 18:00 to 08:00 local; Today is midnight to midnight; 7 days ends at the close of its last day. */
@@ -173,4 +173,20 @@ export function worstIncident<T extends Pick<Incident, 'level' | 'start' | 'end'
 export function overlaps(incident: Pick<Incident, 'start' | 'end'>, from: number, to: number, now: number): boolean {
   const end = incident.end === null ? now : ms(incident.end);
   return ms(incident.start) < to && end >= from;
+}
+
+/**
+ * What the ruler's legend names: each colour a stretch inside the window is drawn in (a level, or
+ * Sensor fault's own), in the legend's order. Only what is on the ruler, so the key never lists a
+ * colour the window does not show.
+ */
+export function rulerKinds(incidents: Pick<Incident, 'condition' | 'segments'>[], from: number, to: number, now: number): SpanKind[] {
+  const shown = new Set<SpanKind>();
+  for (const incident of incidents) {
+    for (const segment of incident.segments) {
+      const end = segment.end === null ? now : ms(segment.end);
+      if (ms(segment.start) < to && end >= from) shown.add(spanKind(incident.condition, segment.level));
+    }
+  }
+  return SPAN_KINDS.filter((kind) => shown.has(kind));
 }

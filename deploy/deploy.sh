@@ -16,7 +16,10 @@ ENV_FILE=".env"
 BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
 SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD"
-TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE"
+TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE NOTIFY_COALESCE_SECONDS"
+# Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
+# flags or the install prompts, never with --set; the password never comes from the command line.
+NOTIFY_KEYS="SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL"
 # The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
 DEMO_PROJECT="temperature-alarms-demo"
 DEMO_ENV=".env.demo"
@@ -50,6 +53,15 @@ DOWN=0
 FINISH=0
 FORCE=0
 ONLY=""
+SMTP_HOST_OPT=""
+SMTP_PORT_OPT=""
+SMTP_SECURE_OPT=""
+SMTP_USER_OPT=""
+NOTIFY_FROM_OPT=""
+NOTIFY_TO_OPT=""
+PUBLIC_URL_OPT=""
+# The SMTP password once read from stdin or the hidden prompt (read_smtp_password); never from argv.
+SMTP_PW=""
 # 1 for an install from before DB_ROOT_PASSWORD, whose root password is still DB_PASSWORD (legacy_root_env).
 LEGACY_ROOT=0
 DC_ARGS=()
@@ -124,7 +136,16 @@ Options:
       --web-port PORT   The published port, or ADDR:PORT (install, deploy)
       --set KEY=VALUE   A tunable from .env.example (repeatable; install, deploy), or
                         TRUST_PROXY=ADDR[,ADDR] behind a TLS proxy (DEPLOYMENT.md)
-      --reconfigure     Apply --web-port/--set to an existing .env (secrets are kept)
+      --reconfigure     Apply --web-port/--set/--smtp-*/--notify-* to an existing .env (secrets are kept)
+Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off unless --smtp-host:
+      --smtp-host HOST    The district's SMTP relay; `off` turns email off and clears the rest
+      --smtp-port PORT    Default 587, or 465 with --smtp-secure tls
+      --smtp-secure MODE  starttls (default), tls, or none
+      --smtp-user USER    Only for a relay that needs a login. The password is read from a hidden
+                          prompt, or with --yes from the first line of stdin; never from the command line
+      --notify-from ADDR  The sender address the relay allows (required with --smtp-host)
+      --notify-to LIST    Recipients, comma-separated; a distribution list (required with --smtp-host)
+      --public-url URL    The dashboard's address, for links in emails (required with --smtp-host)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
@@ -158,6 +179,15 @@ parse_args() {
       --web-port) need_value "$@"; WEB_PORT_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --set) need_value "$@"; SETS+=("$2"); PASS_ARGS+=("$1" "$2"); shift ;;
       --reconfigure) RECONFIGURE=1; PASS_ARGS+=("$1") ;;
+      --smtp-host) need_value "$@"; SMTP_HOST_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --smtp-port) need_value "$@"; SMTP_PORT_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --smtp-secure) need_value "$@"; SMTP_SECURE_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --smtp-user) need_value "$@"; SMTP_USER_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --notify-from) need_value "$@"; NOTIFY_FROM_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --notify-to) need_value "$@"; NOTIFY_TO_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --public-url) need_value "$@"; PUBLIC_URL_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      # Every process on the host can read another's command line; the password comes on stdin instead.
+      --smtp-password|--smtp-password=*) die "the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin" ;;
       --pull) PULL=1; PASS_ARGS+=("$1") ;;
       --no-pull) PULL=0; PASS_ARGS+=("$1") ;;
       --reveal) REVEAL=1; PASS_ARGS+=("$1") ;;
@@ -235,14 +265,18 @@ env_get() {
   line=$(grep -E "^$1=" "$file" | tail -n 1 | tr -d '\r')
   line=${line#*=}
   line=${line#\"}; line=${line%\"}
+  # A single-quoted value (the SMTP password) is literal to Compose: no $ interpolation, no # comment.
+  case "$line" in \'*\') line=${line#\'}; line=${line%\'} ;; esac
   printf '%s' "$line"
 }
 
 # env_set KEY VALUE: replace KEY= (or a commented "# KEY="), else append. Keeps the file's mode.
+# The value reaches awk through its environment: awk -v would turn a backslash in it into an escape.
 env_set() {
   local tmp
   tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/deploy-env.XXXXXX") || die "cannot create a temp file"
-  awk -v k="$1" -v v="$2" '
+  ENV_SET_VALUE=$2 awk -v k="$1" '
+    BEGIN { v = ENVIRON["ENV_SET_VALUE"] }
     { sub(/\r$/, "") }
     $0 ~ "^" k "=" { if (!done) { print k "=" v; done = 1 } ; next }
     $0 ~ "^#[ ]*" k "=" && !done { print k "=" v; done = 1; next }
@@ -335,8 +369,190 @@ valid_tunable() {
     LEGACY_TIME_ZONE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[A-Za-z0-9_/+:-]+$' ;;
     # MySQL's size syntax: bytes, or a whole number of K, M, or G.
     DB_BUFFER_POOL_SIZE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[1-9][0-9]*[KMG]?$' ;;
+    NOTIFY_COALESCE_SECONDS) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
     *) printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
   esac
+}
+
+# The email settings, as backend/src/config.ts takes them, and nothing that .env or Compose would read
+# as syntax: no quotes, $, #, spaces, or second line. One line each, so `grep -x` holds them whole.
+EMAIL_RE='[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z0-9-]+'
+valid_notify() {
+  [ "$(printf '%s' "$2" | wc -l)" -eq 0 ] || return 1
+  case "$1" in
+    SMTP_HOST) printf '%s' "$2" | grep -Eqx '[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?' ;;
+    SMTP_PORT) printf '%s' "$2" | grep -Eqx '[0-9]{1,5}' && [ "$((10#$2))" -ge 1 ] && [ "$((10#$2))" -le 65535 ] ;;
+    SMTP_SECURE) case "$2" in starttls|tls|none) return 0 ;; esac; return 1 ;;
+    # An account name, an address, or DOMAIN\account.
+    SMTP_USER) printf '%s' "$2" | grep -Eqx '[A-Za-z0-9._@+\\-]+' ;;
+    # Written single-quoted, which Compose takes literally; so anything but a quote and a line break.
+    SMTP_PASSWORD) [ -n "$2" ] && case "$2" in *\'*|*$'\r'*) return 1 ;; esac ;;
+    NOTIFY_FROM) printf '%s' "$2" | grep -Eqx "$EMAIL_RE" ;;
+    NOTIFY_TO) printf '%s' "$2" | grep -Eqx "$EMAIL_RE(,$EMAIL_RE)*" ;;
+    PUBLIC_URL) printf '%s' "$2" | grep -Eqx 'https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?' ;;
+    *) return 1 ;;
+  esac
+}
+
+notify_flags_given() {
+  [ -n "$SMTP_HOST_OPT$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT" ]
+}
+
+# The SMTP password into SMTP_PW, never from the command line: a hidden prompt at a terminal, else
+# the first line of stdin. Empty when none was given; the caller decides whether that keeps the old one.
+read_smtp_password() {
+  SMTP_PW=""
+  if interactive; then
+    read -r -s -p "  SMTP password for $1 (not shown${2:+; blank keeps the current one}): " SMTP_PW || true
+    printf '\n' >&2
+  elif [ -t 0 ]; then
+    die "--smtp-user with --yes reads the SMTP password from stdin, and stdin is this terminal. Pipe it in (read -rs PW; printf '%s\\n' \"\$PW\" | deploy/deploy.sh ...), or leave out --yes to type it at a hidden prompt"
+  else
+    IFS= read -r SMTP_PW || true
+  fi
+  # Windows PowerShell pipes lines with CRLF.
+  SMTP_PW=${SMTP_PW%$'\r'}
+}
+
+# Turns email notifications off: every setting of the group emptied, since one left set without
+# SMTP_HOST stops api from starting.
+clear_notify() {
+  local k
+  for k in $NOTIFY_KEYS; do [ -z "$(env_get "$k")" ] || env_set "$k" ""; done
+}
+
+# write_notify HOST PORT SECURE USER PASSWORD FROM TO URL: the whole group at once. An empty port or
+# security mode leaves the backend's default (587, starttls); an empty user drops the login.
+write_notify() {
+  env_set SMTP_HOST "$1"
+  if [ -n "$2" ] || [ -n "$(env_get SMTP_PORT)" ]; then env_set SMTP_PORT "$2"; fi
+  if [ -n "$3" ] || [ -n "$(env_get SMTP_SECURE)" ]; then env_set SMTP_SECURE "$3"; fi
+  if [ -n "$4" ]; then env_set SMTP_USER "$4"; env_set SMTP_PASSWORD "'$5'"
+  else env_set SMTP_USER ""; env_set SMTP_PASSWORD ""; fi
+  env_set NOTIFY_FROM "$6"
+  env_set NOTIFY_TO "$7"
+  env_set PUBLIC_URL "$8"
+}
+
+notify_summary() {
+  local host port secure
+  host=$(env_get SMTP_HOST)
+  if [ -z "$host" ]; then printf 'off (no SMTP_HOST)'; return; fi
+  secure=$(env_get SMTP_SECURE); secure=${secure:-starttls}
+  port=$(env_get SMTP_PORT)
+  [ -n "$port" ] || { [ "$secure" = tls ] && port=465 || port=587; }
+  printf '%s:%s (%s), from %s to %s' "$host" "$port" "$secure" "$(env_get NOTIFY_FROM)" "$(env_get NOTIFY_TO)"
+}
+
+# --smtp-host and friends into .env, each checked first and nothing written unless all pass. A flag
+# not given keeps what .env has, so one setting can change on its own.
+apply_notify_flags() {
+  local host port secure user from to url
+  notify_flags_given || return 0
+  if [ "$SMTP_HOST_OPT" = off ]; then
+    [ -z "$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT" ] \
+      || die "--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it"
+    clear_notify; ok "email notifications off"; return 0
+  fi
+  host=${SMTP_HOST_OPT:-$(env_get SMTP_HOST)}
+  [ -n "$host" ] || die "email notifications are off here; --smtp-host turns them on (with --notify-from, --notify-to, and --public-url)"
+  port=${SMTP_PORT_OPT:-$(env_get SMTP_PORT)}
+  secure=${SMTP_SECURE_OPT:-$(env_get SMTP_SECURE)}
+  user=${SMTP_USER_OPT:-$(env_get SMTP_USER)}
+  from=${NOTIFY_FROM_OPT:-$(env_get NOTIFY_FROM)}
+  to=$(printf '%s' "${NOTIFY_TO_OPT:-$(env_get NOTIFY_TO)}" | tr -d ' ')
+  url=${PUBLIC_URL_OPT:-$(env_get PUBLIC_URL)}
+  url=${url%/}
+  valid_notify SMTP_HOST "$host" || die "--smtp-host: '$host' is not a host name or IPv4 address"
+  [ -z "$port" ] || valid_notify SMTP_PORT "$port" || die "--smtp-port: '$port' is not a port number"
+  [ -z "$secure" ] || valid_notify SMTP_SECURE "$secure" || die "--smtp-secure: '$secure' is not starttls, tls, or none"
+  [ -z "$user" ] || valid_notify SMTP_USER "$user" || die "--smtp-user: '$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\\name)"
+  [ -n "$from" ] || die "--notify-from is required with --smtp-host: the sender address the relay allows"
+  valid_notify NOTIFY_FROM "$from" || die "--notify-from: '$from' is not a bare address like alarms@example.org"
+  [ -n "$to" ] || die "--notify-to is required with --smtp-host: at least one recipient, comma-separated"
+  valid_notify NOTIFY_TO "$to" || die "--notify-to: '$to' is not a comma-separated list of bare addresses"
+  [ -n "$url" ] || die "--public-url is required with --smtp-host: the address technicians open the dashboard at, for links in emails (https://YOUR_DOMAIN)"
+  valid_notify PUBLIC_URL "$url" || die "--public-url: '$url' is not an http:// or https:// address"
+  SMTP_PW=""
+  if [ -n "$SMTP_USER_OPT" ]; then
+    read_smtp_password "$user" "$(env_get SMTP_PASSWORD)"
+  fi
+  if [ -z "$SMTP_PW" ] && [ -n "$user" ]; then
+    SMTP_PW=$(env_get SMTP_PASSWORD)
+    [ -n "$SMTP_PW" ] || die "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin"
+  fi
+  [ -z "$user" ] || valid_notify SMTP_PASSWORD "$SMTP_PW" || die "the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads \$ and # literally)"
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url"
+  SMTP_PW=""
+  ok "email notifications: $(notify_summary)${user:+, login $user}"
+}
+
+# The same, asked at the keyboard, each answer checked as it is typed. Blank turns them off.
+prompt_notifications() {
+  local current value host port secure user from to url login=n
+  interactive || return 0
+  current=$(env_get SMTP_HOST)
+  say "  Incident emails go out through the district's SMTP relay (DEPLOYMENT.md, Email notifications)."
+  while :; do
+    value=$(ask "SMTP relay host for Incident emails (blank: no emails${current:+; off: turn them off})" "$current")
+    if [ -z "$value" ] || [ "$value" = off ] || valid_notify SMTP_HOST "$value"; then break; fi
+    warn "'$value' is not a host name or IPv4 address"
+  done
+  if [ -z "$value" ] || [ "$value" = off ]; then
+    clear_notify; return 0
+  fi
+  host=$value
+  while :; do
+    secure=$(ask "Connection security: starttls, tls (from the first byte), or none" "$(v=$(env_get SMTP_SECURE); printf '%s' "${v:-starttls}")")
+    valid_notify SMTP_SECURE "$secure" && break
+    warn "'$secure' is not starttls, tls, or none"
+  done
+  current=$(env_get SMTP_PORT)
+  [ -n "$current" ] || { [ "$secure" = tls ] && current=465 || current=587; }
+  while :; do
+    port=$(ask "SMTP port (587 for starttls, 465 for tls, 25 for a plain relay)" "$current")
+    valid_notify SMTP_PORT "$port" && break
+    warn "'$port' is not a port number"
+  done
+  user=$(env_get SMTP_USER)
+  [ -n "$user" ] && login=y
+  SMTP_PW=""
+  if confirm "Does the relay need a login (a service account)? Ask the district's mail admin" "$login"; then
+    while :; do
+      user=$(ask "SMTP user" "$user")
+      [ -n "$user" ] && valid_notify SMTP_USER "$user" && break
+      warn "'$user' is not an account name (letters, digits, . _ @ + - and DOMAIN\\name)"
+    done
+    while :; do
+      read_smtp_password "$user" "$(env_get SMTP_PASSWORD)"
+      [ -n "$SMTP_PW" ] || SMTP_PW=$(env_get SMTP_PASSWORD)
+      valid_notify SMTP_PASSWORD "$SMTP_PW" && break
+      warn "a password is needed, without a single quote"
+    done
+  else
+    user=""
+  fi
+  while :; do
+    from=$(ask "Sender address the relay allows" "$(env_get NOTIFY_FROM)")
+    valid_notify NOTIFY_FROM "$from" && break
+    warn "'$from' is not a bare address like alarms@example.org"
+  done
+  while :; do
+    to=$(ask "Recipients, comma-separated (a distribution list is best)" "$(env_get NOTIFY_TO)" | tr -d ' ')
+    valid_notify NOTIFY_TO "$to" && break
+    warn "'$to' is not a comma-separated list of bare addresses"
+  done
+  current=$(env_get PUBLIC_URL)
+  [ -n "$current" ] || current=$(site_url)
+  while :; do
+    url=$(ask "Dashboard address for links in emails (https://YOUR_DOMAIN behind TLS)" "${current%/}")
+    url=${url%/}
+    valid_notify PUBLIC_URL "$url" && break
+    warn "'$url' is not an http:// or https:// address"
+  done
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url"
+  SMTP_PW=""
+  say "  Settings, Notifications, has a \"Send test email\" button once deployed."
 }
 
 known_key() {
@@ -357,6 +573,7 @@ apply_flags_to_env() {
     valid_tunable "$key" "$value" || die "--set: '$value' is not valid for $key"
     env_set "$key" "$value"; ok "$key=$value"
   done
+  apply_notify_flags
 }
 
 prompt_tunables() {
@@ -382,6 +599,7 @@ prompt_tunables() {
   elif [ -n "$current" ]; then
     env_set TRUST_PROXY ""
   fi
+  prompt_notifications
   if confirm "Change the alarm thresholds and retention from their defaults?" n; then
     for k in $TUNABLES; do
       current=$(env_get "$k")
@@ -390,7 +608,7 @@ prompt_tunables() {
         valid_tunable "$k" "$value" && break
         warn "'$value' is not valid for $k"
       done
-      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ]; } && [ -z "$value" ]; then continue; fi
+      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ] || [ "$k" = NOTIFY_COALESCE_SECONDS ]; } && [ -z "$value" ]; then continue; fi
       env_set "$k" "$value"
     done
   fi
@@ -513,13 +731,13 @@ do_install() {
   if [ -f "$ENV_FILE" ]; then
     ok ".env exists; keeping it"
     fill_missing_secrets
-    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ]; then
+    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ] || notify_flags_given; then
       if [ "$RECONFIGURE" -eq 1 ] || { interactive && confirm "Write the given settings into the existing .env? Secrets are kept." n; }; then
         apply_flags_to_env
       else
         warn "settings given but .env left unchanged; add --reconfigure to apply them"
       fi
-    elif [ "$RECONFIGURE" -eq 1 ] || { interactive && confirm "Change the port and tunables in the existing .env? Secrets are kept." n; }; then
+    elif [ "$RECONFIGURE" -eq 1 ] || { interactive && confirm "Change the port, email notifications, and tunables in the existing .env? Secrets are kept." n; }; then
       prompt_tunables
     fi
   else
@@ -532,7 +750,7 @@ do_install() {
     name=${PROJECT:-$(project_name)}
     env_set COMPOSE_PROJECT_NAME "$name"
     ok "COMPOSE_PROJECT_NAME=$name (names the database volume, ${name}_db-data)"
-    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ] || ! interactive; then
+    if [ -n "$WEB_PORT_OPT" ] || [ ${#SETS[@]} -gt 0 ] || notify_flags_given || ! interactive; then
       apply_flags_to_env
     else
       prompt_tunables
@@ -540,6 +758,7 @@ do_install() {
   fi
   lock_env
   ok "web port $(web_port_setting), project $(project_name)"
+  notify_flags_given || ok "email notifications: $(notify_summary)"
 }
 
 maybe_pull() {
@@ -798,6 +1017,12 @@ do_info() {
   [ -n "$(env_get DEVICE_TOKEN_PREVIOUS)" ] && say "  Previous      $(mask "$(env_get DEVICE_TOKEN_PREVIOUS)")   (still accepted: rotate-device-token --finish ends that)"
   say "  DB password   $(mask "$(env_get DB_PASSWORD)")"
   say "  DB root       $(mask "$(env_get DB_ROOT_PASSWORD)")"
+  say "  Email         $(notify_summary)"
+  # Masked whole: unlike the 64-hex secrets, a chosen password would give away its first and last four.
+  if [ -n "$(env_get SMTP_USER)" ]; then
+    if [ "$REVEAL" -eq 1 ]; then say "  SMTP login    $(env_get SMTP_USER) / $(env_get SMTP_PASSWORD)"
+    else say "  SMTP login    $(env_get SMTP_USER) / ********"; fi
+  fi
   say ""
   say "  For arduino/TemperatureAlarms/config.h:"
   say "    #define SERVER_URL \"$server\""
@@ -1293,6 +1518,12 @@ if [ ! -d \"\$dir/.git\" ]; then
 fi
 cd \"\$dir\"
 exec $cmd"
+  if [ -n "$SMTP_USER_OPT" ]; then
+    # The SMTP password goes to deploy.sh there as the first line of its stdin, never in the command.
+    # shellcheck disable=SC2086,SC2029 # SSH_OPTS is a list of options; the command is quoted for the server
+    printf '%s\n' "$SMTP_PW" | ssh $SSH_OPTS "$host" "bash -c $(squote "$script")"
+    return
+  fi
   if [ -t 0 ] && [ -t 1 ] && [ "$YES" -eq 0 ]; then tty=(-t); fi
   # shellcheck disable=SC2086,SC2029 # SSH_OPTS is a list of options; the command is quoted for the server
   ssh ${tty[@]+"${tty[@]}"} $SSH_OPTS "$host" "bash -c $(squote "$script")"
@@ -1336,6 +1567,11 @@ remote_main() {
   [ -n "$ACTION" ] || [ ${#HOSTS[@]} -eq 1 ] || die "give an action for more than one host"
   [ -n "$ACTION" ] || interactive || die "give an action, or run interactively for the menu"
   command -v ssh >/dev/null 2>&1 || die "ssh is not installed here"
+  if [ -n "$SMTP_USER_OPT" ]; then
+    # Read once here and handed to each server on stdin (remote_one).
+    read_smtp_password "$SMTP_USER_OPT"
+    [ -n "$SMTP_PW" ] || die "--smtp-user needs the SMTP password: type it at the prompt, or with --yes send it as the first line of stdin"
+  fi
   [ -n "$REPO_URL" ] || REPO_URL=$(git -C "$REPO_DIR" remote get-url origin 2>/dev/null || true)
   if [ "$BOOTSTRAP" -eq 1 ]; then
     case "$ACTION" in deploy|upgrade) ;; *) die "--bootstrap goes with deploy" ;; esac

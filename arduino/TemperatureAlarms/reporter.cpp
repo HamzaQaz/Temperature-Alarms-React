@@ -32,17 +32,10 @@ static String jsonText(const String& text) {
   return clean;
 }
 
-// The Reading, and what the board says about itself for the Firmware tab (backend deviceInfo.ts):
-// version, WiFi signal, uptime, free memory, why it last restarted, and its last update check.
-static String readingJson(const char* hostname, const Sample& sample) {
-  String json;
-  json.reserve(224);
-  json += F("{\"device\":\"");
-  json += hostname;
-  json += F("\",\"temp\":");
-  json += String(sample.tempF, 1);
-  json += F(",\"humidity\":");
-  json += String(sample.humidity, 0);
+// What the board says about itself for the Firmware tab (backend deviceInfo.ts), after the opening
+// fields of a Reading or a fault report: version, WiFi signal, uptime, free memory, why it last
+// restarted, and its last update check. Closes the JSON object.
+static void appendSelfReport(String& json) {
   json += F(",\"fw\":");
   json += FIRMWARE_VERSION;
   json += F(",\"rssi\":");
@@ -56,6 +49,29 @@ static String readingJson(const char* hostname, const Sample& sample) {
   json += F("\",\"update\":\"");
   json += jsonText(updaterLastResult());
   json += F("\"}");
+}
+
+static String readingJson(const char* hostname, const Sample& sample) {
+  String json;
+  json.reserve(224);
+  json += F("{\"device\":\"");
+  json += hostname;
+  json += F("\",\"temp\":");
+  json += String(sample.tempF, 1);
+  json += F(",\"humidity\":");
+  json += String(sample.humidity, 0);
+  appendSelfReport(json);
+  return json;
+}
+
+// A fault report: the sensor did not answer, so there are no values to send.
+static String faultJson(const char* hostname) {
+  String json;
+  json.reserve(208);
+  json += F("{\"device\":\"");
+  json += hostname;
+  json += F("\",\"fault\":\"sensor\"");
+  appendSelfReport(json);
   return json;
 }
 
@@ -78,8 +94,9 @@ static String responseStart(WiFiClient& client) {
 }
 
 // One POST over the given client. Returns the HTTP status, or a negative HTTPClient error.
-// Redirects stay off (HTTPClient's default): the token goes only to SERVER_URL.
-static int post(WiFiClient& client, const String& body, String& response) {
+// Redirects stay off (HTTPClient's default): the token goes only to SERVER_URL. `accepted` is the
+// status that means success: 201 for a Reading, 202 for a fault report.
+static int post(WiFiClient& client, const String& body, int accepted, String& response) {
   HTTPClient http;
   http.setTimeout(HTTP_TIMEOUT_MS);
   http.setReuse(false);
@@ -90,8 +107,8 @@ static int post(WiFiClient& client, const String& body, String& response) {
   const char* wanted[] = {"X-Firmware-Available"};
   http.collectHeaders(wanted, 1);
   int status = http.POST(body);
-  if (status == HTTP_CODE_CREATED && http.hasHeader("X-Firmware-Available")) updaterOffered(http.header("X-Firmware-Available").toInt());
-  if (status > 0 && status != HTTP_CODE_CREATED) response = responseStart(client);
+  if (status == accepted && http.hasHeader("X-Firmware-Available")) updaterOffered(http.header("X-Firmware-Available").toInt());
+  if (status > 0 && status != accepted) response = responseStart(client);
   http.end();
   return status;
 }
@@ -104,8 +121,8 @@ void reporterBegin() {
   Serial.println(readingsUrl);
 }
 
-void reportReading(const char* hostname, const Sample& sample) {
-  String body = readingJson(hostname, sample);
+// POSTs the body once and logs the outcome: `success` when the server answers `accepted`.
+static void send(const String& body, int accepted, const __FlashStringHelper* success) {
   String response;
   int status;
   if (serverUsesTls()) {
@@ -117,14 +134,14 @@ void reportReading(const char* hostname, const Sample& sample) {
       Serial.println(F(", token not sent"));
       return;
     }
-    status = post(client, body, response);
+    status = post(client, body, accepted, response);
   } else {
     WiFiClient client;
-    status = post(client, body, response);
+    status = post(client, body, accepted, response);
   }
 
-  if (status == HTTP_CODE_CREATED) {
-    Serial.println(F("report: 201 created"));
+  if (status == accepted) {
+    Serial.println(success);
     return;
   }
   if (status < 0) {
@@ -136,4 +153,12 @@ void reportReading(const char* hostname, const Sample& sample) {
     Serial.print(' ');
     Serial.println(response);
   }
+}
+
+void reportReading(const char* hostname, const Sample& sample) {
+  send(readingJson(hostname, sample), HTTP_CODE_CREATED, F("report: 201 created"));
+}
+
+void reportFault(const char* hostname) {
+  send(faultJson(hostname), HTTP_CODE_ACCEPTED, F("report: 202 sensor fault reported"));
 }

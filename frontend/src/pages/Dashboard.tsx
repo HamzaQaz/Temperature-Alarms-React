@@ -13,6 +13,7 @@ import { Placeholder } from '@/components/Placeholder';
 import { NoValue, Tile } from '@/components/Tile';
 import { Button } from '@/components/ui/button';
 import { hasWarningOrWorse, isWarningOrWorse, worstCondition } from '@/lib/conditions';
+import { applyFault } from '@/lib/faultReport';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useElapsedNow } from '@/hooks/use-now';
@@ -25,7 +26,7 @@ import { LiveAnnouncement } from '@/components/LiveAnnouncement';
 import { deviceChanges, type Announcement } from '@/lib/announce';
 import { errorReloads } from '@/lib/reload';
 import { useResource } from '@/hooks/use-resource';
-import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, ReadingEvent } from '@/types';
+import type { Campus, Dashboard as DashboardPayload, DashboardDevice, DashboardOrder, FaultEvent, ReadingEvent } from '@/types';
 
 const ALL = 'all';
 /** The cards the Campus and order tabs filter and sort; the tabs name it as what they control. */
@@ -118,7 +119,7 @@ export default function Dashboard() {
   );
 }
 
-/** A Device as loaded, plus when its `secondsSinceReading` was true, on the monotonic clock (lib/elapsed.ts), so the age can tick from there. */
+/** A Device as loaded, plus when its `secondsSinceReading` and `secondsSinceReport` were true, on the monotonic clock (lib/elapsed.ts), so the ages can tick from there. */
 interface LiveDevice extends DashboardDevice {
   asOf: number;
 }
@@ -138,15 +139,19 @@ async function loadDashboard(campus: string, order: DashboardOrder): Promise<Loa
 }
 
 /**
- * Whether this Reading changes its card's place: only under worst first, and only when it changes
- * the card's worst level, so a new Reading at the same level leaves every card where it is. The
- * browser does not sort; it asks the server again, which answers in the new order.
+ * Whether this Reading (or fault report) changes its card's place: only under worst first, and
+ * only when it changes the card's worst level, so a new Reading at the same level leaves every card
+ * where it is. The browser does not sort; it asks the server again, which answers in the new order.
  */
-function movesCard(dashboard: LoadedDashboard, event: ReadingEvent): boolean {
+function movesCard(dashboard: LoadedDashboard, event: ReadingEvent | FaultEvent): boolean {
   if (dashboard.order !== 'worst') return false;
   const device = dashboard.devices.find((d) => d.hostname === event.device);
   if (device === undefined) return false;
-  if (device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt) return false;
+  const stale =
+    event.type === 'reading'
+      ? device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt
+      : device.lastReportAt !== null && device.lastReportAt > event.lastReportAt;
+  if (stale) return false;
   return worstCondition(device.conditions)?.level !== worstCondition(event.conditions)?.level;
 }
 
@@ -161,7 +166,17 @@ function applyReading(dashboard: LoadedDashboard, event: ReadingEvent): LoadedDa
   const device = dashboard.devices[index];
   if (device.latestReading !== null && device.latestReading.recordedAt > event.reading.recordedAt) return dashboard;
   const devices = dashboard.devices.slice();
-  devices[index] = { ...device, latestReading: event.reading, online: event.online, conditions: event.conditions, tokenMismatchAt: null, secondsSinceReading: 0, asOf: monotonicNow() };
+  devices[index] = {
+    ...device,
+    latestReading: event.reading,
+    online: event.online,
+    conditions: event.conditions,
+    tokenMismatchAt: null,
+    secondsSinceReading: 0,
+    lastReportAt: event.lastReportAt,
+    secondsSinceReport: 0,
+    asOf: monotonicNow(),
+  };
   return { ...dashboard, devices };
 }
 
@@ -203,13 +218,28 @@ function DashboardContent({ campus, order, campusName, onShowAll, announce }: Da
   // stream, reload: anything sent meanwhile was missed. On the error screen, any event reloads: the
   // stream working means the server is back (lib/reload.ts).
   const [reloadOnError] = useState(() => errorReloads(monotonicNow));
+  // True when the reporting Device has no card yet and the server has not been asked about it in this view.
+  const unknownDevice = (hostname: string): boolean => {
+    const unknown = shown.current !== undefined && !shown.current.devices.some((d) => d.hostname === hostname) && !askedAbout.current.has(hostname);
+    if (unknown) askedAbout.current.add(hostname);
+    return unknown;
+  };
   const stream = useReadingStream({
     onReading: (event) => {
       const moves = shown.current !== undefined && movesCard(shown.current, event);
-      const unknown =
-        shown.current !== undefined && !shown.current.devices.some((d) => d.hostname === event.device) && !askedAbout.current.has(event.device);
-      if (unknown) askedAbout.current.add(event.device);
+      const unknown = unknownDevice(event.device);
       update((dashboard) => applyReading(dashboard, event));
+      if (moves || unknown || reloadOnError(state.status)) void reload();
+    },
+    // A fault report keeps the last good Reading on its card and brings the server's new state: the
+    // third in a row carries Sensor fault, and under worst first the card rises to its new place.
+    onFault: (event) => {
+      const moves = shown.current !== undefined && movesCard(shown.current, event);
+      const unknown = unknownDevice(event.device);
+      update((dashboard) => {
+        const devices = applyFault(dashboard.devices, event, monotonicNow());
+        return devices === dashboard.devices ? dashboard : { ...dashboard, devices };
+      });
       if (moves || unknown || reloadOnError(state.status)) void reload();
     },
     onIncident: () => {
@@ -309,8 +339,11 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
   // Offline is the server's call, and the server only speaks when a Reading arrives. So when a
   // card shown Online has aged past the threshold, ask again: the answer carries Offline. The key
   // changes every second while any such card remains, so a server a second behind is asked again.
-  // Strictly past, as the server rules: exactly the threshold is still Online there.
-  const pastOffline = devices.filter((device) => device.online && (age(device) ?? -1) > offlineAfterSeconds).map((device) => device.id);
+  // Strictly past, as the server rules: exactly the threshold is still Online there. Counted from
+  // the last report, as the server counts: a board sending fault reports is Online with an old Reading.
+  const reportAge = (device: LiveDevice): number | null =>
+    device.secondsSinceReport === null ? null : ageSeconds(device.secondsSinceReport, device.asOf, now);
+  const pastOffline = devices.filter((device) => device.online && (reportAge(device) ?? -1) > offlineAfterSeconds).map((device) => device.id);
   const pastOfflineKey = pastOffline.length === 0 ? '' : `${pastOffline.join(',')}@${Math.floor(now / 1000)}`;
   useEffect(() => {
     if (pastOfflineKey !== '') onPastOffline();
@@ -332,7 +365,8 @@ function DeviceGrid({ devices, reportIntervalSeconds, offlineAfterSeconds, onPas
               <DeviceCard
                 device={device}
                 secondsSinceReading={age(device)}
-                anchorMs={device.secondsSinceReading === null ? null : device.asOf - device.secondsSinceReading * 1000}
+                secondsSinceReport={reportAge(device)}
+                anchorMs={device.secondsSinceReport === null ? null : device.asOf - device.secondsSinceReport * 1000}
                 reportIntervalSeconds={reportIntervalSeconds}
               />
             </motion.li>

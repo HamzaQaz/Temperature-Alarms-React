@@ -1,12 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { conditionsFor, worstLevel, offlineAfterSeconds, DEFAULT_THRESHOLDS, type Condition } from '../src/conditions';
+import { conditionsFor, worstLevel, offlineAfterSeconds, DEFAULT_THRESHOLDS, FAULT_REPORTS_BEFORE_SENSOR_FAULT, type Condition } from '../src/conditions';
 
 const REPORT_INTERVAL = 30;
 
 /** Conditions for a fresh Reading, so only the Reading rules are in play. */
 const fresh = (tempF: number, humidity: number | null): Condition[] =>
-  conditionsFor({ reading: { tempF, humidity }, secondsSinceReading: 5, reportIntervalSeconds: REPORT_INTERVAL });
+  conditionsFor({ reading: { tempF, humidity }, secondsSinceReport: 5, reportIntervalSeconds: REPORT_INTERVAL });
 
 describe('conditionsFor', () => {
   test('a comfortable closet is in no Condition', () => {
@@ -14,7 +14,7 @@ describe('conditionsFor', () => {
   });
 
   test('no Reading means only Offline', () => {
-    assert.deepEqual(conditionsFor({ reading: null, secondsSinceReading: null, reportIntervalSeconds: REPORT_INTERVAL }), [
+    assert.deepEqual(conditionsFor({ reading: null, secondsSinceReport: null, reportIntervalSeconds: REPORT_INTERVAL }), [
       { name: 'Offline', level: 'warning' },
     ]);
   });
@@ -72,8 +72,8 @@ describe('conditionsFor', () => {
   });
 
   describe('Offline', () => {
-    const aged = (secondsSinceReading: number, reportIntervalSeconds = REPORT_INTERVAL) =>
-      conditionsFor({ reading: { tempF: 72, humidity: 40 }, secondsSinceReading, reportIntervalSeconds });
+    const aged = (secondsSinceReport: number, reportIntervalSeconds = REPORT_INTERVAL) =>
+      conditionsFor({ reading: { tempF: 72, humidity: 40 }, secondsSinceReport, reportIntervalSeconds });
 
     test('is declared once more than three Report intervals have passed', () => {
       assert.deepEqual(aged(89), []);
@@ -89,8 +89,41 @@ describe('conditionsFor', () => {
       assert.deepEqual(aged(-5), []);
     });
     test('the stale Reading still says what it said', () => {
-      assert.deepEqual(conditionsFor({ reading: { tempF: 95, humidity: 40 }, secondsSinceReading: 1000, reportIntervalSeconds: REPORT_INTERVAL }), [
+      assert.deepEqual(conditionsFor({ reading: { tempF: 95, humidity: 40 }, secondsSinceReport: 1000, reportIntervalSeconds: REPORT_INTERVAL }), [
         { name: 'Hot', level: 'critical' },
+        { name: 'Offline', level: 'warning' },
+      ]);
+    });
+    test('counts from the last report, so a Device sending only fault reports stays Online', () => {
+      assert.deepEqual(conditionsFor({ reading: { tempF: 72, humidity: 40 }, secondsSinceReport: 10, sensorFaults: 20, reportIntervalSeconds: REPORT_INTERVAL }), [
+        { name: 'Sensor fault', level: 'critical' },
+      ]);
+      assert.deepEqual(conditionsFor({ reading: null, secondsSinceReport: 10, sensorFaults: 1, reportIntervalSeconds: REPORT_INTERVAL }), [], 'heard from, with no Reading yet');
+    });
+  });
+
+  describe('Sensor fault', () => {
+    const faulting = (sensorFaults: number, tempF = 72, humidity: number | null = 40, secondsSinceReport = 5) =>
+      conditionsFor({ reading: { tempF, humidity }, secondsSinceReport, sensorFaults, reportIntervalSeconds: REPORT_INTERVAL });
+
+    test('is critical from the third fault report in a row, never before', () => {
+      assert.equal(FAULT_REPORTS_BEFORE_SENSOR_FAULT, 3);
+      assert.deepEqual(faulting(0), []);
+      assert.deepEqual(faulting(2), [], 'two failed reads are DHT11 hiccups');
+      assert.deepEqual(faulting(3), [{ name: 'Sensor fault', level: 'critical' }]);
+      assert.deepEqual(faulting(4), [{ name: 'Sensor fault', level: 'critical' }]);
+    });
+    test('none when the count is not given (firmware before 5 sends no fault reports)', () => {
+      assert.deepEqual(fresh(72, 40), []);
+    });
+    test('while active, the stale Reading is not judged: a sensor that died hot does not keep the closet Hot', () => {
+      assert.deepEqual(faulting(2, 95, 15), [{ name: 'Hot', level: 'critical' }, { name: 'Dry', level: 'warning' }], 'below the count the last Reading still counts');
+      assert.deepEqual(faulting(3, 95, 15), [{ name: 'Sensor fault', level: 'critical' }]);
+      assert.deepEqual(faulting(3, 45, 75), [{ name: 'Sensor fault', level: 'critical' }], 'nor Cold or Mold risk');
+    });
+    test('stays alongside Offline when the board then falls silent, as a stale Reading does', () => {
+      assert.deepEqual(faulting(3, 95, 40, 1000), [
+        { name: 'Sensor fault', level: 'critical' },
         { name: 'Offline', level: 'warning' },
       ]);
     });
@@ -114,7 +147,7 @@ describe('conditionsFor', () => {
   test('thresholds can be overridden as one object', () => {
     const thresholds = { ...DEFAULT_THRESHOLDS, hotWarningF: 75, hotCriticalF: 80, coldWarningF: 60, dryWarningPercent: 30 };
     const at = (tempF: number, humidity: number) =>
-      conditionsFor({ reading: { tempF, humidity }, secondsSinceReading: 0, reportIntervalSeconds: REPORT_INTERVAL, thresholds });
+      conditionsFor({ reading: { tempF, humidity }, secondsSinceReport: 0, reportIntervalSeconds: REPORT_INTERVAL, thresholds });
     assert.deepEqual(at(74, 31), []);
     assert.deepEqual(at(75, 31), [{ name: 'Hot', level: 'warning' }]);
     assert.deepEqual(at(80, 31), [{ name: 'Hot', level: 'critical' }]);

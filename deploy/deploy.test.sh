@@ -101,6 +101,92 @@ for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do
 done
 printf '%s' "$out" | grep -q 'DB root' || fail "info: no DB root line: $out"
 
+# Email notifications (docs/adr/0008). Off after a plain install: no SMTP setting has a value, since
+# one set without SMTP_HOST stops api from starting. Compose passes every one to api, empty when unset.
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS; do
+  [ -z "$(renv $k)" ] || fail "install: $k has a value without --smtp-host"
+  grep -qE "^      $k: \\\$\{$k:-\}\$" "$repo/compose.yaml" || fail "compose.yaml: api does not get $k (empty when unset)"
+  grep -qE "^# $k=" "$repo/.env.example" || fail ".env.example: $k is not listed, commented"
+done
+printf '%s' "$out" | grep -q 'Email *off' || fail "info: notifications not shown as off: $out"
+
+# The password is never an argument: --smtp-password is refused before anything is written.
+cp "$repo/.env" "$work/env.before"
+out=$(run_fake install --reconfigure --smtp-host relay.example.org --smtp-password hunter2 < /dev/null) && fail "--smtp-password: exit 0"
+printf '%s' "$out" | grep -q 'never taken on the command line' || fail "--smtp-password: no explanation: $out"
+cmp -s "$repo/.env" "$work/env.before" || fail "--smtp-password: .env changed"
+
+# Half a group, or a bad value, is refused naming the flag, and .env is left as it was.
+out=$(run_fake install --reconfigure --smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org < /dev/null) && fail "no --public-url: exit 0"
+printf '%s' "$out" | grep -q -- '--public-url is required' || fail "no --public-url: no explanation: $out"
+ok_flags=(--smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org --public-url https://alarms.example.org)
+for bad in "--smtp-port 70000" "--smtp-secure ssl" "--notify-to not-an-address" "--notify-from a@b.c,d@e.f" "--public-url ftp://alarms.example.org" "--smtp-host relay.example.org;id"; do
+  # shellcheck disable=SC2086 # one flag and its value
+  out=$(run_fake install --reconfigure "${ok_flags[@]}" $bad < /dev/null) && fail "$bad: exit 0"
+  printf '%s' "$out" | grep -q -- "${bad%% *}" || fail "$bad: the flag is not named: $out"
+done
+out=$(run_fake install --reconfigure "${ok_flags[@]}" --notify-to "$(printf 'a@example.org\nADMIN_TOKEN=x')" < /dev/null) && fail "a second line in --notify-to: exit 0"
+printf '%s\n' "it's" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-user svc > /dev/null && fail "a password with a single quote: exit 0"
+cmp -s "$repo/.env" "$work/env.before" || fail "refused settings: .env changed"
+
+# On, with a login: the password arrives as the first line of stdin, is written single-quoted (Compose
+# takes it literally, $ and # included), and is on no docker command line and in no output.
+# shellcheck disable=SC2016 # a literal $, which Compose must not expand either
+pw='p@ss $HOME #1 \t\\x "q"'
+out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-port 465 --smtp-secure tls --smtp-user 'DISTRICT\svc-alarms' --notify-to 'techs@example.org, noc@example.org') || fail "notify on: exit $?: $out"
+[ "$(renv SMTP_HOST)" = relay.example.org ] || fail "notify on: SMTP_HOST is '$(renv SMTP_HOST)'"
+[ "$(renv SMTP_PORT)" = 465 ] && [ "$(renv SMTP_SECURE)" = tls ] || fail "notify on: port or security not written"
+[ "$(renv SMTP_USER)" = 'DISTRICT\svc-alarms' ] || fail "notify on: SMTP_USER is '$(renv SMTP_USER)'"
+[ "$(renv SMTP_PASSWORD)" = "'$pw'" ] || fail "notify on: SMTP_PASSWORD is not the stdin line, single-quoted: $(renv SMTP_PASSWORD)"
+[ "$(renv NOTIFY_TO)" = techs@example.org,noc@example.org ] || fail "notify on: NOTIFY_TO is '$(renv NOTIFY_TO)'"
+[ "$(renv PUBLIC_URL)" = https://alarms.example.org ] || fail "notify on: PUBLIC_URL is '$(renv PUBLIC_URL)'"
+for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do
+  [ "$(renv $k)" = "$(grep -E "^$k=" "$work/env.before" | cut -d= -f2-)" ] || fail "notify on: $k changed"
+done
+printf '%s' "$out" | grep -qF "$pw" && fail "notify on: the password is in the output"
+grep -qF 'p@ss' "$work/docker.log" 2>/dev/null && fail "notify on: the password is on a docker command line"
+# info masks the password whole, not first-and-last-four like the hex secrets; --reveal shows it.
+out=$(run_fake info)
+printf '%s' "$out" | grep -q 'relay.example.org:465 (tls)' || fail "info: no relay line: $out"
+printf '%s' "$out" | grep -qF 'DISTRICT\svc-alarms / ********' || fail "info: no masked login line: $out"
+printf '%s' "$out" | grep -qF 'p@ss' && fail "info: the SMTP password (or its start) printed without --reveal"
+out=$(run_fake info --reveal)
+printf '%s' "$out" | grep -qF "$pw" || fail "info --reveal: the SMTP password not shown: $out"
+
+# One setting changes on its own; with --smtp-user again and nothing on stdin, the password is kept.
+out=$(run_fake install --reconfigure --notify-to oncall@example.org < /dev/null) || fail "notify-to alone: exit $?: $out"
+[ "$(renv NOTIFY_TO)" = oncall@example.org ] && [ "$(renv SMTP_HOST)" = relay.example.org ] || fail "notify-to alone: not applied on its own"
+out=$(run_fake install --reconfigure --smtp-user other-svc < /dev/null) || fail "smtp-user, empty stdin: exit $?: $out"
+[ "$(renv SMTP_USER)" = other-svc ] && [ "$(renv SMTP_PASSWORD)" = "'$pw'" ] || fail "smtp-user, empty stdin: password not kept"
+# Without --reconfigure an existing .env is left alone, as for --set.
+out=$(run_fake install --smtp-host off < /dev/null) || fail "off without --reconfigure: exit $?"
+[ "$(renv SMTP_HOST)" = relay.example.org ] || fail "off without --reconfigure: .env changed"
+
+# Off: every setting of the group is emptied, so none is left set without SMTP_HOST.
+out=$(run_fake install --reconfigure --smtp-host off < /dev/null) || fail "off: exit $?: $out"
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL; do
+  [ -z "$(renv $k)" ] || fail "off: $k still set"
+done
+out=$(run_fake install --reconfigure --smtp-host off --notify-to a@example.org < /dev/null) && fail "off with another flag: exit 0"
+# A relay that needs no login, on a fresh .env: no user, no password.
+mv "$repo/.env" "$work/env.kept"
+out=$(run_fake install "${ok_flags[@]}" < /dev/null) || fail "fresh install with notify: exit $?: $out"
+[ "$(renv SMTP_HOST)" = relay.example.org ] && [ -z "$(renv SMTP_USER)" ] && [ -z "$(renv SMTP_PASSWORD)" ] || fail "fresh install with notify: wrong group"
+hex64 "$(renv ADMIN_TOKEN)" || fail "fresh install with notify: no secrets"
+mv "$work/env.kept" "$repo/.env"
+# Remote: the password is read here once and reaches the server on ssh's stdin, never in its arguments.
+cat > "$bin/ssh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${FAKE_DIR:?}/ssh.args"
+cat >> "$FAKE_DIR/ssh.stdin"
+FAKE
+chmod +x "$bin/ssh"
+rm -f "$work/ssh.args" "$work/ssh.stdin"
+out=$(printf '%s\n' "$pw" | run_fake install --reconfigure --smtp-user svc --host admin@a.example.org --host admin@b.example.org) || fail "remote smtp-user: exit $?: $out"
+[ "$(grep -cxF -- "$pw" "$work/ssh.stdin" 2>/dev/null)" = 2 ] || fail "remote smtp-user: the password did not reach both servers on stdin"
+grep -qF 'p@ss' "$work/ssh.args" && fail "remote smtp-user: the password is in ssh's arguments"
+rm -f "$bin/ssh"
+
 # rotate-device-token: the current token moves to DEVICE_TOKEN_PREVIOUS, a new one is generated,
 # the stack is recreated, and the config.h line is masked unless --reveal.
 reset_fake

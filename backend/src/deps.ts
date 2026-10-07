@@ -6,6 +6,7 @@ import type { IngestHealth } from './ingestHealth';
 import type { Listening } from './listening';
 import type { TokenRotation } from './tokenRotation';
 import type { DeviceSightings } from './deviceSightings';
+import type { Mailer } from './mailer';
 
 /** What every route module and background job is handed at startup. */
 export interface AppDeps {
@@ -26,6 +27,8 @@ export interface AppDeps {
   rotation?: TokenRotation;
   /** Which Devices were last refused for their token. createApp makes one if none is given. */
   sightings?: DeviceSightings;
+  /** How email leaves the server. createApp makes the SMTP one when notifications are on; tests may pass their own. */
+  mailer?: Mailer;
 }
 
 /** AppDeps once createApp has filled in what the routes need. */
@@ -34,6 +37,8 @@ export interface RouteDeps extends AppDeps {
   ingest: IngestHealth;
   rotation: TokenRotation;
   sightings: DeviceSightings;
+  /** Undefined when notifications are off (no SMTP_HOST). */
+  mailer: Mailer | undefined;
   /** The Device token check and its wrong-token limit, shared by every route a Device calls (deviceAuth.ts). */
   deviceAuth: RequestHandler[];
 }

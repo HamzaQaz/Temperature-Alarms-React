@@ -3,8 +3,8 @@
  * responses: the backend runs as a single process, so a Reading that arrives anywhere is
  * seen by every browser. A heartbeat comment keeps proxies from closing an idle stream;
  * reconnecting after a drop is the browser's EventSource doing what it does by default.
- * Every message is unnamed, its `data` a JSON object whose `type` says what it is: a `reading`
- * or an `incident`.
+ * Every message is unnamed, its `data` a JSON object whose `type` says what it is: a `reading`,
+ * a `fault` report, or an `incident`.
  *
  * The response carries only the headers SSE needs. CORS is the shared middleware's job.
  */
@@ -29,6 +29,24 @@ export interface ReadingEvent {
   online: boolean;
   /** Worst first, as the dashboard payload carries them. */
   conditions: Condition[];
+  /** ISO instant in UTC: this Reading is the Device's last report. */
+  lastReportAt: string;
+}
+
+/**
+ * What every open dashboard receives when a Device posts a fault report (docs/adr/0009): its
+ * sensor is not answering. No Reading came, so the card keeps its last one; its Conditions and
+ * Online are new.
+ */
+export interface FaultEvent {
+  type: 'fault';
+  device: string;
+  fault: 'sensor';
+  online: boolean;
+  /** Worst first, as the dashboard payload carries them. */
+  conditions: Condition[];
+  /** ISO instant in UTC: when the fault report arrived. */
+  lastReportAt: string;
 }
 
 /** An incident as the API sends it: GET /api/incidents and the stream's `incident` message both use this shape. */
@@ -46,9 +64,9 @@ export interface IncidentPayload {
   /** ISO instants in UTC; `end` is null while the incident is ongoing. */
   start: string;
   end: string | null;
-  /** The worst Reading during the incident; for Offline, the last Reading before it. */
+  /** The worst Reading during the incident; for Offline and Sensor fault, the last good Reading before it. */
   peak: {
-    /** °F for Hot and Cold, percent for Dry and Mold risk, null for Offline. */
+    /** °F for Hot and Cold, percent for Dry and Mold risk, null for Offline and Sensor fault. */
     value: number | null;
     tempF: number;
     humidity: number | null;
@@ -66,7 +84,7 @@ export interface IncidentEvent {
 }
 
 /** Every message the stream carries, told apart by `type`. */
-export type StreamEvent = ReadingEvent | IncidentEvent;
+export type StreamEvent = ReadingEvent | FaultEvent | IncidentEvent;
 
 export interface Broadcaster {
   /** Express handler for GET /api/dashboard/stream. */

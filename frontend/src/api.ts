@@ -1,4 +1,4 @@
-import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incidents, Overview } from './types';
+import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incidents, NotificationStatus, Overview, TestEmailResult } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -134,6 +134,14 @@ export const withdrawFirmware = (): Promise<void> => request('/api/firmware', { 
 
 /** Which Devices still report with the previous Device token during a rotation. Needs the Admin token. */
 export const getDeviceRotation = (): Promise<DeviceRotation> => request('/api/devices/rotation', { admin: true });
+
+// ==================== NOTIFICATIONS ====================
+
+/** Whether Incidents are emailed, to whom, and how the last send went. Needs the Admin token. */
+export const getNotificationStatus = (): Promise<NotificationStatus> => request('/api/notifications/status', { admin: true });
+
+/** Send a test email to every recipient now; at most one a minute. Needs the Admin token. */
+export const sendTestEmail = (): Promise<TestEmailResult> => request('/api/notifications/test', { method: 'POST' });
 
 // ==================== DASHBOARD ====================
 

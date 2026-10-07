@@ -7,7 +7,7 @@ export type ReportState = 'due' | 'late' | 'offline' | 'none';
 
 interface ReportHairlineProps {
   state: ReportState;
-  /** When the latest Reading's age was zero, on the browser's monotonic clock (lib/elapsed.ts), from the server's age. */
+  /** When the last report's age was zero (a Reading or a fault report), on the browser's monotonic clock (lib/elapsed.ts), from the server's age. */
   anchorMs: number | null;
   reportIntervalSeconds: number;
 }
@@ -17,7 +17,7 @@ interface ReportHairlineProps {
  * it depletes across the Report interval, emptying as the next Reading falls due; when a
  * report is missed it stops and the hairline turns Warning Amber; once the server calls the
  * Device Offline the hairline goes dashed. The depletion is one CSS transform animation per
- * card, started once per Reading with a negative delay so it picks up mid-interval; no
+ * card, started once per report with a negative delay so it picks up mid-interval; no
  * re-render drives it, and it is unmounted while the tab is hidden and restarted on return.
  * Under reduced motion the line does not move; the amber and the dashes still say it.
  */
