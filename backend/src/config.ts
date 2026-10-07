@@ -49,6 +49,11 @@ export interface NotificationsConfig {
   publicUrl: string;
   /** How long the sender waits after the first pending notification before sending one email for all of them. */
   coalesceSeconds: number;
+  /**
+   * How many hours an Incident stays open and unacknowledged before it is emailed again, and again
+   * every as many hours after (docs/adr/0008). 0: no reminders.
+   */
+  remindHours: number;
 }
 
 export class ConfigError extends Error {
@@ -122,6 +127,9 @@ const EMAIL = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
  */
 const NOTIFY_SETTINGS = ['SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO'] as const;
 
+/** The longest NOTIFY_REMIND_HOURS: a week. */
+export const MAX_REMIND_HOURS = 168;
+
 /**
  * Email notifications from the environment (docs/adr/0008): off without SMTP_HOST, and a half-set
  * group refuses to start, naming every problem at once. The SMTP password is never in a message.
@@ -172,6 +180,9 @@ function notifications(env: Env): NotificationsConfig | undefined {
   }
 
   const coalesceSeconds = integer(env, 'NOTIFY_COALESCE_SECONDS', 60, { min: 0 });
+  // Empty or 0 is off. A week at most: a longer period would hardly remind anyone of anything.
+  const remindHours = integer(env, 'NOTIFY_REMIND_HOURS', 0, { min: 0 });
+  if (remindHours > MAX_REMIND_HOURS) problems.push(`NOTIFY_REMIND_HOURS must be 0 (off) to ${MAX_REMIND_HOURS} hours, got "${remindHours}"`);
 
   if (problems.length > 0 || secure === undefined || from === undefined || publicUrl === undefined) {
     throw new ConfigError(`Email notifications are half-configured: ${problems.join('; ')}`);
@@ -182,6 +193,7 @@ function notifications(env: Env): NotificationsConfig | undefined {
     to,
     publicUrl,
     coalesceSeconds,
+    remindHours,
   };
 }
 

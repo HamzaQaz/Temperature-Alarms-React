@@ -19,7 +19,7 @@ SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD"
 TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE NOTIFY_COALESCE_SECONDS"
 # Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
 # flags or the install prompts, never with --set; the password never comes from the command line.
-NOTIFY_KEYS="SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL"
+NOTIFY_KEYS="SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS"
 # The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
 DEMO_PROJECT="temperature-alarms-demo"
 DEMO_ENV=".env.demo"
@@ -60,6 +60,7 @@ SMTP_USER_OPT=""
 NOTIFY_FROM_OPT=""
 NOTIFY_TO_OPT=""
 PUBLIC_URL_OPT=""
+NOTIFY_REMIND_HOURS_OPT=""
 # The SMTP password once read from stdin or the hidden prompt (read_smtp_password); never from argv.
 SMTP_PW=""
 # 1 for an install from before DB_ROOT_PASSWORD, whose root password is still DB_PASSWORD (legacy_root_env).
@@ -146,6 +147,8 @@ Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off u
       --notify-from ADDR  The sender address the relay allows (required with --smtp-host)
       --notify-to LIST    Recipients, comma-separated; a distribution list (required with --smtp-host)
       --public-url URL    The dashboard's address, for links in emails (required with --smtp-host)
+      --notify-remind-hours N  Email an Incident again after N hours open and unacknowledged, and
+                          every N hours after (1 to 168); 0 turns reminders off (the default)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
@@ -186,6 +189,7 @@ parse_args() {
       --notify-from) need_value "$@"; NOTIFY_FROM_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --notify-to) need_value "$@"; NOTIFY_TO_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --public-url) need_value "$@"; PUBLIC_URL_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --notify-remind-hours) need_value "$@"; NOTIFY_REMIND_HOURS_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       # Every process on the host can read another's command line; the password comes on stdin instead.
       --smtp-password|--smtp-password=*) die "the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin" ;;
       --pull) PULL=1; PASS_ARGS+=("$1") ;;
@@ -390,12 +394,14 @@ valid_notify() {
     NOTIFY_FROM) printf '%s' "$2" | grep -Eqx "$EMAIL_RE" ;;
     NOTIFY_TO) printf '%s' "$2" | grep -Eqx "$EMAIL_RE(,$EMAIL_RE)*" ;;
     PUBLIC_URL) printf '%s' "$2" | grep -Eqx 'https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?' ;;
+    # Whole hours, a week at most; 0 is off.
+    NOTIFY_REMIND_HOURS) printf '%s' "$2" | grep -Eqx '[0-9]{1,3}' && [ "$((10#$2))" -le 168 ] ;;
     *) return 1 ;;
   esac
 }
 
 notify_flags_given() {
-  [ -n "$SMTP_HOST_OPT$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT" ]
+  [ -n "$SMTP_HOST_OPT$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT$NOTIFY_REMIND_HOURS_OPT" ]
 }
 
 # The SMTP password into SMTP_PW, never from the command line: a hidden prompt at a terminal, else
@@ -421,8 +427,9 @@ clear_notify() {
   for k in $NOTIFY_KEYS; do [ -z "$(env_get "$k")" ] || env_set "$k" ""; done
 }
 
-# write_notify HOST PORT SECURE USER PASSWORD FROM TO URL: the whole group at once. An empty port or
-# security mode leaves the backend's default (587, starttls); an empty user drops the login.
+# write_notify HOST PORT SECURE USER PASSWORD FROM TO URL REMIND: the whole group at once. An empty
+# port, security mode, or reminder period leaves the backend's default (587, starttls, no reminders);
+# an empty user drops the login.
 write_notify() {
   env_set SMTP_HOST "$1"
   if [ -n "$2" ] || [ -n "$(env_get SMTP_PORT)" ]; then env_set SMTP_PORT "$2"; fi
@@ -432,6 +439,18 @@ write_notify() {
   env_set NOTIFY_FROM "$6"
   env_set NOTIFY_TO "$7"
   env_set PUBLIC_URL "$8"
+  if [ -n "$9" ] || [ -n "$(env_get NOTIFY_REMIND_HOURS)" ]; then env_set NOTIFY_REMIND_HOURS "$9"; fi
+}
+
+# "every 4 h", or "off" while NOTIFY_REMIND_HOURS is empty or 0.
+remind_summary() {
+  local hours
+  hours=$(env_get NOTIFY_REMIND_HOURS)
+  case "$hours" in
+    '') printf 'off' ;;
+    *[!0-9]*) printf "'%s', not a number of hours" "$hours" ;;
+    *) if [ "$((10#$hours))" -eq 0 ]; then printf 'off'; else printf 'every %s h' "$((10#$hours))"; fi ;;
+  esac
 }
 
 notify_summary() {
@@ -441,16 +460,16 @@ notify_summary() {
   secure=$(env_get SMTP_SECURE); secure=${secure:-starttls}
   port=$(env_get SMTP_PORT)
   [ -n "$port" ] || { [ "$secure" = tls ] && port=465 || port=587; }
-  printf '%s:%s (%s), from %s to %s' "$host" "$port" "$secure" "$(env_get NOTIFY_FROM)" "$(env_get NOTIFY_TO)"
+  printf '%s:%s (%s), from %s to %s, reminders %s' "$host" "$port" "$secure" "$(env_get NOTIFY_FROM)" "$(env_get NOTIFY_TO)" "$(remind_summary)"
 }
 
 # --smtp-host and friends into .env, each checked first and nothing written unless all pass. A flag
 # not given keeps what .env has, so one setting can change on its own.
 apply_notify_flags() {
-  local host port secure user from to url
+  local host port secure user from to url remind
   notify_flags_given || return 0
   if [ "$SMTP_HOST_OPT" = off ]; then
-    [ -z "$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT" ] \
+    [ -z "$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT$NOTIFY_REMIND_HOURS_OPT" ] \
       || die "--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it"
     clear_notify; ok "email notifications off"; return 0
   fi
@@ -463,6 +482,7 @@ apply_notify_flags() {
   to=$(printf '%s' "${NOTIFY_TO_OPT:-$(env_get NOTIFY_TO)}" | tr -d ' ')
   url=${PUBLIC_URL_OPT:-$(env_get PUBLIC_URL)}
   url=${url%/}
+  remind=${NOTIFY_REMIND_HOURS_OPT:-$(env_get NOTIFY_REMIND_HOURS)}
   valid_notify SMTP_HOST "$host" || die "--smtp-host: '$host' is not a host name or IPv4 address"
   [ -z "$port" ] || valid_notify SMTP_PORT "$port" || die "--smtp-port: '$port' is not a port number"
   [ -z "$secure" ] || valid_notify SMTP_SECURE "$secure" || die "--smtp-secure: '$secure' is not starttls, tls, or none"
@@ -473,6 +493,7 @@ apply_notify_flags() {
   valid_notify NOTIFY_TO "$to" || die "--notify-to: '$to' is not a comma-separated list of bare addresses"
   [ -n "$url" ] || die "--public-url is required with --smtp-host: the address technicians open the dashboard at, for links in emails (https://YOUR_DOMAIN)"
   valid_notify PUBLIC_URL "$url" || die "--public-url: '$url' is not an http:// or https:// address"
+  [ -z "$remind" ] || valid_notify NOTIFY_REMIND_HOURS "$remind" || die "--notify-remind-hours: '$remind' is not a whole number of hours from 0 (off) to 168"
   SMTP_PW=""
   if [ -n "$SMTP_USER_OPT" ]; then
     read_smtp_password "$user" "$(env_get SMTP_PASSWORD)"
@@ -482,14 +503,14 @@ apply_notify_flags() {
     [ -n "$SMTP_PW" ] || die "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin"
   fi
   [ -z "$user" ] || valid_notify SMTP_PASSWORD "$SMTP_PW" || die "the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads \$ and # literally)"
-  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url"
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url" "$remind"
   SMTP_PW=""
   ok "email notifications: $(notify_summary)${user:+, login $user}"
 }
 
 # The same, asked at the keyboard, each answer checked as it is typed. Blank turns them off.
 prompt_notifications() {
-  local current value host port secure user from to url login=n
+  local current value host port secure user from to url remind login=n
   interactive || return 0
   current=$(env_get SMTP_HOST)
   say "  Incident emails go out through the district's SMTP relay (DEPLOYMENT.md, Email notifications)."
@@ -550,7 +571,13 @@ prompt_notifications() {
     valid_notify PUBLIC_URL "$url" && break
     warn "'$url' is not an http:// or https:// address"
   done
-  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url"
+  current=$(env_get NOTIFY_REMIND_HOURS)
+  while :; do
+    remind=$(ask "Email an Incident again every how many hours while it stays open and no one has acknowledged it (0: never)" "${current:-4}")
+    valid_notify NOTIFY_REMIND_HOURS "$remind" && break
+    warn "'$remind' is not a whole number of hours from 0 (off) to 168"
+  done
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url" "$remind"
   SMTP_PW=""
   say "  Settings, Notifications, has a \"Send test email\" button once deployed."
 }
