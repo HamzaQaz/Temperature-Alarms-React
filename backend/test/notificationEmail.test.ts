@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { duration, notificationEmail, type QueuedNotification } from '../src/notificationEmail';
+import { duration, notificationEmail, openFor, type QueuedNotification } from '../src/notificationEmail';
 import type { NotificationKind } from '../src/outbox';
 
 const SETTINGS = { publicUrl: 'https://alarms.district.example', timeZone: 'America/Chicago' };
@@ -15,6 +15,7 @@ let nextId = 1;
 function row(kind: NotificationKind, incident: Partial<QueuedNotification['incident']> = {}, device: Partial<QueuedNotification['device']> = {}): QueuedNotification {
   return {
     kind,
+    queuedAt: at(10),
     incident: { id: nextId++, condition: 'Hot', level: 'critical', start: START, end: null, peak: { tempF: 91, humidity: 45, recordedAt: at(10) }, acknowledgement: null, ...incident },
     device: { id: 12, hostname: 'ESP_A1B2C3', closet: 'IDF 2', campus: { name: 'Central High School', shortcode: 'CHS' }, ...device },
   };
@@ -25,6 +26,12 @@ const also = (first: QueuedNotification, kind: NotificationKind, incident: Parti
   ...first,
   kind,
   incident: { ...first.incident, ...incident },
+});
+
+/** A reminder for a fresh incident, queued `hours` after its start. */
+const reminder = (hours: number, incident: Partial<QueuedNotification['incident']> = {}, device: Partial<QueuedNotification['device']> = {}): QueuedNotification => ({
+  ...row('reminder', incident, device),
+  queuedAt: at(hours * 60),
 });
 
 const offline = (kind: NotificationKind, closet: string) =>
@@ -138,6 +145,45 @@ describe('notificationEmail (the email for one batch)', () => {
     const closed = notificationEmail([row('closed', { end: at(65), acknowledgement })], SETTINGS);
     assert.match(closed.text, /^Ended: .*\nAcknowledged by Sam <on site> at /m, 'after the end, once resolved');
     assert.doesNotMatch(notificationEmail([row('opened')], SETTINGS).text, /Acknowledged/, 'nothing when nobody has');
+  });
+
+  test('a reminder says the incident is still open and for how long, in whole hours', () => {
+    const email = notificationEmail([reminder(6)], SETTINGS);
+    assert.equal(email.subject, '[Temperature Alarms] Still open: CHS IDF 2 Hot critical, 6 h');
+    assert.deepEqual(email.text.split('\n').slice(0, 5), [
+      'Hot critical: still open after 6 h',
+      'Central High School (CHS), IDF 2, ESP_A1B2C3',
+      'Started: Tue, Oct 6, 9:05 PM CDT',
+      'Not acknowledged yet: acknowledging it on the Dashboard stops these reminders',
+      'Peak Reading: 91 °F, 45% at Tue, Oct 6, 9:15 PM CDT',
+    ]);
+    assert.match(email.html ?? '', /Hot critical: still open after 6 h/);
+    // Queued up to a sweep late, or after the server was down: the hours it has reached.
+    assert.equal(notificationEmail([{ ...reminder(4), queuedAt: at(4 * 60 + 1) }], SETTINGS).subject, '[Temperature Alarms] Still open: CHS IDF 2 Hot critical, 4 h');
+    const silent = notificationEmail([reminder(52, { condition: 'Offline', level: 'warning' })], SETTINGS);
+    assert.equal(silent.subject, '[Temperature Alarms] Still open: CHS IDF 2 Offline, 2 d 4 h');
+    assert.match(silent.text, /^Offline: still open after 2 d 4 h \(the server has not heard from the board\)$/m);
+  });
+
+  test('reminders coalesce with everything else: a digest says how many are still open', () => {
+    const mixed = notificationEmail([reminder(4, {}, { closet: 'IDF 1' }), offline('opened', 'IDF 3'), offline('closed', 'IDF 4')], SETTINGS);
+    assert.equal(mixed.subject, '[Temperature Alarms] 3 incidents: 2 Offline, 1 Hot (1 resolved, 1 still open)');
+    assert.match(mixed.text, /^Hot critical: still open after 4 h$/m);
+    const all = notificationEmail([reminder(4, {}, { closet: 'IDF 1' }), reminder(8, { condition: 'Offline', level: 'warning' }, { closet: 'IDF 3' })], SETTINGS);
+    assert.equal(all.subject, '[Temperature Alarms] 2 incidents: 1 Hot, 1 Offline (all still open)');
+  });
+
+  test('a reminder in the same batch as other news about its incident gives way to it', () => {
+    const first = reminder(4);
+    assert.equal(notificationEmail([first, also(first, 'worse')], SETTINGS).subject, '[Temperature Alarms] CHS IDF 2: Hot critical, got worse (91 °F)');
+    assert.equal(notificationEmail([first, also(first, 'closed', { end: at(250) })], SETTINGS).subject, '[Temperature Alarms] CHS IDF 2: Hot critical, resolved (91 °F)');
+  });
+
+  test('how long a reminder says it has been open: whole hours, then days', () => {
+    assert.equal(openFor(4 * 3_600_000 + 59 * 60_000), '4 h');
+    assert.equal(openFor(24 * 3_600_000), '1 d');
+    assert.equal(openFor(27 * 3_600_000), '1 d 3 h');
+    assert.equal(openFor(30 * 60_000), '30 min', 'under an hour, as a duration');
   });
 
   test('durations read in minutes, hours, and days', () => {

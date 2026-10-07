@@ -103,7 +103,7 @@ printf '%s' "$out" | grep -q 'DB root' || fail "info: no DB root line: $out"
 
 # Email notifications (docs/adr/0008). Off after a plain install: no SMTP setting has a value, since
 # one set without SMTP_HOST stops api from starting. Compose passes every one to api, empty when unset.
-for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS; do
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS NOTIFY_REMIND_HOURS; do
   [ -z "$(renv $k)" ] || fail "install: $k has a value without --smtp-host"
   grep -qE "^      $k: \\\$\{$k:-\}\$" "$repo/compose.yaml" || fail "compose.yaml: api does not get $k (empty when unset)"
   grep -qE "^# $k=" "$repo/.env.example" || fail ".env.example: $k is not listed, commented"
@@ -120,7 +120,7 @@ cmp -s "$repo/.env" "$work/env.before" || fail "--smtp-password: .env changed"
 out=$(run_fake install --reconfigure --smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org < /dev/null) && fail "no --public-url: exit 0"
 printf '%s' "$out" | grep -q -- '--public-url is required' || fail "no --public-url: no explanation: $out"
 ok_flags=(--smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org --public-url https://alarms.example.org)
-for bad in "--smtp-port 70000" "--smtp-secure ssl" "--notify-to not-an-address" "--notify-from a@b.c,d@e.f" "--public-url ftp://alarms.example.org" "--smtp-host relay.example.org;id"; do
+for bad in "--smtp-port 70000" "--smtp-secure ssl" "--notify-to not-an-address" "--notify-from a@b.c,d@e.f" "--public-url ftp://alarms.example.org" "--smtp-host relay.example.org;id"   "--notify-remind-hours 169" "--notify-remind-hours 1.5" "--notify-remind-hours -4"; do
   # shellcheck disable=SC2086 # one flag and its value
   out=$(run_fake install --reconfigure "${ok_flags[@]}" $bad < /dev/null) && fail "$bad: exit 0"
   printf '%s' "$out" | grep -q -- "${bad%% *}" || fail "$bad: the flag is not named: $out"
@@ -133,13 +133,14 @@ cmp -s "$repo/.env" "$work/env.before" || fail "refused settings: .env changed"
 # takes it literally, $ and # included), and is on no docker command line and in no output.
 # shellcheck disable=SC2016 # a literal $, which Compose must not expand either
 pw='p@ss $HOME #1 \t\\x "q"'
-out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-port 465 --smtp-secure tls --smtp-user 'DISTRICT\svc-alarms' --notify-to 'techs@example.org, noc@example.org') || fail "notify on: exit $?: $out"
+out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-port 465 --smtp-secure tls --smtp-user 'DISTRICT\svc-alarms' --notify-to 'techs@example.org, noc@example.org' --notify-remind-hours 4) || fail "notify on: exit $?: $out"
 [ "$(renv SMTP_HOST)" = relay.example.org ] || fail "notify on: SMTP_HOST is '$(renv SMTP_HOST)'"
 [ "$(renv SMTP_PORT)" = 465 ] && [ "$(renv SMTP_SECURE)" = tls ] || fail "notify on: port or security not written"
 [ "$(renv SMTP_USER)" = 'DISTRICT\svc-alarms' ] || fail "notify on: SMTP_USER is '$(renv SMTP_USER)'"
 [ "$(renv SMTP_PASSWORD)" = "'$pw'" ] || fail "notify on: SMTP_PASSWORD is not the stdin line, single-quoted: $(renv SMTP_PASSWORD)"
 [ "$(renv NOTIFY_TO)" = techs@example.org,noc@example.org ] || fail "notify on: NOTIFY_TO is '$(renv NOTIFY_TO)'"
 [ "$(renv PUBLIC_URL)" = https://alarms.example.org ] || fail "notify on: PUBLIC_URL is '$(renv PUBLIC_URL)'"
+[ "$(renv NOTIFY_REMIND_HOURS)" = 4 ] || fail "notify on: NOTIFY_REMIND_HOURS is '$(renv NOTIFY_REMIND_HOURS)'"
 for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do
   [ "$(renv $k)" = "$(grep -E "^$k=" "$work/env.before" | cut -d= -f2-)" ] || fail "notify on: $k changed"
 done
@@ -148,6 +149,7 @@ grep -qF 'p@ss' "$work/docker.log" 2>/dev/null && fail "notify on: the password 
 # info masks the password whole, not first-and-last-four like the hex secrets; --reveal shows it.
 out=$(run_fake info)
 printf '%s' "$out" | grep -q 'relay.example.org:465 (tls)' || fail "info: no relay line: $out"
+printf '%s' "$out" | grep -q 'reminders every 4 h' || fail "info: reminders not shown: $out"
 printf '%s' "$out" | grep -qF 'DISTRICT\svc-alarms / ********' || fail "info: no masked login line: $out"
 printf '%s' "$out" | grep -qF 'p@ss' && fail "info: the SMTP password (or its start) printed without --reveal"
 out=$(run_fake info --reveal)
@@ -156,6 +158,9 @@ printf '%s' "$out" | grep -qF "$pw" || fail "info --reveal: the SMTP password no
 # One setting changes on its own; with --smtp-user again and nothing on stdin, the password is kept.
 out=$(run_fake install --reconfigure --notify-to oncall@example.org < /dev/null) || fail "notify-to alone: exit $?: $out"
 [ "$(renv NOTIFY_TO)" = oncall@example.org ] && [ "$(renv SMTP_HOST)" = relay.example.org ] || fail "notify-to alone: not applied on its own"
+out=$(run_fake install --reconfigure --notify-remind-hours 0 < /dev/null) || fail "notify-remind-hours alone: exit $?: $out"
+[ "$(renv NOTIFY_REMIND_HOURS)" = 0 ] && [ "$(renv NOTIFY_TO)" = oncall@example.org ] || fail "notify-remind-hours alone: not applied on its own"
+printf '%s' "$(run_fake info)" | grep -q 'reminders off' || fail "info: reminders not shown as off"
 out=$(run_fake install --reconfigure --smtp-user other-svc < /dev/null) || fail "smtp-user, empty stdin: exit $?: $out"
 [ "$(renv SMTP_USER)" = other-svc ] && [ "$(renv SMTP_PASSWORD)" = "'$pw'" ] || fail "smtp-user, empty stdin: password not kept"
 # Without --reconfigure an existing .env is left alone, as for --set.
@@ -164,10 +169,13 @@ out=$(run_fake install --smtp-host off < /dev/null) || fail "off without --recon
 
 # Off: every setting of the group is emptied, so none is left set without SMTP_HOST.
 out=$(run_fake install --reconfigure --smtp-host off < /dev/null) || fail "off: exit $?: $out"
-for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL; do
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS; do
   [ -z "$(renv $k)" ] || fail "off: $k still set"
 done
 out=$(run_fake install --reconfigure --smtp-host off --notify-to a@example.org < /dev/null) && fail "off with another flag: exit 0"
+out=$(run_fake install --reconfigure --smtp-host off --notify-remind-hours 4 < /dev/null) && fail "off with --notify-remind-hours: exit 0"
+out=$(run_fake install --reconfigure --notify-remind-hours 4 < /dev/null) && fail "--notify-remind-hours with email off: exit 0"
+printf '%s' "$out" | grep -q 'email notifications are off here' || fail "--notify-remind-hours with email off: no explanation: $out"
 # A relay that needs no login, on a fresh .env: no user, no password.
 mv "$repo/.env" "$work/env.kept"
 out=$(run_fake install "${ok_flags[@]}" < /dev/null) || fail "fresh install with notify: exit $?: $out"

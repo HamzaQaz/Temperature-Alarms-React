@@ -15,6 +15,7 @@ import { serverTimeZone } from './localDay';
 import { MailerError, type Mailer } from './mailer';
 import { notificationEmail, type QueuedNotification } from './notificationEmail';
 import { DEFAULT_RETRY, givesUp, readyToSend, retryDelayMs, type NotificationKind, type RetryPolicy } from './outbox';
+import { dropStaleReminders } from './outboxStore';
 
 /** How often a pass runs by default: well inside the coalescing window, and cheap when nothing is due. */
 const DEFAULT_INTERVAL_MS = 5_000;
@@ -54,6 +55,7 @@ interface DueRow extends RowDataPacket {
 interface QueuedRow extends RowDataPacket {
   id: number;
   kind: NotificationKind;
+  queuedAt: Date;
   incidentId: number;
   conditionName: ConditionName;
   level: ConditionLevel;
@@ -74,7 +76,7 @@ interface QueuedRow extends RowDataPacket {
 /** The claimed rows with their Incident and Device as they stand now, for the email. */
 async function queuedNotifications(conn: PoolConnection, ids: number[]): Promise<QueuedNotification[]> {
   const [rows] = await conn.query<QueuedRow[]>(
-    `SELECT n.id, n.kind, i.id AS incidentId, i.condition_name AS conditionName, i.worst_level AS level,
+    `SELECT n.id, n.kind, n.created_at AS queuedAt, i.id AS incidentId, i.condition_name AS conditionName, i.worst_level AS level,
             i.started_at AS startedAt, i.ended_at AS endedAt,
             i.peak_temp_f AS peakTempF, i.peak_humidity AS peakHumidity, i.peak_recorded_at AS peakRecordedAt,
             i.acknowledged_at AS acknowledgedAt, i.acknowledged_by AS acknowledgedBy,
@@ -88,6 +90,7 @@ async function queuedNotifications(conn: PoolConnection, ids: number[]): Promise
   );
   return rows.map((r) => ({
     kind: r.kind,
+    queuedAt: r.queuedAt,
     incident: {
       id: r.incidentId,
       condition: r.conditionName,
@@ -134,17 +137,20 @@ export async function runNotifierPass({ pool, config, mailer, now = () => new Da
        ORDER BY next_attempt_at, id LIMIT ? FOR UPDATE SKIP LOCKED`,
       [at, BATCH_LIMIT],
     );
-    if (!readyToSend(due, at, coalesceMs)) {
-      await conn.rollback();
+    // A reminder whose incident was acknowledged or ended since it was queued has nothing left to say.
+    const dropped = new Set(await dropStaleReminders(conn, due.map((r) => r.id)));
+    const live = due.filter((r) => !dropped.has(r.id));
+    if (!readyToSend(live, at, coalesceMs)) {
+      await conn.commit();
       return 0;
     }
-    const ids = due.map((r) => r.id);
+    const ids = live.map((r) => r.id);
     const email = notificationEmail(await queuedNotifications(conn, ids), { publicUrl: notifications.publicUrl, timeZone });
     try {
       await mailer.send(email);
     } catch (error) {
       if (!(error instanceof MailerError)) throw error;
-      await recordFailure(conn, due, error, now(), retry);
+      await recordFailure(conn, live, error, now(), retry);
       await conn.commit();
       throw error;
     }

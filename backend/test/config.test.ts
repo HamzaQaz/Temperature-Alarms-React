@@ -143,13 +143,14 @@ describe('loadConfig: email notifications', () => {
     assert.equal(loadConfig({ ...complete, SMTP_HOST: '  ' }).notifications, undefined);
   });
 
-  test('on with SMTP_HOST, applying defaults: port 587, STARTTLS, no login, a 60 s coalescing window', () => {
+  test('on with SMTP_HOST, applying defaults: port 587, STARTTLS, no login, a 60 s coalescing window, no reminders', () => {
     assert.deepEqual(loadConfig(smtp).notifications, {
       smtp: { host: 'relay.example.test', port: 587, secure: 'starttls', auth: undefined },
       from: 'alarms@example.test',
       to: ['techs@example.test'],
       publicUrl: 'https://alarms.example.test',
       coalesceSeconds: 60,
+      remindHours: 0,
     });
   });
 
@@ -163,6 +164,7 @@ describe('loadConfig: email notifications', () => {
       NOTIFY_TO: ' techs@example.test, oncall@example.test ,',
       PUBLIC_URL: 'http://10.0.0.5:8080/',
       NOTIFY_COALESCE_SECONDS: '0',
+      NOTIFY_REMIND_HOURS: '4',
     }).notifications;
     assert.deepEqual(notifications, {
       smtp: { host: 'relay.example.test', port: 2525, secure: 'none', auth: { user: 'svc-alarms', password: 'smtp-secret' } },
@@ -170,7 +172,16 @@ describe('loadConfig: email notifications', () => {
       to: ['techs@example.test', 'oncall@example.test'],
       publicUrl: 'http://10.0.0.5:8080',
       coalesceSeconds: 0,
+      remindHours: 4,
     });
+  });
+
+  test('reminders are off when NOTIFY_REMIND_HOURS is empty or 0, and up to a week apart', () => {
+    assert.equal(loadConfig({ ...smtp, NOTIFY_REMIND_HOURS: '' }).notifications?.remindHours, 0);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_REMIND_HOURS: '0' }).notifications?.remindHours, 0);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_REMIND_HOURS: '168' }).notifications?.remindHours, 168);
+    // Like the window, it may sit in a template while email is off: only SMTP_HOST turns anything on.
+    assert.equal(loadConfig({ ...complete, NOTIFY_REMIND_HOURS: '4' }).notifications, undefined);
   });
 
   test('implicit TLS defaults to port 465', () => {
@@ -210,6 +221,9 @@ describe('loadConfig: email notifications', () => {
     refuses({ ...smtp, PUBLIC_URL: 'alarms.example.test' }, /PUBLIC_URL/);
     refuses({ ...smtp, PUBLIC_URL: 'ftp://alarms.example.test' }, /PUBLIC_URL/);
     refuses({ ...smtp, NOTIFY_COALESCE_SECONDS: '-1' }, /NOTIFY_COALESCE_SECONDS/);
+    refuses({ ...smtp, NOTIFY_REMIND_HOURS: '-1' }, /NOTIFY_REMIND_HOURS/);
+    refuses({ ...smtp, NOTIFY_REMIND_HOURS: '1.5' }, /NOTIFY_REMIND_HOURS/);
+    refuses({ ...smtp, NOTIFY_REMIND_HOURS: '169' }, /NOTIFY_REMIND_HOURS.*168/);
   });
 
   test('never prints the SMTP password', () => {

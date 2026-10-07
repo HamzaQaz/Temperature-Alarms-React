@@ -23,7 +23,7 @@ $Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD')
 $Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS')
 # Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
 # flags or the install prompts, never with --set; the password never comes from the command line.
-$NotifyKeys = @('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL')
+$NotifyKeys = @('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_REMIND_HOURS')
 # The SMTP password once read from stdin or the hidden prompt (Read-SmtpPassword); never from the arguments.
 $SmtpPw = ''
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
@@ -46,7 +46,7 @@ $O = @{
     Service = ''; Hosts = @(); Servers = ''; Dir = 'temperature-alarms'; Repo = ''; Branch = ''
     SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'; Down = $false
     Finish = $false; Force = $false; Only = ''
-    SmtpHost = ''; SmtpPort = ''; SmtpSecure = ''; SmtpUser = ''; NotifyFrom = ''; NotifyTo = ''; PublicUrl = ''
+    SmtpHost = ''; SmtpPort = ''; SmtpSecure = ''; SmtpUser = ''; NotifyFrom = ''; NotifyTo = ''; PublicUrl = ''; NotifyRemindHours = ''
 }
 $OrigArgs = @($args | ForEach-Object { "$_" })
 # What is piped to the script, read only when the SMTP password is wanted (Read-SmtpPassword): a pipe
@@ -119,6 +119,8 @@ Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off u
       --notify-from ADDR  The sender address the relay allows (required with --smtp-host)
       --notify-to LIST    Recipients, comma-separated; a distribution list (required with --smtp-host)
       --public-url URL    The dashboard's address, for links in emails (required with --smtp-host)
+      --notify-remind-hours N  Email an Incident again after N hours open and unacknowledged, and
+                          every N hours after (1 to 168); 0 turns reminders off (the default)
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
@@ -164,6 +166,7 @@ function Read-Args([string[]]$List) {
                 'notifyfrom' { $takesValue = $true; $O.NotifyFrom = $next; $O.Pass += @('--notify-from', $next) }
                 'notifyto' { $takesValue = $true; $O.NotifyTo = $next; $O.Pass += @('--notify-to', $next) }
                 'publicurl' { $takesValue = $true; $O.PublicUrl = $next; $O.Pass += @('--public-url', $next) }
+                'notifyremindhours' { $takesValue = $true; $O.NotifyRemindHours = $next; $O.Pass += @('--notify-remind-hours', $next) }
                 # Every process on the host can read another's command line; the password comes on stdin instead.
                 { $_ -like 'smtppassword*' } { Fail 'the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin' }
                 'pull' { $O.Pull = $true; $O.Pass += '--pull' }
@@ -373,11 +376,13 @@ function Test-NotifySetting([string]$Key, [string]$Value) {
         'NOTIFY_FROM' { return $Value -match "\A$EmailRe\z" }
         'NOTIFY_TO' { return $Value -match "\A$EmailRe(,$EmailRe)*\z" }
         'PUBLIC_URL' { return $Value -match '\Ahttps?://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?\z' }
+        # Whole hours, a week at most; 0 is off.
+        'NOTIFY_REMIND_HOURS' { return ($Value -match '\A[0-9]{1,3}\z') -and ([int]$Value -le 168) }
         default { return $false }
     }
 }
 
-function Test-NotifyFlags { return [bool]("$($O.SmtpHost)$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)") }
+function Test-NotifyFlags { return [bool]("$($O.SmtpHost)$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)$($O.NotifyRemindHours)") }
 
 function Test-StdinRedirected { return [Console]::IsInputRedirected }
 
@@ -408,9 +413,9 @@ function Clear-Notify {
     foreach ($k in $NotifyKeys) { if (Get-EnvValue $k) { Set-EnvValue $k '' } }
 }
 
-# The whole group at once. An empty port or security mode leaves the backend's default (587, starttls);
-# an empty user drops the login.
-function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string]$User, [string]$Password, [string]$From, [string]$To, [string]$Url) {
+# The whole group at once. An empty port, security mode, or reminder period leaves the backend's default
+# (587, starttls, no reminders); an empty user drops the login.
+function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string]$User, [string]$Password, [string]$From, [string]$To, [string]$Url, [string]$Remind) {
     Set-EnvValue 'SMTP_HOST' $SmtpHost
     if ($Port -or (Get-EnvValue 'SMTP_PORT')) { Set-EnvValue 'SMTP_PORT' $Port }
     if ($Secure -or (Get-EnvValue 'SMTP_SECURE')) { Set-EnvValue 'SMTP_SECURE' $Secure }
@@ -419,6 +424,16 @@ function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string
     Set-EnvValue 'NOTIFY_FROM' $From
     Set-EnvValue 'NOTIFY_TO' $To
     Set-EnvValue 'PUBLIC_URL' $Url
+    if ($Remind -or (Get-EnvValue 'NOTIFY_REMIND_HOURS')) { Set-EnvValue 'NOTIFY_REMIND_HOURS' $Remind }
+}
+
+# "every 4 h", or "off" while NOTIFY_REMIND_HOURS is empty or 0.
+function Get-RemindSummary {
+    $hours = Get-EnvValue 'NOTIFY_REMIND_HOURS'
+    if (-not $hours) { return 'off' }
+    if ($hours -notmatch '\A[0-9]{1,9}\z') { return "'$hours', not a number of hours" }
+    if ([int]$hours -eq 0) { return 'off' }
+    return "every $([int]$hours) h"
 }
 
 function Get-NotifySummary {
@@ -426,7 +441,7 @@ function Get-NotifySummary {
     if (-not $smtpHost) { return 'off (no SMTP_HOST)' }
     $secure = Get-EnvValue 'SMTP_SECURE'; if (-not $secure) { $secure = 'starttls' }
     $port = Get-EnvValue 'SMTP_PORT'; if (-not $port) { $port = if ($secure -eq 'tls') { '465' } else { '587' } }
-    return "${smtpHost}:$port ($secure), from $(Get-EnvValue 'NOTIFY_FROM') to $(Get-EnvValue 'NOTIFY_TO')"
+    return "${smtpHost}:$port ($secure), from $(Get-EnvValue 'NOTIFY_FROM') to $(Get-EnvValue 'NOTIFY_TO'), reminders $(Get-RemindSummary)"
 }
 
 function Get-FlagOrEnv([string]$Flag, [string]$Key) { if ($Flag) { return $Flag } else { return Get-EnvValue $Key } }
@@ -436,7 +451,7 @@ function Get-FlagOrEnv([string]$Flag, [string]$Key) { if ($Flag) { return $Flag 
 function Set-NotifyFlagsInEnv {
     if (-not (Test-NotifyFlags)) { return }
     if ($O.SmtpHost -eq 'off') {
-        if ("$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)") { Fail '--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it' }
+        if ("$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)$($O.NotifyRemindHours)") { Fail '--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it' }
         Clear-Notify; Ok 'email notifications off'; return
     }
     $smtpHost = Get-FlagOrEnv $O.SmtpHost 'SMTP_HOST'
@@ -447,6 +462,7 @@ function Set-NotifyFlagsInEnv {
     $from = Get-FlagOrEnv $O.NotifyFrom 'NOTIFY_FROM'
     $to = (Get-FlagOrEnv $O.NotifyTo 'NOTIFY_TO').Replace(' ', '')
     $url = (Get-FlagOrEnv $O.PublicUrl 'PUBLIC_URL').TrimEnd('/')
+    $remind = Get-FlagOrEnv $O.NotifyRemindHours 'NOTIFY_REMIND_HOURS'
     if (-not (Test-NotifySetting 'SMTP_HOST' $smtpHost)) { Fail "--smtp-host: '$smtpHost' is not a host name or IPv4 address" }
     if ($port -and -not (Test-NotifySetting 'SMTP_PORT' $port)) { Fail "--smtp-port: '$port' is not a port number" }
     if ($secure -and -not (Test-NotifySetting 'SMTP_SECURE' $secure)) { Fail "--smtp-secure: '$secure' is not starttls, tls, or none" }
@@ -457,6 +473,7 @@ function Set-NotifyFlagsInEnv {
     if (-not (Test-NotifySetting 'NOTIFY_TO' $to)) { Fail "--notify-to: '$to' is not a comma-separated list of bare addresses" }
     if (-not $url) { Fail '--public-url is required with --smtp-host: the address technicians open the dashboard at, for links in emails (https://YOUR_DOMAIN)' }
     if (-not (Test-NotifySetting 'PUBLIC_URL' $url)) { Fail "--public-url: '$url' is not an http:// or https:// address" }
+    if ($remind -and -not (Test-NotifySetting 'NOTIFY_REMIND_HOURS' $remind)) { Fail "--notify-remind-hours: '$remind' is not a whole number of hours from 0 (off) to 168" }
     $script:SmtpPw = ''
     if ($O.SmtpUser) { Read-SmtpPassword $user ([bool](Get-EnvValue 'SMTP_PASSWORD')) }
     if (-not $script:SmtpPw -and $user) {
@@ -464,7 +481,7 @@ function Set-NotifyFlagsInEnv {
         if (-not $script:SmtpPw) { Fail "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin" }
     }
     if ($user -and -not (Test-NotifySetting 'SMTP_PASSWORD' $script:SmtpPw)) { Fail 'the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads $ and # literally)' }
-    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url $remind
     $script:SmtpPw = ''
     $login = if ($user) { ", login $user" } else { '' }
     Ok "email notifications: $(Get-NotifySummary)$login"
@@ -527,7 +544,13 @@ function Read-Notifications {
         if (Test-NotifySetting 'PUBLIC_URL' $url) { break }
         Warn "'$url' is not an http:// or https:// address"
     }
-    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url
+    $current = Get-EnvValue 'NOTIFY_REMIND_HOURS'; if (-not $current) { $current = '4' }
+    while ($true) {
+        $remind = Ask 'Email an Incident again every how many hours while it stays open and no one has acknowledged it (0: never)' $current
+        if (Test-NotifySetting 'NOTIFY_REMIND_HOURS' $remind) { break }
+        Warn "'$remind' is not a whole number of hours from 0 (off) to 168"
+    }
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url $remind
     $script:SmtpPw = ''
     Write-Host '  Settings, Notifications, has a "Send test email" button once deployed.'
 }
