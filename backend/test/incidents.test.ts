@@ -1,4 +1,4 @@
-import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
+import { test, describe, before, after, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, resetDatabase, testDatabaseConfig } from './helpers/database';
@@ -21,6 +21,7 @@ import {
   type IncidentState,
   type IncidentStep,
   type TimedReading,
+  type TimedReport,
 } from '../src/incidents';
 import { DEFAULT_THRESHOLDS } from '../src/conditions';
 import { deleteReadingsPastWindow } from '../src/retention';
@@ -532,6 +533,124 @@ describe('replayIncidents (what the demo writes for its backfilled week)', () =>
     const incidents = replayIncidents([reading(0, 72)], rules, new Date(start + 600_000));
     assert.equal(incidents.length, 1);
     assert.equal(incidents[0].end, null);
+  });
+
+  const fault = (seconds: number): TimedReport => ({ fault: 'sensor', recordedAt: new Date(start + seconds * 1000) });
+
+  test('fault reports among the Readings: Sensor fault opens on the third, peaking at the last good Reading, and two good Readings close it', () => {
+    const incidents = replayIncidents([reading(0, 72), fault(30), fault(60), fault(90), fault(120), reading(150, 72), reading(180, 72)], rules);
+    assert.equal(incidents.length, 1);
+    const [sensor] = incidents;
+    assert.equal(sensor.condition, 'Sensor fault');
+    assert.equal(sensor.level, 'critical');
+    assert.deepEqual(sensor.start, new Date(start + 90_000));
+    assert.deepEqual(sensor.end, new Date(start + 150_000));
+    assert.deepEqual(sensor.peak, reading(0, 72));
+  });
+
+  test('a Reading clears the count of fault reports in a row, and a board that never sent a Reading opens nothing', () => {
+    assert.deepEqual(replayIncidents([reading(0, 72), fault(30), fault(60), reading(90, 72), fault(120), fault(150)], rules), []);
+    assert.deepEqual(replayIncidents([fault(0), fault(30), fault(60), fault(90)], rules, new Date(start + 600_000)), []);
+  });
+
+  test('silence counts from the last report, a fault report included, and the peak is the last good Reading', () => {
+    const incidents = replayIncidents([reading(0, 72), fault(30), fault(60), reading(600, 72)], rules);
+    assert.equal(incidents.length, 1);
+    assert.equal(incidents[0].condition, 'Offline');
+    assert.deepEqual(incidents[0].start, new Date(start + 60_000 + 91_000));
+    assert.deepEqual(incidents[0].end, new Date(start + 600_000));
+    assert.deepEqual(incidents[0].peak, reading(0, 72));
+  });
+});
+
+describe('replayIncidents agrees with ingest (the demo cannot drift from it)', () => {
+  const rules = { reportIntervalSeconds: 30, thresholds: DEFAULT_THRESHOLDS };
+  const start = Date.UTC(2026, 9, 1, 12, 0, 0);
+  const at = (seconds: number) => new Date(start + seconds * 1000);
+  let pool: Pool;
+  let server: RunningServer;
+  let sse: ReturnType<typeof createBroadcaster>;
+
+  before(() => {
+    pool = createTestPool();
+  });
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    // Ingest stamps each report with the server's clock, so the test holds that clock.
+    mock.timers.enable({ apis: ['Date'], now: start });
+    sse = createBroadcaster({ heartbeatMs: 60_000 });
+    server = await startServer(pool, testConfig(), { sse });
+  });
+  afterEach(async () => {
+    mock.timers.reset();
+    await server.close();
+  });
+  after(() => pool.end());
+
+  const logged = ({ condition, level, start, end, peak, segments }: Incident) => ({
+    condition,
+    level,
+    start,
+    end,
+    peak: { tempF: peak.tempF, humidity: peak.humidity, recordedAt: peak.recordedAt },
+    segments,
+  });
+  const replayed = ({ condition, level, start, end, peak, segments }: IncidentState) => ({
+    condition,
+    level,
+    start: start.toISOString(),
+    end: end?.toISOString() ?? null,
+    peak: { tempF: peak.tempF, humidity: peak.humidity, recordedAt: peak.recordedAt.toISOString() },
+    segments: segments.map((s) => ({ level: s.level, start: s.start.toISOString(), end: s.end?.toISOString() ?? null })),
+  });
+
+  test('a mixed stream of Readings and fault reports replays to the incidents ingest and the Offline sweep record', async () => {
+    const client = api(server);
+    const campus = await client.campuses.create();
+    await client.devices.create(campus.id, 'ESP_A1B2C3', 'IDF 2');
+    // Seconds into the stream, and the Reading's °F or a fault report.
+    const stream: [number, number | 'fault'][] = [
+      [0, 72],
+      [30, 85], // Hot opens
+      [60, 'fault'],
+      [90, 'fault'],
+      [120, 'fault'], // Sensor fault opens on the third, peaking at 85 °F; Hot is left as it was
+      [150, 'fault'], // then silence, counted from this report: Offline from 241
+      [330, 72], // heard again: Offline ends, and a clean Reading each for Hot and Sensor fault
+      [361, 'fault'], // Sensor fault's clean count starts over; Hot's is frozen
+      [389, 72], // Hot's second clean Reading: it ends at 330
+      [420, 72], // Sensor fault ends at 389
+      [450, 86], // Hot again, still open at the end
+      [480, 72],
+    ];
+    const until = 500;
+    const reports: TimedReport[] = [];
+    // The sweep runs once every Report interval, as it does live; here halfway between reports.
+    let sweptTo = 15;
+    const sweepUntil = async (seconds: number) => {
+      for (; sweptTo < seconds; sweptTo += 30) await runOfflineSweep({ pool, config: testConfig(), sse, now: () => at(sweptTo) });
+    };
+    for (const [seconds, value] of stream) {
+      await sweepUntil(seconds);
+      mock.timers.setTime(at(seconds).getTime());
+      const response = await client.readings.add(value === 'fault' ? { device: 'ESP_A1B2C3', fault: 'sensor' } : { device: 'ESP_A1B2C3', temp: value, humidity: 40 });
+      assert.equal(response.status, value === 'fault' ? 202 : 201, await response.clone().text());
+      reports.push(value === 'fault' ? { fault: 'sensor', recordedAt: at(seconds) } : { tempF: value, humidity: 40, recordedAt: at(seconds) });
+    }
+    await sweepUntil(until);
+
+    const live = (await client.incidents.list(at(-60), at(until))).incidents.map(logged);
+    assert.deepEqual(
+      live.map((i) => [i.condition, i.start, i.end]),
+      [
+        ['Hot', at(30).toISOString(), at(330).toISOString()],
+        ['Sensor fault', at(120).toISOString(), at(389).toISOString()],
+        ['Offline', at(241).toISOString(), at(330).toISOString()],
+        ['Hot', at(450).toISOString(), null],
+      ],
+      'the stream makes what it says it does',
+    );
+    assert.deepEqual(replayIncidents(reports, rules, at(until)).map(replayed), live);
   });
 });
 
