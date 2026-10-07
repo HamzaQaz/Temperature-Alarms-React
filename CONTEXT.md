@@ -65,6 +65,10 @@ _Avoid_: Alert, alarm, risk, status
 A stretch of time a Device spent in one Condition at warning or worse, recorded by the server: when it started, each level change, when it ended (or that it is ongoing), and its peak Reading. It opens on the first Reading in the Condition and closes after two Readings in a row without it, ending at the first of them; Offline opens when the server would first report the Device Offline and closes on its next report; Sensor fault opens on the third Fault report in a row. Moderate Mold risk is a heads-up, never an Incident. Kept for the Retention window, like Readings (docs/adr/0006).
 _Avoid_: Alert, alarm, event, outage
 
+**Acknowledgement**:
+A technician saying they are on an open Incident, with their name or a short note (free text, 1 to 60 characters, since there are no user accounts) and when they said it. Given in the app with the Admin token, from the Device card or the Incidents log; the first one stands, an ended Incident cannot be acknowledged, and it is never cleared, not by the level rising nor by the close. It shows on the card, in the log, and in every later Notification about that Incident, which still sends (docs/adr/0008).
+_Avoid_: Claim, assign, ownership, ack
+
 **Notification**:
 An email the server sends to a fixed list of recipients, through the district's SMTP relay, when an Incident opens, gets worse (its level rises), or closes. A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
 _Avoid_: Alert, alarm (the old feature that was removed), page, message

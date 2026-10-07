@@ -19,7 +19,7 @@ import {
   type Segment,
   type TimedReading,
 } from './incidents';
-import type { Broadcaster, IncidentPayload } from './sse';
+import type { AcknowledgementPayload, Broadcaster, IncidentPayload } from './sse';
 import { LATEST_READING_ID, lastReportAt, latestAllowed } from './latestReading';
 import { enqueueNotifications } from './outboxStore';
 
@@ -297,11 +297,18 @@ interface IncidentPayloadRow extends IncidentRow {
   campusId: number;
   campusName: string;
   campusShortcode: string;
+  acknowledgedAt: Date | null;
+  acknowledgedBy: string | null;
 }
+
+/** The acknowledgement a row holds, as the API sends it; null until someone gives one. */
+const acknowledgementOf = ({ acknowledgedAt, acknowledgedBy }: { acknowledgedAt: Date | null; acknowledgedBy: string | null }): AcknowledgementPayload | null =>
+  acknowledgedAt === null || acknowledgedBy === null ? null : { by: acknowledgedBy, at: acknowledgedAt.toISOString() };
 
 const SELECT_INCIDENT_PAYLOAD = `
   SELECT i.id, i.condition_name AS conditionName, i.worst_level AS level, i.started_at AS startedAt, i.ended_at AS endedAt,
          i.peak_temp_f AS peakTempF, i.peak_humidity AS peakHumidity, i.peak_recorded_at AS peakRecordedAt,
+         i.acknowledged_at AS acknowledgedAt, i.acknowledged_by AS acknowledgedBy,
          d.id AS deviceId, d.hostname, d.closet,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode
   FROM incidents i
@@ -321,6 +328,7 @@ async function toPayloads(db: Db, rows: IncidentPayloadRow[]): Promise<IncidentP
       end: r.endedAt === null ? null : r.endedAt.toISOString(),
       peak: { value: peakValue(r.conditionName, peak), tempF: peak.tempF, humidity: peak.humidity, recordedAt: peak.recordedAt.toISOString() },
       segments: (segments.get(r.id) ?? []).map((s) => ({ level: s.level, start: s.startedAt.toISOString(), end: s.endedAt === null ? null : s.endedAt.toISOString() })),
+      acknowledgement: acknowledgementOf(r),
     };
   });
 }
@@ -339,6 +347,65 @@ export async function incidentsById(db: Db, ids: number[]): Promise<IncidentPayl
   if (ids.length === 0) return [];
   const [rows] = await db.query<IncidentPayloadRow[]>(`${SELECT_INCIDENT_PAYLOAD} WHERE i.id IN (?) ORDER BY i.started_at, i.id`, [ids]);
   return toPayloads(db, rows);
+}
+
+/** What acknowledging an incident did: recorded it, found it already acknowledged, or found it ended or missing. */
+export type AcknowledgeResult = 'acknowledged' | 'already' | 'ended' | 'missing';
+
+/**
+ * Record that `by` is on incident `id` as of `at` (CONTEXT.md, Acknowledgement). Only an open
+ * incident nobody has acknowledged changes, in one statement, so two people at once leave the
+ * first one's name and a close racing it wins: the first acknowledgement stands, a repeat on
+ * an open incident is answered 'already', and any attempt once it has ended is 'ended', even
+ * when someone acknowledged it before. An acknowledgement is never cleared, not by the level
+ * rising, nor by the close; it stays on the closed incident's record.
+ */
+export async function acknowledgeIncident(db: Db, id: number, by: string, at: Date): Promise<AcknowledgeResult> {
+  const [result] = await db.query<ResultSetHeader>(
+    'UPDATE incidents SET acknowledged_at = ?, acknowledged_by = ? WHERE id = ? AND ended_at IS NULL AND acknowledged_at IS NULL',
+    [at, by, id],
+  );
+  if (result.affectedRows === 1) return 'acknowledged';
+  const [rows] = await db.query<RowDataPacket[]>('SELECT ended_at AS endedAt FROM incidents WHERE id = ?', [id]);
+  if (rows.length === 0) return 'missing';
+  // Ended wins over already: once it is over there is nothing to acknowledge, whoever did before.
+  return rows[0].endedAt !== null ? 'ended' : 'already';
+}
+
+/** An open incident as a Dashboard card carries it: enough to name it and say who is on it. */
+export interface OpenIncidentPayload {
+  id: number;
+  condition: ConditionName;
+  /** The worst level it has reached. */
+  level: ConditionLevel;
+  /** ISO instant in UTC. */
+  start: string;
+  acknowledgement: AcknowledgementPayload | null;
+}
+
+interface OpenIncidentRow extends RowDataPacket {
+  id: number;
+  deviceId: number;
+  conditionName: ConditionName;
+  level: ConditionLevel;
+  startedAt: Date;
+  acknowledgedAt: Date | null;
+  acknowledgedBy: string | null;
+}
+
+/** Every open incident, by Device, oldest first: what the Dashboard's cards show of them. */
+export async function openIncidentsByDevice(db: Db): Promise<Map<number, OpenIncidentPayload[]>> {
+  const [rows] = await db.query<OpenIncidentRow[]>(
+    `SELECT id, device_id AS deviceId, condition_name AS conditionName, worst_level AS level, started_at AS startedAt,
+            acknowledged_at AS acknowledgedAt, acknowledged_by AS acknowledgedBy
+     FROM incidents WHERE ended_at IS NULL ORDER BY started_at, id`,
+  );
+  const byDevice = new Map<number, OpenIncidentPayload[]>();
+  for (const r of rows) {
+    const incident: OpenIncidentPayload = { id: r.id, condition: r.conditionName, level: r.level, start: r.startedAt.toISOString(), acknowledgement: acknowledgementOf(r) };
+    byDevice.set(r.deviceId, [...(byDevice.get(r.deviceId) ?? []), incident]);
+  }
+  return byDevice;
 }
 
 /**

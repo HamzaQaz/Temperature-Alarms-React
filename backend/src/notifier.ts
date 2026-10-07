@@ -67,6 +67,8 @@ interface QueuedRow extends RowDataPacket {
   closet: string;
   campusName: string;
   campusShortcode: string;
+  acknowledgedAt: Date | null;
+  acknowledgedBy: string | null;
 }
 
 /** The claimed rows with their Incident and Device as they stand now, for the email. */
@@ -75,6 +77,7 @@ async function queuedNotifications(conn: PoolConnection, ids: number[]): Promise
     `SELECT n.id, n.kind, i.id AS incidentId, i.condition_name AS conditionName, i.worst_level AS level,
             i.started_at AS startedAt, i.ended_at AS endedAt,
             i.peak_temp_f AS peakTempF, i.peak_humidity AS peakHumidity, i.peak_recorded_at AS peakRecordedAt,
+            i.acknowledged_at AS acknowledgedAt, i.acknowledged_by AS acknowledgedBy,
             d.id AS deviceId, d.hostname, d.closet, c.name AS campusName, c.shortcode AS campusShortcode
      FROM notifications n
      JOIN incidents i ON i.id = n.incident_id
@@ -92,6 +95,7 @@ async function queuedNotifications(conn: PoolConnection, ids: number[]): Promise
       start: r.startedAt,
       end: r.endedAt,
       peak: { tempF: r.peakTempF, humidity: r.peakHumidity, recordedAt: r.peakRecordedAt },
+      acknowledgement: r.acknowledgedAt === null || r.acknowledgedBy === null ? null : { by: r.acknowledgedBy, at: r.acknowledgedAt },
     },
     device: { id: r.deviceId, hostname: r.hostname, closet: r.closet, campus: { name: r.campusName, shortcode: r.campusShortcode } },
   }));

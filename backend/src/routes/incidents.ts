@@ -1,6 +1,8 @@
 import { Router, type Request } from 'express';
+import { requireAdminToken } from '../auth';
+import { parseAcknowledgement } from '../acknowledgementInput';
 import type { RouteDeps } from '../deps';
-import { incidentsOverlapping } from '../incidentStore';
+import { acknowledgeIncident, incidentsById, incidentsOverlapping } from '../incidentStore';
 
 /** The longest window one request may ask for: a week, and a day to spare for the edges. */
 export const MAX_WINDOW_DAYS = 8;
@@ -33,12 +35,20 @@ function parseWindow(query: Request['query']): Window | { error: string } {
   return { from, to };
 }
 
+/** The largest BIGINT UNSIGNED a JavaScript number holds exactly; any id past it names no incident. */
+const MAX_ID = Number.MAX_SAFE_INTEGER;
+
 /**
  * Incident log (GET /api/incidents?from=&to=): every incident that overlaps the window, the
  * ongoing ones included, oldest first. Public, like the dashboard.
+ *
+ * Acknowledge (POST /api/incidents/:id/acknowledge, Admin token, `{by}`): a technician says they
+ * are on an open incident. The first acknowledgement stands; a repeat answers the incident as it
+ * is. Every open dashboard hears of it on the stream.
  */
-export function incidentsRouter({ pool }: RouteDeps): Router {
+export function incidentsRouter({ pool, config, sse, now = () => new Date() }: RouteDeps): Router {
   const router = Router();
+  const adminOnly = requireAdminToken(config);
 
   router.get('/', async (req, res, next) => {
     const window = parseWindow(req.query);
@@ -49,6 +59,42 @@ export function incidentsRouter({ pool }: RouteDeps): Router {
     try {
       const incidents = await incidentsOverlapping(pool, window.from, window.to);
       res.json({ from: window.from.toISOString(), to: window.to.toISOString(), incidents });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/:id/acknowledge', adminOnly, async (req, res, next) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0 || id > MAX_ID) {
+      res.status(404).json({ error: 'Incident not found' });
+      return;
+    }
+    const parsed = parseAcknowledgement(req.body);
+    if ('error' in parsed) {
+      res.status(422).json({ error: parsed.error });
+      return;
+    }
+    try {
+      // To the second, as the incident's own times are stored.
+      const at = new Date(Math.floor(now().getTime() / 1000) * 1000);
+      const result = await acknowledgeIncident(pool, id, parsed.by, at);
+      if (result === 'missing') {
+        res.status(404).json({ error: 'Incident not found' });
+        return;
+      }
+      if (result === 'ended') {
+        res.status(409).json({ error: 'This incident has ended, so there is nothing left to acknowledge' });
+        return;
+      }
+      const [incident] = await incidentsById(pool, [id]);
+      if (incident === undefined) {
+        // Its Device was deleted in between.
+        res.status(404).json({ error: 'Incident not found' });
+        return;
+      }
+      if (result === 'acknowledged') sse.broadcast({ type: 'incident', change: 'acknowledged', incident });
+      res.json(incident);
     } catch (error) {
       next(error);
     }

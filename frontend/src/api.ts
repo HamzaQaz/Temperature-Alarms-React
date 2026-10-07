@@ -1,4 +1,4 @@
-import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incidents, NotificationStatus, Overview, TestEmailResult } from './types';
+import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incident, Incidents, NotificationStatus, Overview, TestEmailResult } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -186,3 +186,10 @@ export const getIncidents = (from: Date, to: Date): Promise<Incidents> => {
   const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
   return request(`/api/incidents?${query}`);
 };
+
+/**
+ * Say who is on an open incident: a name or a short note. The first acknowledgement stands; a
+ * repeat answers the incident as it is. Needs the Admin token.
+ */
+export const acknowledgeIncident = (id: number, by: string): Promise<Incident> =>
+  request(`/api/incidents/${id}/acknowledge`, { method: 'POST', body: { by } });

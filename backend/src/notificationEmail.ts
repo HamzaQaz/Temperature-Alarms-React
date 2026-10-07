@@ -24,6 +24,8 @@ export interface QueuedNotification {
     end: Date | null;
     /** The worst Reading; for Offline and Sensor fault, the last good Reading before it. */
     peak: TimedReading;
+    /** Who said they are on it, and when; null until someone does. Never cleared, so later emails name it. */
+    acknowledgement: { by: string; at: Date } | null;
   };
   device: {
     id: number;
@@ -159,6 +161,10 @@ function linesOf(entry: Entry, { publicUrl, timeZone }: EmailSettings): EntryLin
   if (isResolved(entry) && incident.end !== null) {
     details.push(`Ended: ${when(incident.end, timeZone)}, after ${duration(incident.end.getTime() - incident.start.getTime())}`);
   }
+  // Someone is on it: the email says who, so a got-worse or resolved email does not send a second person.
+  if (incident.acknowledgement !== null) {
+    details.push(`Acknowledged by ${incident.acknowledgement.by} at ${when(incident.acknowledgement.at, timeZone)}`);
+  }
   details.push(`${PEAK_LABEL[incident.condition] ?? 'Peak Reading'}: ${readingText(incident.peak)} at ${when(incident.peak.recordedAt, timeZone)}`);
   const day = todayIn(incident.start, timeZone);
   return {
@@ -174,8 +180,8 @@ const escapeHtml = (text: string): string =>
 /**
  * The email for one batch of due notifications: a subject naming the closet for one incident,
  * or counting by Condition for several; then each incident, worst first, with its Campus,
- * Closet, Device, Condition and level, start (and end, with how long), peak Reading, and a link
- * to that Device's History on the day it started. `rows` holds at least one notification.
+ * Closet, Device, Condition and level, start (and end, with how long), who acknowledged it,
+ * peak Reading, and a link to that Device's History on the day it started. `rows` holds at least one notification.
  */
 export function notificationEmail(rows: QueuedNotification[], settings: EmailSettings): Email {
   const entries = entriesOf(rows);
