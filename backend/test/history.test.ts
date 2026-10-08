@@ -66,6 +66,7 @@ describe('/api/devices/:id/history', () => {
         to: NEXT_DAY_START,
         readings: [],
         truncated: false,
+        retentionDays: 90,
         summary: { tempF: null, humidity: null },
       });
     });

@@ -14,6 +14,7 @@ import { campusOverviewRouter } from './routes/campusOverview';
 import { devicesRouter } from './routes/devices';
 import { readingsRouter, dashboardRouter, historyRouter } from './routes/readings';
 import { incidentsRouter } from './routes/incidents';
+import { csvExportsRouter } from './routes/csvExports';
 import { firmwareRouter } from './routes/firmware';
 import { notificationsRouter } from './routes/notifications';
 import { createMailer } from './mailer';
@@ -86,6 +87,8 @@ export function createApp(appDeps: AppDeps): Express {
   app.use('/api/health', healthRouter(deps));
   app.use('/api/campuses/overview', campusOverviewRouter(deps));
   app.use('/api/campuses', campusesRouter(deps));
+  // The CSV downloads sit beside the routes they export, not under them: /api/incidents.csv is not in /api/incidents.
+  app.use('/api', csvExportsRouter(deps));
   app.use('/api/devices/:id/history', historyRouter(deps));
   app.use('/api/devices', devicesRouter(deps));
   app.use('/api/readings', readingsRouter(deps));

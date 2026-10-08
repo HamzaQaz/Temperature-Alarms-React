@@ -145,6 +145,26 @@ describe('GET /api/dashboard/stream', () => {
     assert.ok(events.length > 0, 'the stream is still alive');
     assert.ok(events.every((e) => e.kind === 'comment'), `unexpected ${JSON.stringify(events)}`);
   });
+
+  test('close ends every stream, telling the browser to reconnect in 2 s, and refuses new ones (shutdown.ts)', async () => {
+    await registerDevice('ESP_A1B2C3');
+    const first = await listen();
+    const second = await listen();
+    await Promise.all([first.next(), second.next()]);
+
+    sse.close();
+    for (const stream of [first, second]) {
+      assert.deepEqual(await stream.next(), { kind: 'retry', ms: 2000 });
+      await stream.ended;
+    }
+    assert.equal(sse.clientCount, 0);
+
+    const refused = await fetch(streamUrl());
+    assert.equal(refused.status, 503);
+    assert.deepEqual(await refused.json(), { error: 'The server is stopping; try again shortly.' });
+    // A Reading in flight at the stop still reaches the broadcaster, which has no one left to write to.
+    await postReading('ESP_A1B2C3', 70, 35);
+  });
 });
 
 async function waitFor(condition: () => boolean, what: string, timeoutMs = 2000): Promise<void> {

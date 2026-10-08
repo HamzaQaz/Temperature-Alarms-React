@@ -6,7 +6,7 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { ConditionLevel } from './conditions';
 import type { ChangedIncident } from './incidentStore';
-import { notificationKinds } from './outbox';
+import { isBench, notificationKinds, reminderDue } from './outbox';
 
 /** A pool or one of its connections: anything that runs a statement. */
 type Db = Pool | PoolConnection;
@@ -62,6 +62,82 @@ export async function enqueueNotifications(db: Db, changed: ChangedIncident[], a
   if (rows.length === 0) return 0;
   await db.query('INSERT INTO notifications (incident_id, device_id, kind, level, created_at, next_attempt_at) VALUES ?', [rows]);
   return rows.length;
+}
+
+interface RemindableRow extends RowDataPacket {
+  id: number;
+  deviceId: number;
+  level: ConditionLevel;
+  startedAt: Date;
+  lastRemindedAt: Date | null;
+  campusShortcode: string;
+}
+
+const SELECT_REMINDABLE = `
+  SELECT i.id, i.device_id AS deviceId, i.worst_level AS level, i.started_at AS startedAt,
+         i.last_reminded_at AS lastRemindedAt, c.shortcode AS campusShortcode
+  FROM incidents i JOIN devices d ON d.id = i.device_id JOIN campuses c ON c.id = d.campus_id
+  WHERE i.ended_at IS NULL AND i.acknowledged_at IS NULL AND COALESCE(i.last_reminded_at, i.started_at) <= ?`;
+
+/**
+ * Queue a `reminder` for each open, unacknowledged Incident a whole period past its start or its
+ * last reminder (outbox.ts, reminderDue), Bench Devices aside. One query finds the candidates;
+ * each Device's are then rechecked and queued in one transaction under its row lock, the lock
+ * ingest and the Offline sweep take, with the incident rows locked too, so an acknowledgement or
+ * a close landing meanwhile wins. `last_reminded_at` moves on in the same transaction, so a
+ * reminder is queued once per period. The caller runs it only while notifications and reminders
+ * are on. Returns how many it queued.
+ */
+export async function enqueueReminders(pool: Pool, periodMs: number, now: Date): Promise<number> {
+  if (periodMs <= 0) return 0;
+  const cutoff = new Date(now.getTime() - periodMs);
+  const [candidates] = await pool.query<RemindableRow[]>(SELECT_REMINDABLE, [cutoff]);
+  const devices = [...new Set(candidates.filter((c) => !isBench(c.campusShortcode)).map((c) => c.deviceId))];
+  let queued = 0;
+  for (const deviceId of devices) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
+      await conn.query('SELECT id FROM devices WHERE id = ? FOR UPDATE', [deviceId]);
+      const [incidents] = await conn.query<RemindableRow[]>(`${SELECT_REMINDABLE} AND i.device_id = ? FOR UPDATE OF i`, [cutoff, deviceId]);
+      const rows: unknown[][] = [];
+      for (const incident of incidents) {
+        if (isBench(incident.campusShortcode)) continue;
+        const due = reminderDue(incident.startedAt, incident.lastRemindedAt, now, periodMs);
+        if (due === null) continue;
+        rows.push([incident.id, deviceId, 'reminder', incident.level, now, now]);
+        await conn.query('UPDATE incidents SET last_reminded_at = ? WHERE id = ?', [due, incident.id]);
+      }
+      if (rows.length > 0) {
+        await conn.query('INSERT INTO notifications (incident_id, device_id, kind, level, created_at, next_attempt_at) VALUES ?', [rows]);
+      }
+      await conn.commit();
+      queued += rows.length;
+    } catch (error) {
+      await conn.rollback();
+      throw error;
+    } finally {
+      conn.release();
+    }
+  }
+  return queued;
+}
+
+/**
+ * Drop the reminders among `ids` (claimed by the sender) whose incident has since been
+ * acknowledged or has ended: someone is on it, or the closing email says it is over. Returns the
+ * ids dropped.
+ */
+export async function dropStaleReminders(db: Db, ids: number[]): Promise<number[]> {
+  if (ids.length === 0) return [];
+  const [stale] = await db.query<(RowDataPacket & { id: number })[]>(
+    `SELECT n.id FROM notifications n JOIN incidents i ON i.id = n.incident_id
+     WHERE n.id IN (?) AND n.kind = 'reminder' AND (i.acknowledged_at IS NOT NULL OR i.ended_at IS NOT NULL)`,
+    [ids],
+  );
+  const dropped = stale.map((r) => r.id);
+  if (dropped.length > 0) await db.query('DELETE FROM notifications WHERE id IN (?)', [dropped]);
+  return dropped;
 }
 
 /** How sending goes, as Settings shows it. */

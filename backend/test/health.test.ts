@@ -101,3 +101,23 @@ describe('GET /api/health while Readings cannot be written', () => {
     assert.deepEqual(await healthy.json(), { status: 'ok', database: 'connected' });
   });
 });
+
+describe('GET /api/health while the server is stopping', () => {
+  let pool: Pool;
+  let server: RunningServer;
+
+  before(async () => {
+    pool = createTestPool();
+    server = await startServer(pool, undefined, { stopping: () => true });
+  });
+  after(async () => {
+    await server.close();
+    await pool.end();
+  });
+
+  test('answers 503, so a proxy stops sending to it (shutdown.ts)', async () => {
+    const response = await fetch(`${server.url}/api/health`);
+    assert.equal(response.status, 503);
+    assert.deepEqual(await response.json(), { status: 'stopping' });
+  });
+});

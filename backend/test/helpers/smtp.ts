@@ -123,6 +123,7 @@ export async function startTestRelay({ login, port: wanted = 0 }: { login?: { us
       to: ['techs@district.example', 'oncall@district.example'],
       publicUrl: 'https://alarms.district.example',
       coalesceSeconds: 60,
+      remindHours: 0,
     }),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

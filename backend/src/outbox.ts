@@ -8,8 +8,11 @@
 import { LEVELS_WORST_FIRST, type ConditionLevel } from './conditions';
 import type { IncidentChange } from './incidents';
 
-/** Why a notification was queued: the Incident opened, its level rose to a new worst, or it closed. */
-export type NotificationKind = 'opened' | 'worse' | 'closed';
+/**
+ * Why a notification was queued: the Incident opened, its level rose to a new worst, it closed, or
+ * it is still open and unacknowledged another reminder period on.
+ */
+export type NotificationKind = 'opened' | 'worse' | 'closed' | 'reminder';
 
 /** The Campus a Device is registered under between flashing and installation, expected to be Offline (CONTEXT.md). */
 export const BENCH_SHORTCODE = 'BENCH';
@@ -44,6 +47,21 @@ export function notificationKinds({ change, created, level, segmentLevels, campu
   if (change === 'closed') return created ? ['opened', 'closed'] : ['closed'];
   // The newest segment is the first to reach the incident's worst level: this step raised it.
   return segmentLevels.length > 1 && segmentLevels.indexOf(level) === segmentLevels.length - 1 ? ['worse'] : [];
+}
+
+/**
+ * When an open, unacknowledged Incident is reminded about: every `periodMs` counted from its start,
+ * not from the process, so a restart neither repeats one nor starts the count again. Returns the
+ * point on that schedule a reminder is now due for, to be stored as the incident's last reminder,
+ * or null when none is due. After a gap (the server down, reminders just turned on) one reminder
+ * covers every period missed, not one each.
+ */
+export function reminderDue(start: Date, lastRemindedAt: Date | null, now: Date, periodMs: number): Date | null {
+  if (periodMs <= 0) return null;
+  const from = lastRemindedAt ?? start;
+  if (now.getTime() - from.getTime() < periodMs) return null;
+  const periods = Math.floor((now.getTime() - start.getTime()) / periodMs);
+  return new Date(start.getTime() + periods * periodMs);
 }
 
 /** Retry timing for a batch the relay did not take. */

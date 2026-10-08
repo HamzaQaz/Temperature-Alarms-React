@@ -15,6 +15,8 @@ import { worstFirst, type NotificationKind } from './outbox';
 /** One due notification, with its Incident and Device as they stand when the batch is sent. */
 export interface QueuedNotification {
   kind: NotificationKind;
+  /** When it was queued: for a reminder, how long the incident had been open is counted to here. */
+  queuedAt: Date;
   incident: {
     id: number;
     condition: ConditionName;
@@ -42,11 +44,16 @@ export interface EmailSettings {
   timeZone: string;
 }
 
-/** What happened to an incident within one batch. Opened and closed together is listed once. */
-type EntryStatus = 'opened' | 'got worse' | 'resolved' | 'opened and resolved';
+/**
+ * What happened to an incident within one batch. Opened and closed together is listed once; a
+ * reminder alongside any other news gives way to it.
+ */
+type EntryStatus = 'opened' | 'got worse' | 'resolved' | 'opened and resolved' | 'still open';
 
 interface Entry {
   status: EntryStatus;
+  /** When its latest notification in the batch was queued. */
+  queuedAt: Date;
   incident: QueuedNotification['incident'];
   device: QueuedNotification['device'];
 }
@@ -109,6 +116,25 @@ export function duration(ms: number): string {
   return hours % 24 === 0 ? `${days} d` : `${days} d ${hours % 24} h`;
 }
 
+/**
+ * How long a still-open incident has been open, in whole hours, as a reminder says it: "6 h",
+ * "1 d", "2 d 3 h". Reminders come a whole number of hours apart, so minutes would only be noise.
+ */
+export function openFor(ms: number): string {
+  const hours = Math.floor(ms / 3_600_000);
+  if (hours < 1) return duration(ms);
+  if (hours < 24) return `${hours} h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days} d` : `${days} d ${hours % 24} h`;
+}
+
+function statusOf(kinds: Set<NotificationKind>): EntryStatus {
+  if (kinds.has('closed')) return kinds.has('opened') ? 'opened and resolved' : 'resolved';
+  if (kinds.has('opened')) return 'opened';
+  if (kinds.has('worse')) return 'got worse';
+  return 'still open';
+}
+
 /** One entry per incident, worst first, then oldest first. The last row of an incident says how it stands. */
 function entriesOf(rows: QueuedNotification[]): Entry[] {
   const byIncident = new Map<number, { kinds: Set<NotificationKind>; row: QueuedNotification }>();
@@ -116,10 +142,9 @@ function entriesOf(rows: QueuedNotification[]): Entry[] {
     const seen = byIncident.get(row.incident.id);
     byIncident.set(row.incident.id, { kinds: new Set([...(seen?.kinds ?? []), row.kind]), row });
   }
-  const entries = [...byIncident.values()].map(({ kinds, row }): Entry => {
-    const status: EntryStatus = kinds.has('closed') ? (kinds.has('opened') ? 'opened and resolved' : 'resolved') : kinds.has('opened') ? 'opened' : 'got worse';
-    return { status, incident: row.incident, device: row.device };
-  });
+  const entries = [...byIncident.values()].map(
+    ({ kinds, row }): Entry => ({ status: statusOf(kinds), queuedAt: row.queuedAt, incident: row.incident, device: row.device }),
+  );
   return entries.sort(
     (a, b) => worstFirst(a.incident.level, b.incident.level) || a.incident.start.getTime() - b.incident.start.getTime() || a.incident.id - b.incident.id,
   );
@@ -127,9 +152,17 @@ function entriesOf(rows: QueuedNotification[]): Entry[] {
 
 const isResolved = (entry: Entry): boolean => entry.status === 'resolved' || entry.status === 'opened and resolved';
 
+/** "still open after 6 h": the status as an entry's heading gives it. */
+const statusText = (entry: Entry): string =>
+  entry.status === 'still open' ? `still open after ${openFor(entry.queuedAt.getTime() - entry.incident.start.getTime())}` : entry.status;
+
 function subjectOf(entries: Entry[]): string {
   if (entries.length === 1) {
     const [entry] = entries;
+    if (entry.status === 'still open') {
+      const open = openFor(entry.queuedAt.getTime() - entry.incident.start.getTime());
+      return `${SUBJECT_PREFIX} Still open: ${entry.device.campus.shortcode} ${entry.device.closet} ${label(entry.incident)}, ${open}`;
+    }
     const figure = peakFigure(entry.incident);
     const status = entry.status === 'opened' ? '' : `, ${entry.status}`;
     return `${SUBJECT_PREFIX} ${entry.device.campus.shortcode} ${entry.device.closet}: ${label(entry.incident)}${status}${figure === null ? '' : ` (${figure})`}`;
@@ -138,8 +171,11 @@ function subjectOf(entries: Entry[]): string {
   const counts = new Map<ConditionName, number>();
   for (const { incident } of entries) counts.set(incident.condition, (counts.get(incident.condition) ?? 0) + 1);
   const byCount = [...counts].sort((a, b) => b[1] - a[1]).map(([condition, n]) => `${n} ${condition}`);
-  const resolved = entries.filter(isResolved).length;
-  const suffix = resolved === 0 ? '' : resolved === entries.length ? ' (all resolved)' : ` (${resolved} resolved)`;
+  const share = (n: number, what: string): string | null => (n === 0 ? null : n === entries.length ? `all ${what}` : `${n} ${what}`);
+  const notes = [share(entries.filter(isResolved).length, 'resolved'), share(entries.filter((e) => e.status === 'still open').length, 'still open')].filter(
+    (note): note is string => note !== null,
+  );
+  const suffix = notes.length === 0 ? '' : ` (${notes.join(', ')})`;
   return `${SUBJECT_PREFIX} ${entries.length} incidents: ${byCount.join(', ')}${suffix}`;
 }
 
@@ -164,11 +200,14 @@ function linesOf(entry: Entry, { publicUrl, timeZone }: EmailSettings): EntryLin
   // Someone is on it: the email says who, so a got-worse or resolved email does not send a second person.
   if (incident.acknowledgement !== null) {
     details.push(`Acknowledged by ${incident.acknowledgement.by} at ${when(incident.acknowledgement.at, timeZone)}`);
+  } else if (entry.status === 'still open') {
+    // A reminder goes only to an incident no one has acknowledged; saying how to stop them is the point.
+    details.push('Not acknowledged yet: acknowledging it on the Dashboard stops these reminders');
   }
   details.push(`${PEAK_LABEL[incident.condition] ?? 'Peak Reading'}: ${readingText(incident.peak)} at ${when(incident.peak.recordedAt, timeZone)}`);
   const day = todayIn(incident.start, timeZone);
   return {
-    heading: `${label(incident)}: ${entry.status}${meaning === undefined ? '' : ` (${meaning})`}`,
+    heading: `${label(incident)}: ${statusText(entry)}${meaning === undefined ? '' : ` (${meaning})`}`,
     details,
     history: { url: `${publicUrl}/history/${device.id}?date=${day}`, text: `History for ${device.closet}, ${day}` },
   };
@@ -180,8 +219,9 @@ const escapeHtml = (text: string): string =>
 /**
  * The email for one batch of due notifications: a subject naming the closet for one incident,
  * or counting by Condition for several; then each incident, worst first, with its Campus,
- * Closet, Device, Condition and level, start (and end, with how long), who acknowledged it,
- * peak Reading, and a link to that Device's History on the day it started. `rows` holds at least one notification.
+ * Closet, Device, Condition and level (and, for a reminder, how long it has been open), start
+ * (and end, with how long), who acknowledged it, peak Reading, and a link to that Device's
+ * History on the day it started. `rows` holds at least one notification.
  */
 export function notificationEmail(rows: QueuedNotification[], settings: EmailSettings): Email {
   const entries = entriesOf(rows);

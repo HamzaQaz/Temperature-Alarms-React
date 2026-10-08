@@ -74,7 +74,8 @@ services:
       MISSED_REPORTS_BEFORE_OFFLINE: ${MISSED_REPORTS_BEFORE_OFFLINE:-3}
       LEGACY_TIME_ZONE: ${LEGACY_TIME_ZONE:-}
       # Email notifications (docs/adr/0008), off while SMTP_HOST is empty. Each is empty when unset,
-      # which the backend reads as unset: the port, security, and window then take their defaults.
+      # which the backend reads as unset: the port, security, and window then take their defaults,
+      # and reminders stay off.
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}
       SMTP_SECURE: ${SMTP_SECURE:-}
@@ -84,6 +85,7 @@ services:
       NOTIFY_TO: ${NOTIFY_TO:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
       NOTIFY_COALESCE_SECONDS: ${NOTIFY_COALESCE_SECONDS:-}
+      NOTIFY_REMIND_HOURS: ${NOTIFY_REMIND_HOURS:-}
     depends_on:
       db:
         condition: service_healthy

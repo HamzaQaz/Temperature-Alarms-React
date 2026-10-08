@@ -9,6 +9,7 @@ import { createBroadcaster } from './sse';
 import { createListening } from './listening';
 import { createMailer } from './mailer';
 import { startNotifier } from './notifier';
+import { exitOnSignals, shutDown, type Stoppable } from './shutdown';
 
 dotenv.config();
 
@@ -40,18 +41,23 @@ async function main(): Promise<void> {
   const listening = createListening(new Date());
   // One relay client, shared by the Settings test button and the sender.
   const mailer = config.notifications === undefined ? undefined : createMailer(config.notifications);
-  const app = createApp({ config, pool, sse, listening, mailer });
-  app.listen(config.port, () => {
+  // Set by the first SIGTERM or SIGINT: health answers 503 from then on, so a proxy stops sending.
+  let stopping = false;
+  const app = createApp({ config, pool, sse, listening, mailer, stopping: () => stopping });
+  const server = app.listen(config.port, () => {
     console.log(`Server is running on port ${config.port}`);
   });
-  startRetentionJob({ config, pool });
-  startOfflineSweep({ config, pool, sse, listening });
+  const jobs: Stoppable[] = [startRetentionJob({ config, pool }), startOfflineSweep({ config, pool, sse, listening })];
   // Ingest and the sweep queue Incident emails in the outbox; the sender delivers them (docs/adr/0008).
-  // A pass cut short by a restart rolls back, and its rows go out from the next process.
+  // A stop lets the pass in flight finish; one cut short by a crash rolls back, and its rows go out from the next process.
   if (mailer !== undefined) {
-    startNotifier({ config, pool, mailer });
+    jobs.push(startNotifier({ config, pool, mailer }));
     console.log(`Email notifications on: Incidents are sent to ${config.notifications?.to.join(', ')}`);
   }
+  exitOnSignals(async () => {
+    stopping = true;
+    await shutDown({ server, sse, jobs, pool });
+  });
 }
 
 main().catch((error) => {

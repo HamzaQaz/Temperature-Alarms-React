@@ -4,7 +4,7 @@
  * comments and messages separated by blank lines.
  */
 
-export type SseEvent = { kind: 'comment'; text: string } | { kind: 'message'; event: string; data: string };
+export type SseEvent = { kind: 'comment'; text: string } | { kind: 'message'; event: string; data: string } | { kind: 'retry'; ms: number };
 
 export interface SseClient {
   readonly response: Response;
@@ -14,6 +14,8 @@ export interface SseClient {
   nextMessage<T>(timeoutMs?: number): Promise<T>;
   /** Every event that arrives during the window. */
   collect(windowMs: number): Promise<SseEvent[]>;
+  /** Resolves when the stream ends, the server's doing or close(). */
+  readonly ended: Promise<void>;
   /** Drop the connection, as a closed tab would. */
   close(): void;
 }
@@ -22,11 +24,14 @@ function parseBlock(block: string): SseEvent {
   let event = 'message';
   const data: string[] = [];
   const comments: string[] = [];
+  let retry: number | undefined;
   for (const line of block.split('\n')) {
     if (line.startsWith(':')) comments.push(line.slice(1).trim());
     else if (line.startsWith('event:')) event = line.slice(6).trim();
     else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+    else if (line.startsWith('retry:')) retry = Number(line.slice(6).trim());
   }
+  if (data.length === 0 && retry !== undefined) return { kind: 'retry', ms: retry };
   if (data.length === 0) return { kind: 'comment', text: comments.join('\n') };
   return { kind: 'message', event, data: data.join('\n') };
 }
@@ -48,7 +53,7 @@ export async function subscribe(url: string, headers: Record<string, string> = {
     else queue.push(event);
   };
 
-  void (async () => {
+  const ended = (async () => {
     try {
       for (;;) {
         const { value, done } = await reader.read();
@@ -85,6 +90,7 @@ export async function subscribe(url: string, headers: Record<string, string> = {
   return {
     response,
     next,
+    ended,
     async nextMessage<T>(timeoutMs?: number): Promise<T> {
       for (;;) {
         const event = await next(timeoutMs);

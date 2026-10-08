@@ -38,6 +38,7 @@ Never ask for the SMTP password in the chat, and never put it on a command line:
    | status, logs | `status --yes`; `logs --yes --service api --tail 200` |
    | migrate the old database | `migrate-legacy --yes` |
    | turn on email notifications, change the recipients | `install --reconfigure --yes --smtp-host RELAY --notify-from ADDR --notify-to LIST --public-url URL`, plus `--smtp-port` and `--smtp-secure starttls\|tls\|none` if they named them, then `deploy --yes` to apply. Each flag changes only its own setting, so `--notify-to LIST` alone changes the recipients. With a login (`--smtp-user USER`), the operator runs it, as above. Ask for what is missing; DEPLOYMENT.md, "Email notifications", lists the questions for the district's mail admin. Then tell them to press "Send test email" on Settings, Notifications |
+   | remind about long incidents, change or stop reminders | `install --reconfigure --yes --notify-remind-hours N` (hours, 1 to 168; `0` turns them off), then `deploy --yes`. Email must already be on. An Incident open and unacknowledged that long is emailed again every N hours until it closes or someone acknowledges it |
    | turn email off | `install --reconfigure --yes --smtp-host off`, then `deploy --yes` |
    | stop, take it down | `stop --yes`; `uninstall --yes` |
    | wipe it | `uninstall --yes --wipe --confirm PROJECT` |

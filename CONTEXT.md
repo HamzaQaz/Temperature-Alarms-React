@@ -66,12 +66,16 @@ A stretch of time a Device spent in one Condition at warning or worse, recorded 
 _Avoid_: Alert, alarm, event, outage
 
 **Acknowledgement**:
-A technician saying they are on an open Incident, with their name or a short note (free text, 1 to 60 characters, since there are no user accounts) and when they said it. Given in the app with the Admin token, from the Device card or the Incidents log; the first one stands, an ended Incident cannot be acknowledged, and it is never cleared, not by the level rising nor by the close. It shows on the card, in the log, and in every later Notification about that Incident, which still sends (docs/adr/0008).
+A technician saying they are on an open Incident, with their name or a short note (free text, 1 to 60 characters, since there are no user accounts) and when they said it. Given in the app with the Admin token, from the Device card or the Incidents log; the first one stands, an ended Incident cannot be acknowledged, and it is never cleared, not by the level rising nor by the close. It shows on the card, in the log, and in every later Notification about that Incident, which still sends (docs/adr/0008). It stops Reminders.
 _Avoid_: Claim, assign, ownership, ack
 
 **Notification**:
 An email the server sends to a fixed list of recipients, through the district's SMTP relay, when an Incident opens, gets worse (its level rises), or closes. A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
 _Avoid_: Alert, alarm (the old feature that was removed), page, message
+
+**Reminder**:
+A Notification that an Incident is still open and no one has acknowledged it, sent once it has been open a set number of hours (`NOTIFY_REMIND_HOURS`, the same for every Condition and level) and again every as many hours after, counted from the Incident's start, until it closes or is acknowledged. Off unless configured, and only while Notifications are on; Devices on the Bench never get one; no cap on how many (docs/adr/0008).
+_Avoid_: Escalation, repeat alert, nag, follow-up
 
 **Bench**:
 The holding Campus (shortcode `BENCH`) a Device is registered under between flashing and installation, whatever its bench verdict: a board that failed its check stays registered there too, and the inventory sheet's `TESTED` column says which passed. A Device on the Bench is expected to be Offline until it is moved to its real Campus and Closet.

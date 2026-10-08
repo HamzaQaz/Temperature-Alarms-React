@@ -342,6 +342,37 @@ export async function incidentsOverlapping(db: Db, from: Date, to: Date): Promis
   return toPayloads(db, rows);
 }
 
+/** Where the last page of incidents ended: its last incident's start and id, in the log's order. */
+export interface IncidentCursor {
+  start: Date;
+  id: number;
+}
+
+/**
+ * Up to `limit` of the incidents that overlap [from, to), oldest first, after `after` in that
+ * order, and only one Device's when `deviceId` is given. The CSV export walks a long range a
+ * page at a time with it, so the whole range is never held at once.
+ */
+export async function incidentsOverlappingPage(
+  db: Db,
+  from: Date,
+  to: Date,
+  { deviceId, after, limit }: { deviceId?: number; after?: IncidentCursor; limit: number },
+): Promise<IncidentPayload[]> {
+  const where = ['i.started_at < ?', '(i.ended_at IS NULL OR i.ended_at > ?)'];
+  const params: unknown[] = [to, from];
+  if (deviceId !== undefined) {
+    where.push('i.device_id = ?');
+    params.push(deviceId);
+  }
+  if (after !== undefined) {
+    where.push('(i.started_at > ? OR (i.started_at = ? AND i.id > ?))');
+    params.push(after.start, after.start, after.id);
+  }
+  const [rows] = await db.query<IncidentPayloadRow[]>(`${SELECT_INCIDENT_PAYLOAD} WHERE ${where.join(' AND ')} ORDER BY i.started_at, i.id LIMIT ?`, [...params, limit]);
+  return toPayloads(db, rows);
+}
+
 /** The incidents with these ids, oldest first. */
 export async function incidentsById(db: Db, ids: number[]): Promise<IncidentPayload[]> {
   if (ids.length === 0) return [];

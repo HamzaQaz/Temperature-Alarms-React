@@ -5,6 +5,7 @@ import { createTestPool, resetDatabase, testDatabaseConfig } from './helpers/dat
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, asAdmin, json, type Campus, type Device, type RecordedReading } from './helpers/api';
 import { startTestRelay, type TestRelay } from './helpers/smtp';
+import { createGate, settlesWithin } from './helpers/gate';
 import { createPool } from '../src/db';
 import type { Config, NotificationsConfig } from '../src/config';
 import { createListening, type Listening } from '../src/listening';
@@ -13,17 +14,18 @@ import { runNotifierPass, startNotifier, type NotifierOptions } from '../src/not
 import { runOfflineSweep } from '../src/offlineSweep';
 import { deleteReadingsPastWindow } from '../src/retention';
 import { createBroadcaster } from '../src/sse';
-import { DEFAULT_RETRY, givesUp, notificationKinds, readyToSend, retryDelayMs, type ChangeFacts } from '../src/outbox';
+import { DEFAULT_RETRY, givesUp, notificationKinds, readyToSend, reminderDue, retryDelayMs, type ChangeFacts } from '../src/outbox';
 
 const SECOND = 1000;
 const MINUTE = 60_000;
+const HOUR = 3_600_000;
 const DAY_MS = 86_400_000;
 /** Three Report intervals of 30 seconds: Offline begins the second after. */
 const OFFLINE_AFTER_MS = 90_000;
 
 interface OutboxRow {
   incidentId: number;
-  kind: 'opened' | 'worse' | 'closed';
+  kind: 'opened' | 'worse' | 'closed' | 'reminder';
   level: string;
   attempts: number;
   createdAt: Date;
@@ -367,8 +369,38 @@ describe('email notifications: the outbox and the sender (docs/adr/0008)', () =>
       try {
         for (let i = 0; i < 50 && relay.received.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
       } finally {
-        notifier.stop();
+        await notifier.stop();
       }
+      assert.equal(relay.received.length, 1);
+    });
+
+    test('stop waits for a send in flight, which marks its rows sent, so the next process does not send them again', async () => {
+      await registerDevice();
+      await postReading(85);
+      assert.ok(mailer !== undefined);
+      const relayMailer = mailer;
+      const gate = createGate();
+      const slow: Mailer = {
+        send: async (email) => {
+          await gate.wait();
+          return relayMailer.send(email);
+        },
+      };
+      const notifier = startNotifier({ pool, config, mailer: slow }, { intervalMs: 50, timeZone: 'UTC' });
+
+      await gate.reached;
+      const stopped = notifier.stop();
+      try {
+        assert.equal(await settlesWithin(stopped, 150), false, 'stop waits for the send');
+      } finally {
+        // Otherwise the held claim's row locks would block every later test's reset.
+        gate.open();
+      }
+      await stopped;
+      assert.equal(relay.received.length, 1);
+      const [row] = await outbox();
+      assert.notEqual(row.sentAt, null, 'marked sent before the stop resolved');
+      assert.equal(await pass(), 0, 'nothing left to send again');
       assert.equal(relay.received.length, 1);
     });
   });
@@ -488,6 +520,138 @@ describe('email notifications: the outbox and the sender (docs/adr/0008)', () =>
     });
   });
 
+  describe('reminders for long incidents', () => {
+    /** Reminders every four hours, sent the moment they are due. */
+    const reminding = () => serve(notifyingConfig(relay, { remindHours: 4 }));
+    /** A Hot critical incident whose start is moved back to `start`, with nothing left in the outbox. Returns its id. */
+    const hotSince = async (start: Date, hostname = 'ESP_A1B2C3', campus?: Campus, closet = 'IDF 2'): Promise<number> => {
+      await registerDevice(hostname, campus, closet);
+      await postReading(91, 40, hostname);
+      const [[{ id }]] = await pool.query<RowDataPacket[]>(
+        'SELECT i.id FROM incidents i JOIN devices d ON d.id = i.device_id WHERE d.hostname = ? AND i.ended_at IS NULL',
+        [hostname],
+      );
+      await pool.query('UPDATE incidents SET started_at = ? WHERE id = ?', [start, id]);
+      await pool.query('DELETE FROM notifications');
+      return id as number;
+    };
+    const reminders = async () => (await outbox()).filter((r) => r.kind === 'reminder');
+
+    test('one reminder per period, counted from the start, emailed as still open', async () => {
+      await reminding();
+      const start = whole(Date.now() - 4 * HOUR - 10 * MINUTE);
+      await hotSince(start);
+      await sweep(new Date(start.getTime() + 4 * HOUR - SECOND));
+      assert.deepEqual(await reminders(), [], 'not before a whole period');
+
+      await sweep(new Date(start.getTime() + 4 * HOUR + 10 * MINUTE));
+      assert.deepEqual((await reminders()).map((r) => `${r.kind} ${r.level}`), ['reminder critical']);
+      await sweep(new Date(start.getTime() + 4 * HOUR + 11 * MINUTE));
+      assert.equal((await reminders()).length, 1, 'a second pass in the same period queues nothing');
+      assert.equal(await pass(), 1);
+      assert.deepEqual(subjects(), ['[Temperature Alarms] Still open: CHS IDF 2 Hot critical, 4 h']);
+      assert.match(relay.received[0].text, /^Hot critical: still open after 4 h$/m);
+      assert.match(relay.received[0].text, /^Not acknowledged yet: acknowledging it on the Dashboard stops these reminders$/m);
+
+      // The next is due 8 h after the start, not 4 h after the first reminder was queued.
+      await sweep(new Date(start.getTime() + 8 * HOUR - SECOND));
+      assert.equal((await reminders()).length, 1);
+      await sweep(new Date(start.getTime() + 8 * HOUR));
+      assert.equal((await reminders()).length, 2);
+    });
+
+    test('a gap of several periods queues one reminder, not one for each', async () => {
+      await reminding();
+      const start = whole(Date.now() - 13 * HOUR);
+      const id = await hotSince(start);
+      await sweep();
+      assert.equal((await reminders()).length, 1);
+      const [[{ lastRemindedAt }]] = await pool.query<RowDataPacket[]>('SELECT last_reminded_at AS lastRemindedAt FROM incidents WHERE id = ?', [id]);
+      assert.deepEqual(lastRemindedAt, new Date(start.getTime() + 12 * HOUR), 'the next is due 16 h after the start');
+      await pass();
+      assert.deepEqual(subjects(), ['[Temperature Alarms] Still open: CHS IDF 2 Hot critical, 13 h']);
+    });
+
+    test('an acknowledged incident gets no reminder, and one queued before the acknowledgement is dropped unsent', async () => {
+      await serve(notifyingConfig(relay, { remindHours: 4, coalesceSeconds: 60 }));
+      const start = whole(Date.now() - 5 * HOUR);
+      const id = await hotSince(start);
+      await sweep();
+      assert.equal((await reminders()).length, 1);
+      assert.equal((await client.incidents.acknowledge(id, { by: 'Sam' })).status, 200);
+      assert.equal(await pass(new Date(Date.now() + 61 * SECOND)), 0);
+      assert.equal(relay.received.length, 0, 'nothing sent');
+      assert.deepEqual(await outbox(), [], 'the stale reminder is gone');
+
+      await sweep(new Date(start.getTime() + 9 * HOUR));
+      assert.deepEqual(await reminders(), [], 'and no more are queued');
+    });
+
+    test('a closed incident gets no reminder, and one queued before the close gives way to the closing email', async () => {
+      await reminding();
+      const campus = await client.campuses.create();
+      await hotSince(whole(Date.now() - 5 * HOUR), 'ESP_A1B2C3', campus);
+      await postReading(72);
+      await postReading(72);
+      assert.deepEqual(await kinds(), ['closed critical']);
+      await sweep();
+      assert.deepEqual(await reminders(), []);
+
+      await pool.query('DELETE FROM notifications');
+      await hotSince(whole(Date.now() - 5 * HOUR), 'ESP_D4E5F6', campus, 'MDF');
+      await sweep();
+      assert.equal((await reminders()).length, 1);
+      await postReading(72, 40, 'ESP_D4E5F6');
+      await postReading(72, 40, 'ESP_D4E5F6');
+      assert.equal(await pass(), 1, 'the reminder is dropped, the close is sent');
+      assert.deepEqual(subjects(), ['[Temperature Alarms] CHS MDF: Hot critical, resolved (91 °F)']);
+    });
+
+    test('a restart neither repeats a reminder nor starts the count again', async () => {
+      await reminding();
+      const campus = await client.campuses.create();
+      await hotSince(whole(Date.now() - 4 * HOUR - 10 * MINUTE), 'ESP_A1B2C3', campus);
+      const youngStart = whole(Date.now() - 3 * HOUR);
+      const young = await hotSince(youngStart, 'ESP_D4E5F6', campus, 'MDF');
+      await sweep();
+      assert.equal((await reminders()).length, 1);
+      await pass();
+
+      await serve(config);
+      await sweep();
+      assert.equal((await reminders()).length, 1, 'the reminder already queued is not queued again');
+      // The younger incident is due 4 h after its own start, whenever the process started.
+      await sweep(new Date(youngStart.getTime() + 4 * HOUR));
+      assert.deepEqual((await reminders()).map((r) => r.incidentId).slice(1), [young]);
+    });
+
+    test('a Device on the Bench gets no reminder', async () => {
+      await reminding();
+      const bench = await client.campuses.create('Bench', 'bench');
+      await hotSince(whole(Date.now() - 5 * HOUR), 'ESP_A1B2C3', bench, 'Shelf');
+      await sweep();
+      assert.deepEqual(await outbox(), []);
+    });
+
+    test('off by default: no reminder however long an incident stays open', async () => {
+      await hotSince(whole(Date.now() - 50 * HOUR));
+      await sweep();
+      assert.deepEqual(await outbox(), []);
+    });
+
+    test('a reminder coalesces with an opening into one email', async () => {
+      await serve(notifyingConfig(relay, { remindHours: 4, coalesceSeconds: 60 }));
+      const campus = await client.campuses.create();
+      await hotSince(whole(Date.now() - 6 * HOUR), 'ESP_A1B2C3', campus, 'IDF 2');
+      const silent = await registerDevice('ESP_D4E5F6', campus, 'MDF');
+      await readingAt(silent.id, whole(Date.now() - 5 * MINUTE));
+      await sweep();
+      assert.deepEqual((await kinds()).sort(), ['opened warning', 'reminder critical']);
+      assert.equal(await pass(new Date(Date.now() + 61 * SECOND)), 2);
+      assert.deepEqual(subjects(), ['[Temperature Alarms] 2 incidents: 1 Hot, 1 Offline (1 still open)']);
+    });
+  });
+
   test('retention removes rows sent or given up more than a week ago, and keeps pending ones however old', async () => {
     const device = await registerDevice();
     await postReading(85);
@@ -543,6 +707,21 @@ describe('the outbox rules (pure)', () => {
       assert.deepEqual(notificationKinds(facts({ campusShortcode, change: 'closed', created: true })), []);
     }
     assert.deepEqual(notificationKinds(facts({ campusShortcode: 'BENCHMARK' })), ['opened']);
+  });
+
+  test('a reminder is due each whole period after the start, once, however late the pass', () => {
+    const start = new Date('2026-10-06T00:00:00Z');
+    const h = (hours: number) => new Date(start.getTime() + hours * HOUR);
+    assert.equal(reminderDue(start, null, h(3.99), 4 * HOUR), null);
+    assert.deepEqual(reminderDue(start, null, h(4), 4 * HOUR), h(4));
+    assert.deepEqual(reminderDue(start, null, h(4.5), 4 * HOUR), h(4), 'on the schedule, not at the pass');
+    assert.equal(reminderDue(start, h(4), h(7.99), 4 * HOUR), null);
+    assert.deepEqual(reminderDue(start, h(4), h(8), 4 * HOUR), h(8));
+    assert.deepEqual(reminderDue(start, h(4), h(21), 4 * HOUR), h(20), 'one reminder for several missed periods');
+    // The period shortened after a reminder: the next comes one new period after the last.
+    assert.equal(reminderDue(start, h(8), h(9.5), 2 * HOUR), null);
+    assert.deepEqual(reminderDue(start, h(8), h(10), 2 * HOUR), h(10));
+    assert.equal(reminderDue(start, null, h(100), 0), null, 'off');
   });
 
   test('backoff is 30 s doubling, capped at 15 min; given up a day after it was queued', () => {

@@ -2,12 +2,16 @@
  * The Offline sweep (docs/adr/0006). Offline is computed when read, from how long ago the last
  * report arrived, a Reading or a fault report (docs/adr/0009), so no report ever opens an
  * Offline incident. This pass does instead: once
- * every Report interval it opens one for each Device the server would now report Offline.
+ * every Report interval it opens one for each Device the server would now report Offline, and
+ * queues the reminders due for long incidents (docs/adr/0008).
  * The backend runs as one process (docs/adr/0001), so one sweep runs, as one retention job does;
  * the unique key on open incidents would stop a second from duplicating anything all the same.
  */
 import type { RouteDeps } from './deps';
 import { broadcastIncidentChanges, sweepOffline } from './incidentStore';
+import { enqueueReminders } from './outboxStore';
+
+const HOUR_MS = 3_600_000;
 
 export interface OfflineSweepOptions {
   /** How often a pass runs. The Report interval by default: an Offline incident opens at most one interval late. */
@@ -17,8 +21,8 @@ export interface OfflineSweepOptions {
 }
 
 export interface OfflineSweep {
-  /** Stop the schedule. A pass already in flight finishes. */
-  stop(): void;
+  /** Stop the schedule; resolves once a pass in flight has finished, so a shutdown never cuts one short. */
+  stop(): Promise<void>;
 }
 
 type SweepDeps = Pick<RouteDeps, 'pool' | 'config' | 'sse' | 'now' | 'listening'>;
@@ -38,6 +42,9 @@ export async function runOfflineSweep({ pool, config, sse, now = () => new Date(
     // Each opening is queued for email in its own transaction when notifications are on (docs/adr/0008).
     const changed = await sweepOffline(pool, rules, at, listening?.since(), config.notifications !== undefined);
     await broadcastIncidentChanges(pool, sse, changed);
+    // Then the reminders for incidents still open and unacknowledged, when they are on.
+    const remindHours = config.notifications?.remindHours ?? 0;
+    if (remindHours > 0) await enqueueReminders(pool, remindHours * HOUR_MS, at);
     return changed.length;
   } catch (error) {
     listening?.lost();
@@ -53,16 +60,20 @@ export async function runOfflineSweep({ pool, config, sse, now = () => new Date(
  */
 export function startOfflineSweep(deps: SweepDeps, options: OfflineSweepOptions = {}): OfflineSweep {
   const { intervalMs = deps.config.reportIntervalSeconds * 1000, onError = (error) => console.error('offline sweep: pass failed:', error) } = options;
-  let inFlight = false;
+  let inFlight: Promise<unknown> | undefined;
   const timer = setInterval(() => {
-    if (inFlight) return;
-    inFlight = true;
-    runOfflineSweep(deps)
+    if (inFlight !== undefined) return;
+    inFlight = runOfflineSweep(deps)
       .catch(onError)
       .finally(() => {
-        inFlight = false;
+        inFlight = undefined;
       });
   }, intervalMs);
   timer.unref();
-  return { stop: () => clearInterval(timer) };
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }

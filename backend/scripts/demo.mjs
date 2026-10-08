@@ -11,7 +11,7 @@
  *     The scripted closets had a bad hour or two during the week, the silent one a power cut, and
  *     the faulty one an hour of fault reports, its sensor not answering (docs/adr/0009). The
  *     incidents those reports make are found by replaying the backend's own incident rules over
- *     them (replayIncidents, docs/adr/0006; applyFaultReport for the fault hour) and written with
+ *     them (replayIncidents, docs/adr/0006, fault reports and all) and written with
  *     the backend's own insert, so the log can never disagree with the History.
  *  3. Posts a live Reading per Device every Report interval with the Device token, on a scripted
  *     loop of about ten minutes in which one closet heats up through Hot warning to Hot critical,
@@ -46,7 +46,7 @@ try {
   console.error('demo: needs the built backend (dist/); run `npm run build` first, or use the demo service');
   process.exit(1);
 }
-const { loadConfig, conditionsFor, replayIncidents, applyReading, applyFaultReport, offlineIncident, insertIncident } = backend;
+const { loadConfig, conditionsFor, replayIncidents, insertIncident } = backend;
 const mysql = require('mysql2/promise');
 
 const config = loadConfig(process.env);
@@ -389,49 +389,15 @@ function backfillValue(device, ms, until) {
 }
 
 /**
- * replayIncidents with fault reports among the Readings, oldest first, as ingest would have seen
- * them (docs/adr/0009): the same walk, each fault report judged by the backend's applyFaultReport
- * with the count in a row that ingest keeps in devices.sensor_faults, and silence counted from the
- * last report of either kind. Only the walk is here; every rule is the backend's.
+ * The incidents a Device's backfilled reports make, Readings and fault reports alike, by the
+ * backend's own replay (replayIncidents: ingest's rules, oldest first), written with the
+ * backend's own insert. One still open at the end of the backfill is left out: the live reports
+ * that follow are the api's to judge, and it never saw that one open.
  */
-function replayReports(reports, rules) {
-  const all = [];
-  let open = [];
-  let last = null;
-  let sensorFaults = 0;
-  const advance = (steps) => {
-    open = [];
-    for (const { incident } of steps) (incident.end === null ? open : all).push(incident);
-  };
-  for (const report of reports) {
-    if (!open.some((i) => i.condition === 'Offline')) {
-      const offline = offlineIncident(last, new Date(report.recordedAt.getTime() - 1000), rules);
-      if (offline !== null) open.push(offline.incident);
-    }
-    if (report.fault) {
-      sensorFaults += 1;
-      advance(applyFaultReport(open, { at: report.recordedAt, sensorFaults }, last?.reading ?? null, rules));
-      last = { at: report.recordedAt, reading: last?.reading ?? null };
-    } else {
-      sensorFaults = 0;
-      advance(applyReading(open, report, rules));
-      last = { at: report.recordedAt, reading: report };
-    }
-  }
-  return [...all, ...open].sort((a, b) => a.start.getTime() - b.start.getTime());
-}
-
-/**
- * The incidents a Device's backfilled Readings (and fault reports, `faults`) make, by the
- * backend's own rules, written with the backend's own insert. One still open at the end of the
- * backfill is left out: the live reports that follow are the api's to judge, and it never saw
- * that one open.
- */
-async function backfillIncidents(pool, device, rows, faults) {
+async function backfillIncidents(pool, device, reports) {
   const rules = { reportIntervalSeconds: interval, thresholds };
-  const readings = rows.map(([, tempF, humidity, recordedAt]) => ({ tempF, humidity, recordedAt }));
-  const reports = [...readings, ...faults.map((recordedAt) => ({ fault: true, recordedAt }))].sort((a, b) => a.recordedAt - b.recordedAt);
-  const incidents = faults.length === 0 ? replayIncidents(readings, rules) : replayReports(reports, rules);
+  // Oldest first: at a Report interval of a second or two, jitter can swap neighbours.
+  const incidents = replayIncidents(reports.sort((a, b) => a.recordedAt - b.recordedAt), rules);
   let written = 0;
   for (const incident of incidents) {
     if (incident.end === null) continue;
@@ -466,15 +432,15 @@ async function backfill(pool, earliest, until) {
     const faultFrom = until - FAULT_HOUR[0] * 86400000 - FAULT_HOUR[1] * 3600000;
     const faultHour = device.scenario === 'fault' ? [faultFrom, faultFrom + 3600000] : null;
     let rows = [];
-    const all = [];
-    const faults = [];
+    /** Everything the Device sent, as the replay takes it: a Reading, or a fault report with no values. */
+    const reports = [];
     let dropped = false;
     for (let t = start; t < end; t += step) {
       const r = random();
       const jitter = Math.round((random() - 0.5) * 3000);
       if (gap !== null && t >= gap[0] && t < gap[1]) continue;
       if (faultHour !== null && t >= faultHour[0] && t < faultHour[1]) {
-        faults.push(new Date(Math.floor((t + jitter) / 1000) * 1000));
+        reports.push({ fault: 'sensor', recordedAt: new Date(Math.floor((t + jitter) / 1000) * 1000) });
         continue;
       }
       // Never two lost in a row: with jitter, that gap can pass three intervals and read as Offline.
@@ -486,9 +452,9 @@ async function backfill(pool, earliest, until) {
       const v = backfillValue(device, t, until);
       const temp = Math.round(v.tempF + (random() - 0.5) * 0.5);
       const humidity = Math.round(Math.min(95, Math.max(5, v.humidity + (random() - 0.5) * 1.2)));
-      const row = [device.id, temp, humidity, new Date(Math.floor((t + jitter) / 1000) * 1000)];
-      rows.push(row);
-      all.push(row);
+      const recordedAt = new Date(Math.floor((t + jitter) / 1000) * 1000);
+      rows.push([device.id, temp, humidity, recordedAt]);
+      reports.push({ tempF: temp, humidity, recordedAt });
       if (rows.length === 2000) {
         await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [rows]);
         total += rows.length;
@@ -499,7 +465,7 @@ async function backfill(pool, earliest, until) {
       await pool.query('INSERT INTO readings (device_id, temp_f, humidity, recorded_at) VALUES ?', [rows]);
       total += rows.length;
     }
-    incidents += await backfillIncidents(pool, device, all, faults);
+    incidents += await backfillIncidents(pool, device, reports);
   }
   if (total === 0) log('history: every Device already has its week; nothing backfilled');
   else log(`history: ${total} Readings and ${incidents} incidents over ${HISTORY_DAYS} days written straight to MySQL in ${Math.round((Date.now() - began) / 1000)} s`);

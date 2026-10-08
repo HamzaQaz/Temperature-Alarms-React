@@ -402,6 +402,8 @@ Only Readings with neither token count toward the wrong-token limit (100 per add
 
 The server emails a fixed list of recipients when an Incident opens, gets worse (its level rises), or closes, through the district's SMTP relay (ADR 0008). Changes within a minute of each other arrive as one email, worst first, so a campus power cut is one email, not twenty. Devices on the Bench never email. It is off until `SMTP_HOST` is set, and the Settings page says so.
 
+**Reminders** (`NOTIFY_REMIND_HOURS`, off by default): an Incident still open with no one having acknowledged it after that many hours is emailed again, `[Temperature Alarms] Still open: CHS IDF 2 Hot critical, 4 h`, and again every as many hours after, until it closes or someone acknowledges it on the Dashboard or the Incidents log. The hours count from the Incident's start, so a restart neither repeats a reminder nor starts the count again. Interactive `install` offers 4; `--notify-remind-hours N` sets it (1 to 168), and `--notify-remind-hours 0` turns them off. There is no cap on how many an Incident gets: acknowledging it is how they stop, so acknowledge an unplugged board on the Bench of a closed school, or delete it.
+
 **Ask the district's mail admin first.** Four answers decide the settings:
 
 - **The relay** (`SMTP_HOST`) and its port. Usually an internal relay, or the Exchange or Microsoft 365 connector the district already uses for printers and scanners.
@@ -443,11 +445,11 @@ $pw = Read-Host -AsSecureString 'SMTP password'
 .\deploy\deploy.ps1 deploy --yes
 ```
 
-`--smtp-port` and `--smtp-secure` take the table's values; without them it is 587 and STARTTLS. `--public-url` is the address technicians open the dashboard at, used for the History links in each email: `https://YOUR_DOMAIN` behind the [TLS proxy](#tls-in-front-of-the-stack). Each flag changes only its own setting, so `install --reconfigure --yes --notify-to oncall@YOUR_DOMAIN` changes the recipients alone, and `--smtp-user` again with nothing on stdin keeps the current password. `--smtp-host off` turns email off and empties the rest of the group. With `--host`, the password is read once here and handed to each server on its ssh stdin. `install` only writes `.env`; `deploy` (or `docker compose up -d`) applies it. `--smtp-password` is refused.
+`--smtp-port` and `--smtp-secure` take the table's values; without them it is 587 and STARTTLS. `--public-url` is the address technicians open the dashboard at, used for the History links in each email: `https://YOUR_DOMAIN` behind the [TLS proxy](#tls-in-front-of-the-stack). Each flag changes only its own setting, so `install --reconfigure --yes --notify-to oncall@YOUR_DOMAIN` changes the recipients alone (and `--notify-remind-hours 4` the reminders alone), and `--smtp-user` again with nothing on stdin keeps the current password. `--smtp-host off` turns email off and empties the rest of the group. With `--host`, the password is read once here and handed to each server on its ssh stdin. `install` only writes `.env`; `deploy` (or `docker compose up -d`) applies it. `--smtp-password` is refused.
 
 By hand, uncomment the lines at the end of `.env` and run `docker compose up -d`, which recreates only `api`. Put the password in single quotes, `SMTP_PASSWORD='...'`, so Compose reads a `$` or `#` in it as itself; it cannot then contain a single quote. `api` refuses to start on a half-set group: `SMTP_HOST` without `NOTIFY_FROM`, `NOTIFY_TO`, or `PUBLIC_URL`, a user without a password, or any of those set without `SMTP_HOST`. `docker compose logs api` names every problem at once, never the password.
 
-**Prove it** from Settings, Notifications, with the Admin token: "Send test email" sends one now, straight to the relay, and shows the relay's reply or its reason for refusing. It allows one a minute, since every press emails every recipient. The same tab shows whether email is on, the relay, the sender and recipients, and the last send and the last failure. An SMTP outage delays Incident emails rather than losing them: the server keeps retrying for 24 hours, and the failure shows on that tab. `deploy.sh info` prints the relay and recipients, and the login with its password masked.
+**Prove it** from Settings, Notifications, with the Admin token: "Send test email" sends one now, straight to the relay, and shows the relay's reply or its reason for refusing. It allows one a minute, since every press emails every recipient. The same tab shows whether email is on, the relay, the sender and recipients, and the last send and the last failure. An SMTP outage delays Incident emails rather than losing them: the server keeps retrying for 24 hours, and the failure shows on that tab. `deploy.sh info` prints the relay, the recipients, and how often reminders go, and the login with its password masked.
 
 ### Security
 
@@ -579,7 +581,7 @@ sudo cp -r dist/* /path/to/frontend/dist/
 
 ### 4. PM2
 
-The backend must run as exactly one process (see ADR 0001). `backend/ecosystem.config.js` is already set to a single fork-mode instance; do not raise `instances`.
+The backend must run as exactly one process (see ADR 0001). `backend/ecosystem.config.js` is already set to a single fork-mode instance; do not raise `instances`. It also gives a stop 10 seconds, as Docker does, so `pm2 restart` lets the backend finish what it is doing (`backend/src/shutdown.ts`).
 
 ```bash
 cd /var/www/temperature-alarms/backend
