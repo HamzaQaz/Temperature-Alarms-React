@@ -293,7 +293,8 @@ out=$(run_fake deploy --no-pull) || fail "deploy after the move: exit $?: $out"
 # table yet) warns and keeps the backup.
 reset_fake; rm -rf "$repo/backups"
 out=$(run_fake backup) || fail "backup: exit $?: $out"
-file=$(ls "$repo"/backups/*.sql.gz 2>/dev/null | head -n 1)
+file=
+for f in "$repo"/backups/*.sql.gz; do [ -e "$f" ] && { file=$f; break; }; done
 [ -n "$file" ] || fail "backup: no file"
 # Everything mysql was given: one statement, on one line.
 mark=$(grep -v '^--- ' "$work/db.stdin" 2>/dev/null)
@@ -324,6 +325,7 @@ mysql_line='exec -T db sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot 
 # deploy: api's image is built with the checkout's commit and date as APP_VERSION, passed by
 # compose.yaml as a build argument; outside a git checkout it is empty.
 grep -qE '^        APP_VERSION: \$\{APP_VERSION:-\}$' "$repo/compose.yaml" || fail "compose.yaml: api's build does not get APP_VERSION"
+# shellcheck disable=SC2016 # the $ is the literal text in the Dockerfile
 { grep -qE '^ARG APP_VERSION=$' "$here/../backend/Dockerfile" && grep -qE '^ENV APP_VERSION=\$APP_VERSION$' "$here/../backend/Dockerfile"; } || fail "backend/Dockerfile: APP_VERSION is not baked in"
 reset_fake
 run_fake deploy --no-pull > /dev/null || fail "deploy outside git: exit $?"
