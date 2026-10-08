@@ -27,12 +27,16 @@
 
 // A second server to fall back to, or "" for none. A board whose reports SERVER_URL does not take
 // twice in a row (no answer, the token refused, the Device not registered there, a server error)
-// moves to this one, and after an hour there tries SERVER_URL again. Both take the same Device token
-// and need the Device registered; the board updates over the air from whichever it is on.
+// moves to this one, and after an hour there tries SERVER_URL again. It is sent DEVICE_TOKEN_2 (below)
+// and needs the Device registered; the board updates over the air from whichever it is on.
 #define SERVER_URL_2 ""
 
 // Must match DEVICE_TOKEN in the backend .env (docs/adr/0003).
 #define DEVICE_TOKEN "change-me-device"
+
+// The fallback server's Device token (SERVER_URL_2's DEVICE_TOKEN), or "" when it takes the same
+// token as SERVER_URL. Each server is sent only its own.
+#define DEVICE_TOKEN_2 ""
 
 // The sensor on the board: DHT11 (the original, to within 2 C and 5 % humidity), DHT22 (0.5 C, 2 %)
 // or SHT31 (I2C, 0.3 C, 2 %). One per build: a batch of each kind is its own export. The README's

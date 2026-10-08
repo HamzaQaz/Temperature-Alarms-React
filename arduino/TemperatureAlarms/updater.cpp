@@ -64,7 +64,6 @@ void updaterBegin() {
   Serial.println(FPSTR(VERSION_MARKER));
   Serial.println(ARDUINO_SIGNING ? F("update: on, signed builds only, hourly")
                                  : F("update: off, this build is not signed (no public.key in the sketch folder)"));
-  ESPhttpUpdate.setAuthorization("device", DEVICE_TOKEN);  // Basic device:<token>, all the library can send
   ESPhttpUpdate.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);  // the token goes only to SERVER_URL
   ESPhttpUpdate.rebootOnUpdate(true);
   ESPhttpUpdate.onStart(imageStarted);
@@ -72,6 +71,8 @@ void updaterBegin() {
 }
 
 static void check() {
+  // Basic device:<token>, all the library can send; the token of the server in use, set per check.
+  ESPhttpUpdate.setAuthorization("device", serverDeviceToken());
   const String url = serverUrl("/api/firmware");
   const String version = String(FIRMWARE_VERSION);
   imageArrived = false;
