@@ -73,7 +73,7 @@ case "$*" in
   *"volume ls"*) cat "$FAKE_DIR/volumes" 2>/dev/null; exit 0 ;;
   *"compose"*" config"*) echo "name: ta-test"; exit 0 ;;
   *"compose"*" ps "*) echo "c0ffee"; exit 0 ;;
-  *"exec -T api node dist/firmwareCli.js"*) { echo "--- $*"; cat; } >> "$FAKE_DIR/fw.stdin"; exit "$(cat "$FAKE_DIR/fw.rc" 2>/dev/null || echo 0)" ;;
+  *"exec -T api node dist/firmwareCli.js"*) { echo "--- $*"; cat; } >> "$FAKE_DIR/fw.stdin"; cat "$FAKE_DIR/fw.out" 2>/dev/null; exit "$(cat "$FAKE_DIR/fw.rc" 2>/dev/null || echo 0)" ;;
   *"exec -T api node -e"*) cat "$FAKE_DIR/rotation.out" 2>/dev/null; exit "$(cat "$FAKE_DIR/rotation.rc" 2>/dev/null || echo 0)" ;;
   *"exec -T db sh -c"*"mysqldump"*) printf -- '-- dump\n-- Dump completed\n'; exit 0 ;;
   *"exec -T db sh -c"*) { echo "--- $*"; cat; } >> "$FAKE_DIR/db.stdin"; exit "$(cat "$FAKE_DIR/db.rc" 2>/dev/null || echo 0)" ;;
@@ -372,8 +372,9 @@ run_fake deploy --no-pull > /dev/null || fail "deploy: exit $?"
 rm -rf "$repo/.git"
 
 # publish-firmware: the image reaches api as base64 on stdin, never as a file path or an argument;
-# --only is passed through and checked; status and withdraw call the same tool.
-reset_fake; rm -f "$work/fw.stdin" "$work/fw.rc"
+# --only is passed through and checked; status and withdraw call the same tool, whose lines (who it is
+# offered to, where each of them is) are printed as they come.
+reset_fake; rm -f "$work/fw.stdin" "$work/fw.rc" "$work/fw.out"
 head -c 4096 /dev/urandom > "$work/fw.bin.signed"
 out=$(run_fake publish-firmware) && fail "publish-firmware without --file: exit 0"
 printf '%s' "$out" | grep -q -- '--file' || fail "publish-firmware without --file: no hint: $out"
@@ -383,10 +384,19 @@ out=$(run_fake publish-firmware --file "$work/fw.bin.signed" --only ESP_A1B2C3,E
 grep -q -- '--- compose exec -T api node dist/firmwareCli.js publish --only ESP_A1B2C3,ESP_D4E5F6' "$work/fw.stdin" || fail "publish-firmware: wrong command: $(head -n 1 "$work/fw.stdin")"
 sed '1d' "$work/fw.stdin" | base64 -d | cmp -s - "$work/fw.bin.signed" || fail "publish-firmware: the image did not arrive intact on stdin"
 printf '%s' "$out" | grep -q 'without --only' || fail "publish-firmware --only: no next step"
+# The forms a technician copies from a board's log reach the tool, which reads them as the Device.
+rm -f "$work/fw.stdin"
+out=$(run_fake publish-firmware --file "$work/fw.bin.signed" --only ESP-64533B,64533b) || fail "publish-firmware with ESP-64533B: exit $?: $out"
+grep -q -- 'firmwareCli.js publish --only ESP-64533B,64533b$' "$work/fw.stdin" || fail "publish-firmware with ESP-64533B: wrong command: $(head -n 1 "$work/fw.stdin")"
 echo 1 > "$work/fw.rc"
-out=$(run_fake publish-firmware --file "$work/fw.bin.signed") && fail "publish-firmware refused by api: exit 0"
+echo 'Refused: no Device is registered as ESP_00000F; check the hostname on its card, or add it in Settings first' > "$work/fw.out"
+out=$(run_fake publish-firmware --file "$work/fw.bin.signed" --only ESP_00000F) && fail "publish-firmware refused by api: exit 0"
+printf '%s' "$out" | grep -q 'Refused: no Device is registered as ESP_00000F' || fail "publish-firmware refused by api: the reason was not shown: $out"
 rm -f "$work/fw.stdin" "$work/fw.rc"
-run_fake firmware-status > /dev/null || fail "firmware-status: exit $?"
+printf '%s\n' 'Offered to ESP_64533B (CHS IDF 2, running 4).' '  ESP_64533B  CHS IDF 2  version 4  Waiting for its next check: by Oct 7, 23:55 CDT, or restart the board' > "$work/fw.out"
+out=$(run_fake firmware-status) || fail "firmware-status: exit $?"
+printf '%s' "$out" | grep -q '^  ESP_64533B  CHS IDF 2  version 4  Waiting for its next check: by Oct 7, 23:55 CDT, or restart the board$' || fail "firmware-status: the per-Device lines were not printed: $out"
+rm -f "$work/fw.out"
 run_fake withdraw-firmware > /dev/null || fail "withdraw-firmware: exit $?"
 { grep -q 'firmwareCli.js status' "$work/fw.stdin" && grep -q 'firmwareCli.js withdraw' "$work/fw.stdin"; } || fail "status/withdraw: not run in api"
 

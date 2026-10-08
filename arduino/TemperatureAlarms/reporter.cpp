@@ -116,7 +116,7 @@ static int post(WiFiClient& client, const String& body, int accepted, String& re
   const char* wanted[] = {"X-Firmware-Available"};
   http.collectHeaders(wanted, 1);
   int status = http.POST(body);
-  if (status == accepted && http.hasHeader("X-Firmware-Available")) updaterOffered(http.header("X-Firmware-Available").toInt());
+  if (status == accepted) updaterOffered(http.hasHeader("X-Firmware-Available") ? http.header("X-Firmware-Available").toInt() : 0);
   if (status > 0 && status != accepted) response = responseStart(client);
   http.end();
   return status;

@@ -93,7 +93,8 @@ With no action at a console, shows a menu. Actions:
   publish-firmware   Offer a signed firmware build to the boards over the air: --file the
                      TemperatureAlarms.ino.bin.signed from the build, --only ESP_A,ESP_B to offer
                      it to those Devices first (publish again without --only for every Device)
-  firmware-status    The published build and the version each Device runs
+  firmware-status    The published build, who it is offered to and where each of them is on the
+                     way to it, and the version each Device runs
   withdraw-firmware  Stop offering the published build; boards keep what they run
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
@@ -135,7 +136,7 @@ Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off u
       --wipe            uninstall also deletes the database volume
       --down            demo: remove the demo instead of starting it
       --finish, --force rotate-device-token: end the rotation (--force: even with Devices left)
-      --only HOSTNAMES  publish-firmware: only these Devices, comma-separated
+      --only HOSTNAMES  publish-firmware: only these registered Devices, comma-separated
       --file FILE       Backup file for restore
       --follow, --service NAME, --tail N   For logs
 Remote Linux servers (runs deploy.sh there over ssh; each keeps its own .env and backups):
@@ -1199,8 +1200,8 @@ function Invoke-PublishFirmware {
     [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)) | Invoke-DcStdin @a
     if ($LASTEXITCODE -ne 0) { Fail 'not published; see the line above' }
     if ($O.Only) {
-        Write-Host '  Next: watch those Devices (deploy.ps1 firmware-status, or Settings) for an hour; then publish the'
-        Write-Host '  same file again without --only to offer it to every Device.'
+        Write-Host '  Next: deploy.ps1 firmware-status (or Settings, Firmware) shows where each of them is. Once each runs'
+        Write-Host '  it with 10 clean Readings, publish the same file again without --only to offer it to every Device.'
     }
 }
 

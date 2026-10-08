@@ -39,6 +39,125 @@ export function cleanReportsAfter(previous: CleanCount, report: { version: numbe
 export const readyFor = (version: number, { firmwareVersion, cleanReports }: { firmwareVersion: number | null; cleanReports: number }): boolean =>
   firmwareVersion !== null && firmwareVersion >= version && cleanReports >= CLEAN_REPORTS_TO_WIDEN;
 
+/** From this version a board says its version with each Reading, and checks at once when the answer says a newer build waits (X-Firmware-Available). */
+export const NUDGED_FROM_VERSION = 3;
+
+/** How often a board checks for a build on its own; it also checks 30 s after it starts (arduino/TemperatureAlarms/updater.cpp). */
+export const HOURLY_CHECK_MS = 60 * 60 * 1000;
+
+/**
+ * Where an offered Device is on its way to the release: waiting for its next check, downloading
+ * (the server sent it the image), then running the new version; or stuck: Offline, refused the
+ * image, never checked in at all, no longer registered, or not offered because the release is held.
+ */
+export type ProgressStep = 'waiting' | 'downloading' | 'running' | 'refused' | 'offline' | 'never-checked' | 'held' | 'unregistered';
+
+/** When a Device still to take the release checks next: at its next Reading, nudged, or on its own hourly check. */
+export interface NextCheck {
+  by: 'reading' | 'hourly';
+  /** Null when there is nothing to count from. */
+  at: Date | null;
+}
+
+/** What the Device's row says, for progressOf. */
+export interface ProgressFacts {
+  firmwareVersion: number | null;
+  /** Its last update check; null when it never made one. */
+  checkedAt: Date | null;
+  /** When the server last sent it an image. */
+  sentAt: Date | null;
+  /** Its last update check's result, as its latest Reading said it, and when. */
+  updateResult: string | null;
+  infoAt: Date | null;
+  lastReportAt: Date | null;
+  /** The server judges it Offline now. */
+  offline: boolean;
+}
+
+/**
+ * Where a Device is with `release` (null facts: no Device has the hostname now). Offline comes
+ * first, as it stops everything else; a Device still to take it says when it checks next: a board
+ * that reports its version with its Readings checks at the next one, nudged; a silent one (Offline,
+ * or firmware before 3) on its hourly check, or 30 s after a restart.
+ */
+export function progressOf(
+  release: { version: number; publishedAt: Date; held: boolean },
+  device: ProgressFacts | null,
+  reportIntervalSeconds: number,
+): { step: ProgressStep; nextCheck: NextCheck | null } {
+  if (device === null) return { step: 'unregistered', nextCheck: null };
+  const running = device.firmwareVersion !== null && device.firmwareVersion >= release.version;
+  const sent = device.sentAt !== null && device.sentAt.getTime() >= release.publishedAt.getTime();
+  const nextCheck = running || sent || release.held || device.checkedAt === null ? null : nextCheckOf(device, reportIntervalSeconds);
+  if (device.offline) return { step: 'offline', nextCheck };
+  if (running) return { step: 'running', nextCheck: null };
+  if (device.infoAt !== null && failedToInstall(release, { sentAt: device.sentAt, version: device.firmwareVersion }, device.updateResult, device.infoAt)) {
+    return { step: 'refused', nextCheck: null };
+  }
+  if (sent) return { step: 'downloading', nextCheck: null };
+  if (device.checkedAt === null) return { step: 'never-checked', nextCheck: null };
+  if (release.held) return { step: 'held', nextCheck: null };
+  return { step: 'waiting', nextCheck };
+}
+
+function nextCheckOf({ offline, firmwareVersion, lastReportAt, checkedAt }: ProgressFacts, reportIntervalSeconds: number): NextCheck {
+  if (!offline && lastReportAt !== null && (firmwareVersion ?? 0) >= NUDGED_FROM_VERSION) {
+    return { by: 'reading', at: new Date(lastReportAt.getTime() + reportIntervalSeconds * 1000) };
+  }
+  return { by: 'hourly', at: checkedAt === null ? null : new Date(checkedAt.getTime() + HOURLY_CHECK_MS) };
+}
+
+/** A step in words, as the Firmware tab and `deploy.sh firmware-status` both say it. */
+export const STEP_TEXT: Record<ProgressStep, string> = {
+  waiting: 'Waiting for its next check',
+  downloading: 'Downloading',
+  running: 'Running the new version',
+  refused: 'Refused the image',
+  offline: 'Offline',
+  'never-checked': 'Never checked in',
+  held: 'Not offered while held',
+  unregistered: 'Not registered',
+};
+
+/** When the next check is due, in words: "at its next Reading, by 23:55", "by 23:55, or restart the board", or "due by 23:55; restart the board" once past. */
+export function nextCheckText({ by, at }: NextCheck, now: Date, timeOf: (at: Date) => string): string {
+  if (by === 'reading') return at === null ? 'at its next Reading' : `at its next Reading, by ${timeOf(at)}`;
+  if (at === null) return 'restart the board';
+  return at.getTime() < now.getTime() ? `due by ${timeOf(at)}; restart the board` : `by ${timeOf(at)}, or restart the board`;
+}
+
+/** One Device's progress, for progressDetail. */
+export interface ProgressLine {
+  step: ProgressStep;
+  nextCheck: NextCheck | null;
+  sentAt: Date | null;
+  updateResult: string | null;
+  lastReportAt: Date | null;
+  cleanReports: number;
+}
+
+/** What follows a step: when to expect the next one, or what is known about where it stopped. Null when there is nothing to add. */
+export function progressDetail(line: ProgressLine, now: Date, timeOf: (at: Date) => string): string | null {
+  switch (line.step) {
+    case 'waiting':
+      return line.nextCheck === null ? null : nextCheckText(line.nextCheck, now, timeOf);
+    case 'downloading':
+      return line.sentAt === null ? null : `the server sent the image at ${timeOf(line.sentAt)}`;
+    case 'running':
+      return `${Math.min(line.cleanReports, CLEAN_REPORTS_TO_WIDEN)} of ${CLEAN_REPORTS_TO_WIDEN} clean Readings`;
+    case 'refused':
+      return line.updateResult;
+    case 'offline': {
+      const last = line.lastReportAt === null ? 'it has never reported' : `last report at ${timeOf(line.lastReportAt)}`;
+      return line.nextCheck === null ? last : `${last}, next check ${nextCheckText(line.nextCheck, now, timeOf)}`;
+    }
+    case 'never-checked':
+      return 'flashed before over-the-air updates or built without public.key; it needs a USB flash';
+    default:
+      return null;
+  }
+}
+
 /** How the firmware reports an update attempt that went wrong: `failed, <why>` (arduino/TemperatureAlarms/updater.cpp). */
 const FAILED_UPDATE = /^failed\b/i;
 
