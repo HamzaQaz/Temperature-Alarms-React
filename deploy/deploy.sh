@@ -123,7 +123,8 @@ With no action and a terminal, shows a menu. Actions:
   publish-firmware   Offer a signed firmware build to the boards over the air: --file the
                      TemperatureAlarms.ino.bin.signed from the build, --only ESP_A,ESP_B to offer
                      it to those Devices first (publish again without --only for every Device)
-  firmware-status    The published build and the version each Device runs
+  firmware-status    The published build, who it is offered to and where each of them is on the
+                     way to it, and the version each Device runs
   withdraw-firmware  Stop offering the published build; boards keep what they run
   stop               Stop the containers; data and settings stay
   uninstall          Remove containers and built images; --wipe also deletes the database
@@ -165,7 +166,7 @@ Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off u
       --wipe            uninstall also deletes the database volume
       --down            demo: remove the demo instead of starting it
       --finish, --force rotate-device-token: end the rotation (--force: even with Devices left)
-      --only HOSTNAMES  publish-firmware: only these Devices, comma-separated
+      --only HOSTNAMES  publish-firmware: only these registered Devices, comma-separated
       --file FILE       Backup file for restore
       --keep-days N     backup and schedule-backup: delete this project's backups older than N days
       --at HH:MM        schedule-backup: the time of day (default 02:00)
@@ -1253,8 +1254,8 @@ do_publish_firmware() {
   fi
   base64 < "$FILE" | firmware_cli "${args[@]}" || die "not published; see the line above"
   if [ -n "$ONLY" ]; then
-    say "  Next: watch those Devices (deploy.sh firmware-status, or Settings) for an hour; then publish the"
-    say "  same file again without --only to offer it to every Device."
+    say "  Next: deploy.sh firmware-status (or Settings, Firmware) shows where each of them is. Once each runs"
+    say "  it with 10 clean Readings, publish the same file again without --only to offer it to every Device."
   fi
 }
 

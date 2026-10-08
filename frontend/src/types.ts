@@ -65,6 +65,38 @@ export interface FirmwareRelease {
   widenedAt: string | null;
   /** Held releases are offered to no one, until withdrawn or replaced by a higher version. */
   hold: FirmwareHold | null;
+  /** Who it is offered to, as the server says it: "Offered to ESP_64533B (CHS IDF 2, running 4)", "Offered to every Device (12)". */
+  offeredTo: string;
+}
+
+/**
+ * Where an offered Device is on its way to the release: waiting for its next check, downloading (the
+ * server sent it the image), then running the new version; or stuck: Offline, refused the image,
+ * never checked in, no longer registered, or not offered while the release is held.
+ */
+export type ProgressStep = 'waiting' | 'downloading' | 'running' | 'refused' | 'offline' | 'never-checked' | 'held' | 'unregistered';
+
+/** One offered Device on its way to the release, as the server judges it. */
+export interface DeviceProgress {
+  hostname: string;
+  /** Null when no Device is registered with this hostname now. */
+  device: { id: number; campus: { name: string; shortcode: string }; closet: string } | null;
+  firmwareVersion: number | null;
+  step: ProgressStep;
+  /**
+   * For a Device still to take it (waiting, or Offline before taking it): when it checks next, at its
+   * next Reading (nudged) or on its hourly check; `at` is null when there is nothing to count from.
+   */
+  nextCheck: { by: 'reading' | 'hourly'; at: string | null } | null;
+  /** When the server last sent it an image. */
+  sentAt: string | null;
+  /** Its last update check's result, as its latest Reading said it. */
+  updateResult: string | null;
+  lastReportAt: string | null;
+  /** Good Readings in a row on the version it runs. */
+  cleanReports: number;
+  /** Offline and Sensor fault, as a hold watches them; none is Online. Null when not registered. */
+  conditions: Condition[] | null;
 }
 
 /** One named Device of a staged release, as "Release to all" waits on it. */
@@ -85,6 +117,8 @@ export interface StagedDevice {
 /** GET /api/firmware/status (Admin token): the release, the version each Device last reported, and a staged release's named Devices. */
 export interface FirmwareStatus {
   release: FirmwareRelease | null;
+  /** Each Device the release is offered to, stuck ones first; null when nothing is published. */
+  progress: { cleanReportsToWiden: number; devices: DeviceProgress[] } | null;
   /** Null unless the release is staged. */
   rollout: { cleanReportsToWiden: number; devices: StagedDevice[]; ready: boolean } | null;
   devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null; info: DeviceInfo | null }>;

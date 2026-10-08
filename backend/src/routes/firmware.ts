@@ -10,11 +10,14 @@ import {
   FirmwareImageError,
   holdText,
   MAX_IMAGE_BYTES,
+  offeredTo,
   offers,
   publishFirmware,
   releaseImage,
+  releaseProgress,
   widenRelease,
   withdrawFirmware,
+  type DeviceProgress,
   type FirmwareRelease,
 } from '../firmwareStore';
 import { CLEAN_REPORTS_TO_WIDEN, readyFor } from '../rollout';
@@ -52,10 +55,12 @@ interface StatusRow extends RowDataPacket {
  * Over-the-air firmware (docs/adr/0007). GET /api/firmware is the boards' hourly check, behind the
  * Device token (as Basic `device:<token>`, all the ESP8266 update library can send): 304 when there is
  * nothing newer for that board, else the signed image, which the board verifies before booting it.
- * GET /api/firmware/status is the Admin's view of the release, every Device's version, and how the
- * named Devices of a staged release are doing. POST /api/firmware publishes a signed build from the
- * Settings page (`?only=ESP_A,ESP_B` for named Devices first), POST /api/firmware/widen offers a
- * staged one to every Device, and DELETE withdraws it, all with the Admin token.
+ * GET /api/firmware/status is the Admin's view of the release, who it is offered to and where each
+ * of them is on the way to it, every Device's version, and how the named Devices of a staged release
+ * are doing. POST /api/firmware publishes a signed build from the Settings page (`?only=ESP_A,ESP_B`
+ * for named Devices first, each a registered Device), POST /api/firmware/widen offers a staged one to
+ * every Device, and DELETE withdraws it, all with the Admin token. Publishing and widening answer
+ * with the release and who it is now offered to.
  */
 export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date() }: RouteDeps): Router {
   const router = Router();
@@ -101,18 +106,26 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
   });
 
   const adminOnly = requireAdminToken(config);
-  const toJson = (release: FirmwareRelease) => ({
+  const toJson = async (release: FirmwareRelease) => ({
     ...release,
     publishedAt: release.publishedAt.toISOString(),
     widenedAt: release.widenedAt?.toISOString() ?? null,
     hold: release.hold === null ? null : { ...release.hold, at: release.hold.at.toISOString() },
+    offeredTo: await offeredTo(pool, release),
+  });
+  const iso = (at: Date | null): string | null => at?.toISOString() ?? null;
+  const progressJson = ({ nextCheck, sentAt, lastReportAt, ...rest }: DeviceProgress) => ({
+    ...rest,
+    nextCheck: nextCheck === null ? null : { by: nextCheck.by, at: iso(nextCheck.at) },
+    sentAt: iso(sentAt),
+    lastReportAt: iso(lastReportAt),
   });
 
   router.post('/', adminOnly, express.raw({ type: 'application/octet-stream', limit: MAX_IMAGE_BYTES }), async (req, res, next) => {
     const image = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     const only = typeof req.query.only === 'string' && req.query.only.trim() !== '' ? req.query.only.split(',') : undefined;
     try {
-      res.status(201).json(toJson(await publishFirmware(pool, image, only)));
+      res.status(201).json(await toJson(await publishFirmware(pool, image, only)));
     } catch (error) {
       if (error instanceof FirmwareImageError) {
         res.status(422).json({ error: error.message });
@@ -136,7 +149,7 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
         res.status(409).json({ error: `Version ${release.version} is held: ${holdText(release.hold)}. Withdraw it, or publish a fixed build with a higher version.` });
         return;
       }
-      res.json(toJson(release));
+      res.json(await toJson(release));
     } catch (error) {
       next(error);
     }
@@ -163,6 +176,7 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
         FROM devices d JOIN campuses c ON c.id = d.campus_id
         ORDER BY c.name, d.closet, d.hostname`);
       const at = now();
+      const rules = { reportIntervalSeconds: config.reportIntervalSeconds, thresholds: config.thresholds };
       const byHostname = new Map(rows.map((row) => [row.hostname, row]));
       // How each named Device of a staged release is doing, held or not: what "Release to all" waits on.
       const staged =
@@ -179,13 +193,16 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
                 lastReportAt: row.lastReportAt?.toISOString() ?? null,
                 // Its health as a hold watches it: Offline, Sensor fault, or neither (Online). No Reading
                 // is judged here, so Hot, Cold, Dry and Mold risk never appear.
-                conditions: conditionsFor({ reading: null, secondsSinceReport, sensorFaults: row.sensorFaults, reportIntervalSeconds: config.reportIntervalSeconds, thresholds: config.thresholds }),
+                conditions: conditionsFor({ reading: null, secondsSinceReport, sensorFaults: row.sensorFaults, ...rules }),
                 cleanReports: row.cleanReports,
                 ready: readyFor(release.version, row),
               };
             });
+      const progress = release === null ? null : await releaseProgress(pool, release, at, rules);
       res.json({
-        release: release === null ? null : toJson(release),
+        release: release === null ? null : await toJson(release),
+        // Where each Device it is offered to is on the way to it, stuck ones first (rollout.ts, progressOf).
+        progress: progress === null ? null : { cleanReportsToWiden: CLEAN_REPORTS_TO_WIDEN, devices: progress.map(progressJson) },
         rollout:
           release === null || staged === null
             ? null

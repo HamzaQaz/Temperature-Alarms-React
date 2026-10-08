@@ -27,6 +27,14 @@ Widening used to be the same file published again whenever the Admin felt sure, 
 - **Where it is checked.** The Offline sweep checks after each pass, where Offline incidents open; ingest checks after a named Device's report commits (a failed update, a Sensor fault opening), against the cached release, so other Devices' Readings cost nothing. A failed check is logged and never costs a board its Reading.
 - **Emailed through the outbox** (ADR 0008), when notifications are on: the hold queues a `hold` row in its own transaction, with the held Device and no Incident (`notifications.incident_id` is now nullable). It goes as its own email, ahead of any Incident digest: `[Temperature Alarms] Firmware 7 held: ESP_A1B2C3 went Offline`, with the Device's Campus and Closet, when, what to do, and a link to the Firmware tab. It reads the hold as it stands when sent, and is dropped unsent if the release was withdrawn or replaced meanwhile. A Bench Device's hold is emailed too: it is about the release, not the closet.
 
+## Update (2026-10-07): publishing says who it reaches, and where each board is
+
+Firmware 7 went out on the bench for a name that did not match the test board, which was told "none newer" while nothing said the release left it out (`.scratch/firmware-2/issues/04-smooth-updates.md`).
+
+- **Names are checked.** Publishing reads the forms a technician types (`ESP-64533B` from a board's serial log, any case, or the six hex digits alone) as the Device hostname, and refuses (422), before anything is stored, a name no Device is registered under, naming it, and a release for every Device while none is registered.
+- **Who, and where each one is.** The publish answer, the Firmware tab and `deploy.sh firmware-status` say who the release is offered to ("Offered to ESP_64533B (CHS IDF 2, running 4)", "Offered to every Device (12)"), then give each of them one line, decided on the server (`rollout.ts`): waiting for its next check, with when (at its next Reading for a board that says its version with its Readings, nudged; for a silent one, or firmware before 3, its hourly check or 30 s after a restart), downloading (the server sent it the image), running the new version with its clean Readings; or stuck: Offline, refused the image (its update result), never checked in.
+- **The board says what the server answered** (firmware 8): `update: v8 offered, downloading`, `update: installed, restarting`, `update: refused, <reason>`, and `update: none newer for ESP_64533B (running 8)`, the name a release must use. The result it reports with its Readings stays `failed, ...`, which the hold reads.
+
 ## Consequences
 
 - Flashing day is the last USB flash, provided those builds have the keys. A board flashed before this decision needs one more.

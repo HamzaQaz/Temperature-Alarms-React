@@ -172,6 +172,10 @@ describe('publishing from Settings (POST and DELETE /api/firmware, Admin token)'
   beforeEach(async () => {
     await resetDatabase(pool);
     server = await startServer(pool);
+    const client = api(server);
+    const campus = await client.campuses.create();
+    await client.devices.create(campus.id, 'ESP_A1B2C3');
+    await client.devices.create(campus.id, 'ESP_D4E5F6', 'MDF');
   });
   afterEach(() => server.close());
   after(() => pool.end());
@@ -186,12 +190,15 @@ describe('publishing from Settings (POST and DELETE /api/firmware, Admin token)'
   test('the Admin publishes a signed image, for named Devices or every Device', async () => {
     const response = await upload(image(5), { query: '?only=esp_a1b2c3,ESP_D4E5F6' });
     assert.equal(response.status, 201);
-    const release = await json<{ version: number; only: string[] | null; md5: string }>(response);
+    const release = await json<{ version: number; only: string[] | null; md5: string; offeredTo: string }>(response);
     assert.equal(release.version, 5);
     assert.deepEqual(release.only, ['ESP_A1B2C3', 'ESP_D4E5F6']);
+    assert.equal(release.offeredTo, 'Offered to ESP_A1B2C3 (CHS IDF 2, version not known yet), ESP_D4E5F6 (CHS MDF, version not known yet)');
     const widened = await upload(image(5));
     assert.equal(widened.status, 201);
-    assert.equal((await json<{ only: string[] | null }>(widened)).only, null);
+    const all = await json<{ only: string[] | null; offeredTo: string }>(widened);
+    assert.equal(all.only, null);
+    assert.equal(all.offeredTo, 'Offered to every Device (2)');
   });
 
   test('an unsigned or older image is a 422 saying why, and nothing changes', async () => {
@@ -239,7 +246,11 @@ describe('firmware command line (deploy.sh publish-firmware, firmware-status, wi
   before(() => {
     pool = createTestPool();
   });
-  beforeEach(() => resetDatabase(pool));
+  beforeEach(async () => {
+    await resetDatabase(pool);
+    await pool.query("INSERT INTO campuses (name, shortcode) VALUES ('Central High School', 'CHS')");
+    await pool.query("INSERT INTO devices (hostname, campus_id, closet) SELECT 'ESP_A1B2C3', id, 'IDF 2' FROM campuses");
+  });
   after(() => pool.end());
 
   const run = (args: string[], input = '') => {
@@ -261,20 +272,26 @@ describe('firmware command line (deploy.sh publish-firmware, firmware-status, wi
         DB_NAME: db.database,
         ADMIN_TOKEN: TEST_ADMIN_TOKEN,
         DEVICE_TOKEN: TEST_DEVICE_TOKEN,
+        TZ: 'UTC',
       },
     });
   };
 
-  test('publishes base64 from stdin, reports status, and withdraws', async () => {
+  test('publishes base64 from stdin, says who it is offered to, reports where each of them is, and withdraws', async () => {
+    await pool.query("UPDATE devices SET firmware_version = 3, firmware_checked_at = '2026-10-07 22:55:00' WHERE hostname = 'ESP_A1B2C3'");
     const published = run(['publish', '--only', 'esp-a1b2c3'], image(4).toString('base64').replace(/(.{76})/g, '$1\n'));
     assert.equal(published.status, 0, published.stderr);
-    assert.match(published.stdout, /Published version 4 .*offered to ESP_A1B2C3/);
+    assert.match(published.stdout, /Published version 4 /);
+    assert.match(published.stdout, /^Offered to ESP_A1B2C3 \(CHS IDF 2, running 3\)\. /m);
     const [[row]] = await pool.query<RowDataPacket[]>('SELECT version, only_hostnames AS only FROM firmware_release');
     assert.deepEqual({ ...row }, { version: 4, only: 'ESP_A1B2C3' });
 
+    // Never heard from, and its hourly check long overdue: Offline, with what to do.
     const status = run(['status']);
     assert.equal(status.status, 0, status.stderr);
     assert.match(status.stdout, /Published: version 4/);
+    assert.match(status.stdout, /^Offered to ESP_A1B2C3 \(CHS IDF 2, running 3\)\.$/m);
+    assert.match(status.stdout, /^ {2}ESP_A1B2C3 {2}CHS IDF 2 {2}version 3 {2}Offline: it has never reported, next check due by Oct 7, 23:55 UTC; restart the board$/m);
 
     const withdrawn = run(['withdraw']);
     assert.equal(withdrawn.status, 0, withdrawn.stderr);
@@ -290,12 +307,21 @@ describe('firmware command line (deploy.sh publish-firmware, firmware-status, wi
     assert.equal(rows.length, 0);
   });
 
+  test('refuses --only naming a Device that is not registered, naming it, and publishes nothing', async () => {
+    const result = run(['publish', '--only', 'ESP-A1B2C3,64533b'], image(4).toString('base64'));
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Refused: no Device is registered as 64533b \(ESP_64533B\)/);
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM firmware_release');
+    assert.equal(rows.length, 0);
+  });
+
   test('says when the release is held and why, and refuses to widen it by publishing it again', async () => {
     await publishFirmware(pool, image(4), ['ESP_A1B2C3']);
     await holdRelease(pool, 4, { hostname: 'ESP_A1B2C3', reason: 'Offline', detail: null }, new Date(), false);
     const status = run(['status']);
     assert.equal(status.status, 0, status.stderr);
-    assert.match(status.stdout, /version 4 .*held since \S+ \(ESP_A1B2C3 went Offline after taking it\), offered to no one/);
+    assert.match(status.stdout, /version 4 .*, held since \S+ \(ESP_A1B2C3 went Offline after taking it\)$/m);
+    assert.match(status.stdout, /^Offered to no Device while it is held\.$/m);
     const again = run(['publish'], image(4).toString('base64'));
     assert.equal(again.status, 1);
     assert.match(again.stderr, /Refused: version 4 is held/);
