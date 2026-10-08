@@ -190,14 +190,14 @@ async function sendNextList(
     const recipients = await recipientsOf(conn, live.map((r) => r.id), notifications);
     const defaults = recipientsFor([], notifications.to, notifications.toAll);
     const listOf = (r: DueRow) => recipients.get(r.id) ?? defaults;
-    // A held release (it has no Campus, so the default list) is its own email, ahead of that list's
-    // Incidents, which go in its next turn. So is each monthly report, which goes to NOTIFY_TO alone
+    // A held release is its own email to the default list (a release is the district's, whichever
+    // Campus the held Device is on), ahead of that list's Incidents, which go in its next turn. So is each monthly report, which goes to NOTIFY_TO alone
     // (owner decision), and at once: it has nothing to wait for. Each list coalesces on its own: a
     // retry or a full window in one never hurries another.
     const holds = live.filter((r) => r.kind === 'hold');
     const hold = holds.length > 0 ? await queuedHold(conn) : null;
     const groups = [
-      ...(hold !== null ? byRecipients(holds, listOf).map((group) => ({ ...group, hold, report: null })) : []),
+      ...(hold !== null ? byRecipients(holds, () => defaults).map((group) => ({ ...group, hold, report: null })) : []),
       ...live.filter((r) => r.kind === 'report').map((report) => ({ recipients: defaults, due: [report], hold: null, report })),
       ...byRecipients(live.filter((r) => r.kind !== 'hold' && r.kind !== 'report'), listOf).map((group) => ({ ...group, hold: null, report: null })),
     ];

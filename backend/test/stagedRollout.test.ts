@@ -288,6 +288,22 @@ describe('staged rollout with an automatic hold (docs/adr/0007)', () => {
     assert.equal(next.stage, 'named');
   });
 
+  test("a hold goes to NOTIFY_TO, not the held Device's Campus list", async () => {
+    await pool.query("UPDATE campuses SET notify_to = 'chs-techs@district.example'");
+    await publish(7, [A.hostname]);
+    await report(A.hostname, 6);
+    await take(A);
+    await sweepAfter(2 * MINUTE);
+
+    // The hold to NOTIFY_TO and, being another list, the Offline incident to the Campus's own, in one pass.
+    await sendEmail();
+    const sent = relay.received.map((e) => ({ to: e.to, held: /Firmware 7 held/.test(e.subject) }));
+    assert.deepEqual(sent.sort((a, b) => Number(b.held) - Number(a.held)), [
+      { to: ['techs@district.example', 'oncall@district.example'], held: true },
+      { to: ['chs-techs@district.example'], held: false },
+    ]);
+  });
+
   test('hold on a failed update: a named Device that reports after taking it that the update failed holds the release; with email off nothing is queued', async () => {
     await server.close();
     await serve(false);
