@@ -5,8 +5,6 @@
 #include "config.h"
 #include "roots.h"
 
-static const unsigned long HTTP_TIMEOUT_MS = 10 * 1000UL;
-
 // SERVER_URL without a trailing slash, read once.
 static String baseUrl;
 
@@ -53,7 +51,7 @@ static time_t serverTime() {
     BearSSL::WiFiClientSecure client;
     client.setInsecure();
     HTTPClient http;
-    http.setTimeout(HTTP_TIMEOUT_MS);
+    http.setTimeout(SERVER_TIMEOUT_MS);
     const char* wanted[] = {"Date"};
     if (http.begin(client, serverUrl("/api/health"))) {
       http.collectHeaders(wanted, 1);
