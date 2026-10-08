@@ -193,6 +193,26 @@ ADMIN_TOKEN=... DEVICE_TOKEN=... WEB=http://localhost:5173 API=http://localhost:
 
 It prints one line per check and exits non-zero if any failed. A second argument names a folder for screenshots.
 
+### CI
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the checks above on every push and pull request, each in its own job, and the run's page shows which one failed:
+
+- **Backend**: both typechecks (`npm run typecheck`, then the production build's `tsc --noEmit -p tsconfig.json`) and `npm test` against a MySQL 8.4 service container.
+- **Frontend**: typecheck, lint, test, build.
+- **Firmware**: `arduino-cli` compiles `arduino/TemperatureAlarms` from `config.example.h` once for each `SENSOR_TYPE` (DHT11, DHT22, SHT31), with the esp8266 core and the library versions in [Libraries and board settings](#libraries-and-board-settings); the run's summary lists each build's RAM, IRAM, and flash. The core and libraries are cached between runs.
+- **Bench watcher**: `python3 -m unittest arduino/test_bench.py`.
+- **Deploy scripts**: shellcheck 0.11 over `deploy.sh`, `real-ip.sh`, and their tests, then `deploy.test.sh` and `real-ip.test.sh`, on Linux; `deploy.test.ps1` under PowerShell 7 and Windows PowerShell 5.1, on Windows.
+- **Images**: the api and frontend images, built from their Dockerfiles once everything above has passed, so a broken Dockerfile shows before `master`.
+
+A newer push to a branch or pull request cancels its run in progress. When a version in the libraries table changes, change it in the workflow's `firmware` job too; arduino-cli and shellcheck are pinned there as well, each with the checksum of its download.
+
+On `master` the same run publishes build artifacts, and nothing more:
+
+- the images, pushed only once every other job has passed, as `ghcr.io/hamzaqaz/temperature-alarms-react-api` and `ghcr.io/hamzaqaz/temperature-alarms-react-frontend`, each tagged with the commit's full SHA and `latest`. The first push creates each package on GitHub; set who can pull it in the package's settings.
+- the three firmware builds, `firmware-DHT11-unsigned`, `firmware-DHT22-unsigned`, and `firmware-SHT31-unsigned`, each attached by its own compile job, under Artifacts on the run's page.
+
+Those firmware builds prove the code compiles and show its size; they are not for boards. They carry `config.example.h`'s placeholder WiFi, server, and Device token, and they are unsigned, so the server refuses them and a board flashed with one never updates over the air. Production builds are still made on the build laptop with the real `config.h` and the keys ([Updating boards over the air](#updating-boards-over-the-air)). The workflow holds no secret beyond the run's own `GITHUB_TOKEN` and deploys nowhere: servers still build the stack from source ([Deployment](#deployment)).
+
 ## API
 
 Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with the status: 400 for malformed JSON, 401 for a missing or wrong token, 403 for a browser origin that is not allowed, 404 for an unknown Campus or Device, 409 for a conflict, 422 for a body that failed validation, 429 when a rate limit is hit. Shortcodes and hostnames are stored upper-case, so `chs` and `CHS` name the same Campus.
