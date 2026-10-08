@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { isTimeZone, localDay, todayIn } from '../src/localDay';
+import { isTimeZone, localDay, localMonth, monthBefore, todayIn } from '../src/localDay';
 
 const CHICAGO = 'America/Chicago';
 
@@ -38,6 +38,29 @@ describe('localDay', () => {
     }
     assert.ok(localDay('2024-02-29', CHICAGO), 'a leap day is real');
     assert.equal(localDay('2026-02-29', CHICAGO), undefined, 'but not in a common year');
+  });
+});
+
+describe('localMonth and monthBefore', () => {
+  test('a month is midnight on its first day to midnight on the next first, the clocks going back inside it', () => {
+    assert.deepEqual(localMonth('2026-11', CHICAGO), {
+      month: '2026-11',
+      timeZone: CHICAGO,
+      from: new Date('2026-11-01T05:00:00Z'),
+      to: new Date('2026-12-01T06:00:00Z'),
+    });
+    const december = localMonth('2026-12', 'UTC');
+    assert.deepEqual([december?.from, december?.to], [new Date('2026-12-01T00:00:00Z'), new Date('2027-01-01T00:00:00Z')]);
+  });
+
+  test('a month the calendar does not have is undefined', () => {
+    for (const month of ['2026-00', '2026-13', '2026-9', '2026-09-01', '', 'last']) assert.equal(localMonth(month, CHICAGO), undefined, month);
+  });
+
+  test('the month before is the one just ended in the zone, across a year', () => {
+    assert.equal(monthBefore(new Date('2026-10-01T04:59:59Z'), CHICAGO).month, '2026-08', 'still September 30 in Chicago');
+    assert.deepEqual(monthBefore(new Date('2026-10-01T05:00:00Z'), CHICAGO), localMonth('2026-09', CHICAGO));
+    assert.deepEqual(monthBefore(new Date('2027-01-01T06:00:00Z'), CHICAGO), localMonth('2026-12', CHICAGO));
   });
 });
 

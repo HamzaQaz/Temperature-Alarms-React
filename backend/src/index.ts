@@ -54,6 +54,7 @@ async function main(): Promise<void> {
   if (mailer !== undefined) {
     jobs.push(startNotifier({ config, pool, mailer }));
     console.log(`Email notifications on: Incidents are sent to ${config.notifications?.to.join(', ')}`);
+    if (config.notifications?.monthlyReport === true) console.log("Monthly report on: last month's goes out on the 1st of each month");
   }
   exitOnSignals(async () => {
     stopping = true;

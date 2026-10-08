@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { notificationsSummary, testEmailSent } from './notifications.ts';
+import { monthName, notificationsSummary, reportQueued, testEmailSent } from './notifications.ts';
 import type { NotificationStatus, RecipientList } from '../types.ts';
 
 const off: NotificationStatus = {
@@ -10,6 +10,7 @@ const off: NotificationStatus = {
   recipients: [],
   toAll: false,
   lists: [],
+  monthlyReport: false,
   lastSent: null,
   lastFailure: null,
   pending: 0,
@@ -28,6 +29,7 @@ const on: NotificationStatus = {
   recipients: ['techs@district.example', 'oncall@district.example'],
   toAll: false,
   lists: [defaultList],
+  monthlyReport: false,
   lastSent: null,
   lastFailure: null,
   pending: 0,
@@ -51,6 +53,12 @@ describe('notificationsSummary', () => {
     assert.match(notificationsSummary({ ...on, toAll: true }, day).detail, / The default recipients also get every email \(NOTIFY_TO_ALL\)\.$/);
   });
 
+  it('says whether the monthly report goes out on its own, and nothing about it while notifications are off', () => {
+    assert.equal(notificationsSummary({ ...on, monthlyReport: true }, day).monthlyReport, 'A report on last month goes to the default recipients on the 1st of each month.');
+    assert.match(notificationsSummary(on, day).monthlyReport ?? '', /^The monthly report is off: set NOTIFY_MONTHLY_REPORT=true in the server's \.env/);
+    assert.equal(notificationsSummary({ ...off, monthlyReport: true }, day).monthlyReport, null);
+  });
+
   it('gives each list, who is on it, the Campuses on it, and its last result', () => {
     const summary = notificationsSummary(
       {
@@ -71,7 +79,7 @@ describe('notificationsSummary', () => {
     assert.deepEqual(summary.lists, [
       {
         recipients: 'oncall@district.example, techs@district.example',
-        campuses: 'Default recipients (NOTIFY_TO), for CHS, MHS and the test email.',
+        campuses: 'Default recipients (NOTIFY_TO), for CHS, MHS, the monthly report, and the test email.',
         lastResult: 'Last sent 2026-10-06: [Temperature Alarms] Test email.',
         failed: false,
       },
@@ -85,7 +93,7 @@ describe('notificationsSummary', () => {
     ]);
     assert.equal(
       notificationsSummary({ ...on, lists: [{ ...defaultList, campuses: [] }] }, day).lists[0].campuses,
-      'Default recipients (NOTIFY_TO), for no Campus at present and the test email.',
+      'Default recipients (NOTIFY_TO), for no Campus at present, the monthly report, and the test email.',
     );
   });
 
@@ -113,6 +121,21 @@ describe('testEmailSent', () => {
     assert.equal(
       testEmailSent({ sentAt: '', accepted: ['techs@district.example'], rejected: ['gone@district.example'], response: '250 OK' }),
       'Test email sent to techs@district.example. It refused gone@district.example. The relay answered: 250 OK',
+    );
+  });
+});
+
+describe('the monthly report on request', () => {
+  it('names the month as the report does', () => {
+    assert.equal(monthName('2026-09'), 'September 2026');
+    assert.equal(monthName('2026-12'), 'December 2026');
+    assert.equal(monthName('2027-01'), 'January 2027');
+  });
+
+  it('says which month was queued and when it goes', () => {
+    assert.equal(
+      reportQueued({ month: '2026-09', queuedAt: '2026-10-15T17:00:00.000Z' }),
+      'The report on September 2026 is queued for the default recipients and goes out within a minute.',
     );
   });
 });

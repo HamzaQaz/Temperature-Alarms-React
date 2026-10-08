@@ -1,10 +1,10 @@
-import { useState } from 'react';
-import { AlertCircle, Mail } from 'lucide-react';
-import { getNotificationStatus, sendTestEmail } from '@/api';
+import { useEffect, useRef, useState } from 'react';
+import { AlertCircle, FileText, Mail } from 'lucide-react';
+import { getNotificationStatus, sendMonthlyReport, sendTestEmail } from '@/api';
 import { Button } from '@/components/ui/button';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
-import { notificationsSummary, testEmailSent } from '@/lib/notifications';
+import { notificationsSummary, reportQueued, testEmailSent } from '@/lib/notifications';
 import { InlineError, SectionHeader, StatusLine } from './section';
 
 interface NotificationsSectionProps {
@@ -15,10 +15,14 @@ interface NotificationsSectionProps {
 
 const timeOf = (iso: string): string => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
+/** How long after a report is queued the status is read again: the server's sender takes it within seconds, then builds and sends it. */
+const REPORT_SENT_CHECK_MS = 20_000;
+
 /**
  * Email notifications (docs/adr/0008): whether Incidents are emailed, to which lists and how the
- * last send to each went, what waits to be sent or was given up on, and a test email to prove the
- * relay works. The settings themselves live in the server's .env, a Campus's own list on Campuses.
+ * last send to each went, whether the monthly report is, what waits to be sent or was given up on,
+ * a test email to prove the relay works, and last month's report on request. The settings
+ * themselves live in the server's .env, a Campus's own list on Campuses.
  */
 export function NotificationsSection({ canEdit, onUnauthorised }: NotificationsSectionProps) {
   return (
@@ -26,7 +30,7 @@ export function NotificationsSection({ canEdit, onUnauthorised }: NotificationsS
       <SectionHeader
         id="notifications-heading"
         title="Notifications"
-        description="Emails to technicians when an Incident opens, gets worse, or ends, sent through the district's SMTP relay. The relay and the default recipients are set in the server's .env; a Campus can name its own under Campuses."
+        description="Emails to technicians when an Incident opens, gets worse, or ends, and a monthly report, sent through the district's SMTP relay. The relay and the default recipients are set in the server's .env; a Campus can name its own under Campuses."
       />
       {canEdit ? (
         <NotificationStatusAndTest onUnauthorised={onUnauthorised} />
@@ -40,13 +44,26 @@ export function NotificationsSection({ canEdit, onUnauthorised }: NotificationsS
 function NotificationStatusAndTest({ onUnauthorised }: { onUnauthorised: () => void }) {
   const { state, reload } = useResource(getNotificationStatus);
   const test = useChange(onUnauthorised);
+  const report = useChange(onUnauthorised);
   const [status, setStatus] = useState<string | null>(null);
+  const sentCheck = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(sentCheck.current), []);
 
   const send = async () => {
     setStatus(null);
     await test.run(async () => setStatus(testEmailSent(await sendTestEmail())));
     // A failure is recorded too, so the last result below changes either way.
     await reload();
+  };
+
+  // Queued, not sent: the status shows it waiting now, and sent (or why not) once the server's sender has run.
+  const sendReport = async () => {
+    setStatus(null);
+    const result = await report.run(async () => setStatus(reportQueued(await sendMonthlyReport())));
+    if (!result.ok) return;
+    await reload();
+    clearTimeout(sentCheck.current);
+    sentCheck.current = setTimeout(() => void reload(), REPORT_SENT_CHECK_MS);
   };
 
   const summary = state.status === 'ready' ? notificationsSummary(state.data, timeOf) : null;
@@ -62,6 +79,7 @@ function NotificationStatusAndTest({ onUnauthorised }: { onUnauthorised: () => v
             <p className="break-words">
               <span className="font-medium">{summary.state}</span> {summary.detail}
             </p>
+            {summary.monthlyReport !== null && <p className="break-words text-muted-foreground">{summary.monthlyReport}</p>}
             {summary.lists.length > 0 && (
               <ul className="space-y-2 py-1" aria-label="Recipient lists">
                 {summary.lists.map((list) => (
@@ -89,14 +107,21 @@ function NotificationStatusAndTest({ onUnauthorised }: { onUnauthorised: () => v
             )}
           </div>
           {enabled && (
-            <Button variant="outline" size="sm" onClick={send} disabled={test.pending}>
-              <Mail aria-hidden />
-              {test.pending ? 'Sending…' : 'Send test email'}
-            </Button>
+            <div className="flex flex-wrap gap-2 sm:flex-col sm:items-stretch">
+              <Button variant="outline" size="sm" onClick={send} disabled={test.pending}>
+                <Mail aria-hidden />
+                {test.pending ? 'Sending…' : 'Send test email'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={sendReport} disabled={report.pending}>
+                <FileText aria-hidden />
+                {report.pending ? 'Queuing…' : "Send last month's report now"}
+              </Button>
+            </div>
           )}
         </div>
       )}
       <InlineError message={test.error} />
+      <InlineError message={report.error} />
       <StatusLine message={status} />
     </>
   );

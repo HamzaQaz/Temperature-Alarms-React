@@ -18,6 +18,7 @@ import { incidentRemindersSchema } from './0013-incident-reminders';
 import { campusRecipientsSchema } from './0014-campus-recipients';
 import { stagedRolloutSchema } from './0015-staged-rollout';
 import { deviceSensorSchema } from './0016-device-sensor';
+import { monthlyReportSchema } from './0017-monthly-report';
 import { systemHealthSchema } from './0018-system-health';
 
 /** What a migration may consult and report to while it runs. */
@@ -53,6 +54,7 @@ export const migrations: Migration[] = [
   campusRecipientsSchema,
   stagedRolloutSchema,
   deviceSensorSchema,
+  monthlyReportSchema,
   systemHealthSchema,
 ];
 

@@ -126,7 +126,7 @@ try {
     Expect ((& $said) -match 'DB root') $true 'info: no DB root line'
 
     # Email notifications (docs/adr/0008); deploy.test.sh says why each case matters.
-    $notifyNames = 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_REMIND_HOURS', 'NOTIFY_TO_ALL'
+    $notifyNames = 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_REMIND_HOURS', 'NOTIFY_TO_ALL', 'NOTIFY_MONTHLY_REPORT'
     foreach ($k in $notifyNames) { Expect ((EnvOf $k) -eq '') $true "install: $k has a value without --smtp-host" }
     Expect ((& $said) -match 'Email +off') $true 'info: notifications not shown as off'
 
@@ -145,7 +145,7 @@ try {
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'relay.example.org', '--notify-from', 'alarms@example.org', '--notify-to', 'techs@example.org')) $false 'no --public-url: succeeded'
     Expect ((& $said) -match '--public-url is required') $true 'no --public-url: no explanation'
     $okFlags = @('--smtp-host', 'relay.example.org', '--notify-from', 'alarms@example.org', '--notify-to', 'techs@example.org', '--public-url', 'https://alarms.example.org')
-    foreach ($bad in @(@('--smtp-port', '70000'), @('--smtp-secure', 'ssl'), @('--notify-to', 'not-an-address'), @('--notify-from', 'a@b.c,d@e.f'), @('--public-url', 'ftp://alarms.example.org'), @('--smtp-host', 'relay.example.org;id'), @('--notify-to', "a@example.org`nADMIN_TOKEN=x"), @('--notify-remind-hours', '169'), @('--notify-remind-hours', '1.5'), @('--notify-remind-hours', '-4'))) {
+    foreach ($bad in @(@('--smtp-port', '70000'), @('--smtp-secure', 'ssl'), @('--notify-to', 'not-an-address'), @('--notify-from', 'a@b.c,d@e.f'), @('--public-url', 'ftp://alarms.example.org'), @('--smtp-host', 'relay.example.org;id'), @('--notify-to', "a@example.org`nADMIN_TOKEN=x"), @('--notify-remind-hours', '169'), @('--notify-remind-hours', '1.5'), @('--notify-remind-hours', '-4'), @('--notify-monthly-report', 'yes'), @('--notify-monthly-report', 'true'))) {
         Expect (Invoke-FakeStdin '' (@('install', '--reconfigure') + $okFlags + $bad)) $false "$($bad -join ' '): succeeded"
         Expect ((& $said).Contains($bad[0])) $true "$($bad -join ' '): the flag is not named"
     }
@@ -154,7 +154,7 @@ try {
 
     # On, with a login: the password is the first line of stdin, written single-quoted, never printed.
     $pw = 'p@ss $HOME #1 \t\\x "q"'
-    Expect (Invoke-FakeStdin "$pw`r`n" (@('install', '--reconfigure') + $okFlags + @('--smtp-port', '465', '--smtp-secure', 'tls', '--smtp-user', 'DISTRICT\svc-alarms', '--notify-to', 'techs@example.org, noc@example.org', '--notify-remind-hours', '4'))) $true "notify on failed: $(& $said)"
+    Expect (Invoke-FakeStdin "$pw`r`n" (@('install', '--reconfigure') + $okFlags + @('--smtp-port', '465', '--smtp-secure', 'tls', '--smtp-user', 'DISTRICT\svc-alarms', '--notify-to', 'techs@example.org, noc@example.org', '--notify-remind-hours', '4', '--notify-monthly-report', 'on'))) $true "notify on failed: $(& $said)"
     Expect ((EnvOf 'SMTP_HOST') -eq 'relay.example.org') $true 'notify on: SMTP_HOST'
     Expect ((EnvOf 'SMTP_PORT') -eq '465' -and (EnvOf 'SMTP_SECURE') -eq 'tls') $true 'notify on: port or security not written'
     Expect ((EnvOf 'SMTP_USER') -eq 'DISTRICT\svc-alarms') $true 'notify on: SMTP_USER'
@@ -162,11 +162,13 @@ try {
     Expect ((EnvOf 'NOTIFY_TO') -eq 'techs@example.org,noc@example.org') $true 'notify on: NOTIFY_TO'
     Expect ((EnvOf 'PUBLIC_URL') -eq 'https://alarms.example.org') $true 'notify on: PUBLIC_URL'
     Expect ((EnvOf 'NOTIFY_REMIND_HOURS') -eq '4') $true 'notify on: NOTIFY_REMIND_HOURS'
+    Expect ((EnvOf 'NOTIFY_MONTHLY_REPORT') -ceq 'true') $true "notify on: NOTIFY_MONTHLY_REPORT is '$(EnvOf 'NOTIFY_MONTHLY_REPORT')'"
     Expect ((& $said).Contains('p@ss')) $false 'notify on: the password is in the output'
     Expect (($fake.Log -join "`n").Contains('p@ss')) $false 'notify on: the password is on a docker command line'
     Expect (Invoke-Fake @('info')) $true 'info with notify failed'
     Expect ((& $said).Contains('relay.example.org:465 (tls)')) $true 'info: no relay line'
     Expect ((& $said).Contains('reminders every 4 h')) $true 'info: reminders not shown'
+    Expect ((& $said).Contains('monthly report on')) $true 'info: the monthly report not shown'
     Expect ((& $said).Contains('DISTRICT\svc-alarms / ********')) $true 'info: no masked login line'
     Expect ((& $said).Contains('p@ss')) $false 'info: the SMTP password (or its start) printed without --reveal'
     Expect (Invoke-Fake @('info', '--reveal')) $true 'info --reveal failed'
@@ -178,6 +180,10 @@ try {
     Expect ((EnvOf 'NOTIFY_REMIND_HOURS') -eq '0' -and (EnvOf 'NOTIFY_TO') -eq 'oncall@example.org') $true 'notify-remind-hours alone: not applied on its own'
     Expect (Invoke-Fake @('info')) $true 'info with reminders off failed'
     Expect ((& $said).Contains('reminders off')) $true 'info: reminders not shown as off'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-monthly-report', 'off')) $true "notify-monthly-report alone failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_MONTHLY_REPORT') -ceq 'false' -and (EnvOf 'NOTIFY_REMIND_HOURS') -eq '0') $true 'notify-monthly-report alone: not applied on its own'
+    Expect (Invoke-Fake @('info')) $true 'info with the monthly report off failed'
+    Expect ((& $said).Contains('monthly report off')) $true 'info: the monthly report not shown as off'
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-user', 'other-svc')) $true "smtp-user, empty stdin failed: $(& $said)"
     Expect ((EnvOf 'SMTP_USER') -eq 'other-svc' -and (EnvOf 'SMTP_PASSWORD') -ceq "'$pw'") $true 'smtp-user, empty stdin: password not kept'
     Expect (Invoke-FakeStdin '' @('install', '--smtp-host', 'off')) $true 'off without --reconfigure failed'
@@ -207,6 +213,9 @@ try {
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'off', '--notify-remind-hours', '4')) $false 'off with --notify-remind-hours: succeeded'
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-remind-hours', '4')) $false '--notify-remind-hours with email off: succeeded'
     Expect ((& $said) -match 'email notifications are off here') $true '--notify-remind-hours with email off: no explanation'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'off', '--notify-monthly-report', 'on')) $false 'off with --notify-monthly-report: succeeded'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-monthly-report', 'on')) $false '--notify-monthly-report with email off: succeeded'
+    Expect ((& $said) -match 'email notifications are off here') $true '--notify-monthly-report with email off: no explanation'
 
     # rotate-device-token
     $old = EnvOf 'DEVICE_TOKEN'

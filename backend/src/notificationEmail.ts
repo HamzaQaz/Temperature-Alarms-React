@@ -78,10 +78,10 @@ const PEAK_LABEL: Partial<Record<ConditionName, string>> = {
 const label = ({ condition, level }: Entry['incident']): string => (SINGLE_LEVEL.has(condition) ? condition : `${condition} ${level}`);
 
 /** °F to one decimal, a whole number without its `.0`. */
-const degrees = (tempF: number): string => `${Number.isInteger(Math.round(tempF * 10) / 10) ? Math.round(tempF) : tempF.toFixed(1)} °F`;
+export const degrees = (tempF: number): string => `${Number.isInteger(Math.round(tempF * 10) / 10) ? Math.round(tempF) : tempF.toFixed(1)} °F`;
 
 /** Humidity as a whole percent. */
-const percent = (humidity: number): string => `${Math.round(humidity)}%`;
+export const percent = (humidity: number): string => `${Math.round(humidity)}%`;
 
 /** The peak in the unit its Condition is judged by, for the subject; null for Offline and Sensor fault. */
 function peakFigure({ condition, peak }: Entry['incident']): string | null {
