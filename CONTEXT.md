@@ -1,11 +1,11 @@
 # Temperature Alarms
 
-Live temperature and humidity monitoring for network closets across school campuses, fed by NodeMCU boards with DHT11 sensors.
+Live temperature and humidity monitoring for network closets across school campuses, fed by NodeMCU boards with DHT11 sensors (or the more accurate DHT22 or SHT31).
 
 ## Language
 
 **Device**:
-One NodeMCU board with a DHT11 sensor, installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings.
+One NodeMCU board with a sensor (a DHT11, DHT22, or SHT31, chosen when its firmware is built), installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings. From firmware 6 the board says which sensor it carries with every report, and the Device's History shows it, so its Readings are read with that sensor's accuracy in mind.
 _Avoid_: Sensor, node, board, table
 
 **Reading**:
@@ -54,8 +54,12 @@ A board that reports with the Device token but is not yet added as a Device, wai
 _Avoid_: Pending device, unknown device, orphan
 
 **Firmware release**:
-The one signed firmware build the server offers to Devices over the air, with its version and, while it is staged, the Devices it is offered to. A Device installs it when its version is higher than the Device's own (docs/adr/0007).
+The one signed firmware build the server offers to Devices over the air, with its version and, while it is staged, the named Devices it is offered to first. It is released to all (widened) once every named Device has sent 10 clean Readings in a row on it. A Device installs it when its version is higher than the Device's own (docs/adr/0007).
 _Avoid_: OTA image, update, push
+
+**Hold**:
+A staged Firmware release stopping itself because one of its named Devices went Offline or into Sensor fault after taking it, or reported that the update failed. A held release is offered to no Device until it is withdrawn or replaced by a higher version; it is emailed when Notifications are on (docs/adr/0007).
+_Avoid_: Pause, freeze, rollback (nothing is rolled back: boards that installed it keep it)
 
 **Condition**:
 A named state a Device is in, computed on the server from its latest Reading and its reports against global thresholds set once in the backend configuration: Hot, Cold, Dry, Mold risk, Sensor fault, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
@@ -70,7 +74,7 @@ A technician saying they are on an open Incident, with their name or a short not
 _Avoid_: Claim, assign, ownership, ack
 
 **Notification**:
-An email the server sends to a fixed list of recipients, through the district's SMTP relay, when an Incident opens, gets worse (its level rises), or closes. A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
+An email the server sends to a fixed list of recipients, through the district's SMTP relay, when an Incident opens, gets worse (its level rises), or closes, and when a Firmware release goes on Hold (its own email). A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
 _Avoid_: Alert, alarm (the old feature that was removed), page, message
 
 **Reminder**:

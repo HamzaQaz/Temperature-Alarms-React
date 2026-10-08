@@ -129,6 +129,9 @@ export const getFirmwareStatus = (): Promise<FirmwareStatus> => request('/api/fi
 export const publishFirmware = (image: Blob, only: string[] = []): Promise<FirmwareRelease> =>
   request(`/api/firmware${only.length > 0 ? `?${new URLSearchParams({ only: only.join(',') })}` : ''}`, { method: 'POST', raw: image });
 
+/** "Release to all": offer a staged build to every Device. Refused (409) while it is held. Needs the Admin token. */
+export const widenFirmware = (): Promise<FirmwareRelease> => request('/api/firmware/widen', { method: 'POST' });
+
 /** Stop offering the published build; boards keep what they run. Needs the Admin token. */
 export const withdrawFirmware = (): Promise<void> => request('/api/firmware', { method: 'DELETE' });
 

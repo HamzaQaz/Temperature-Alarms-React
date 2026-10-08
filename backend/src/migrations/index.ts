@@ -15,6 +15,8 @@ import { deviceReportsSchema } from './0010-device-reports';
 import { notificationsSchema } from './0011-notifications';
 import { incidentAcknowledgementSchema } from './0012-incident-acknowledgement';
 import { incidentRemindersSchema } from './0013-incident-reminders';
+import { stagedRolloutSchema } from './0015-staged-rollout';
+import { deviceSensorSchema } from './0016-device-sensor';
 
 /** What a migration may consult and report to while it runs. */
 export interface MigrationContext {
@@ -46,6 +48,8 @@ export const migrations: Migration[] = [
   notificationsSchema,
   incidentAcknowledgementSchema,
   incidentRemindersSchema,
+  stagedRolloutSchema,
+  deviceSensorSchema,
 ];
 
 /** The context the running backend hands its migrations: the configured legacy zone, logging to stdout. */

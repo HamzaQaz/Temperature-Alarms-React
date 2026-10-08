@@ -20,12 +20,15 @@ export function createTestPool(): Pool {
   return createPool(testDatabaseConfig());
 }
 
-/** Every table in the connected database, sorted by name. */
+/**
+ * Every table in the connected database, sorted by name, byte by byte. Sorted here rather than
+ * by the server: a MySQL on Windows (lower_case_table_names=2) orders them ignoring case.
+ */
 export async function tableNames(pool: Pool): Promise<string[]> {
   const [rows] = await pool.query<RowDataPacket[]>(
-    'SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name',
+    'SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE()',
   );
-  return rows.map((r) => r.name as string);
+  return rows.map((r) => r.name as string).sort();
 }
 
 /** Drop every table in the test database, leaving it empty. */

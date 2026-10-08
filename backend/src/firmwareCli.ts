@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { loadConfig, ConfigError } from './config';
 import { createPool } from './db';
-import { currentRelease, FirmwareImageError, publishFirmware, withdrawFirmware, type FirmwareRelease } from './firmwareStore';
+import { currentRelease, FirmwareImageError, holdText, publishFirmware, withdrawFirmware, type FirmwareRelease } from './firmwareStore';
 
 dotenv.config();
 
@@ -23,8 +23,15 @@ const readStdin = async (): Promise<string> => {
   return Buffer.concat(chunks).toString('utf8');
 };
 
+/** Who it is offered to: the named Devices, every Device (since when, if it went to them first), or no one while held. */
+const offeredTo = ({ only, staged, widenedAt, hold }: FirmwareRelease): string => {
+  if (hold !== null) return `held since ${hold.at.toISOString()} (${holdText(hold)}), offered to no one`;
+  if (widenedAt !== null) return `offered to every Device since ${widenedAt.toISOString()} (first to ${(staged ?? []).join(', ')})`;
+  return `offered to ${only === null ? 'every Device' : only.join(', ')}`;
+};
+
 const describe = (release: FirmwareRelease): string =>
-  `version ${release.version} (${release.size} bytes, md5 ${release.md5}), offered to ${release.only === null ? 'every Device' : release.only.join(', ')}, published ${release.publishedAt.toISOString()}`;
+  `version ${release.version} (${release.size} bytes, md5 ${release.md5}), ${offeredTo(release)}, published ${release.publishedAt.toISOString()}`;
 
 interface VersionRow extends RowDataPacket {
   hostname: string;

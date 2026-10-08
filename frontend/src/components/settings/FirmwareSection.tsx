@@ -1,15 +1,19 @@
 import { useRef, useState } from 'react';
-import { Upload } from 'lucide-react';
-import { getFirmwareStatus, publishFirmware, withdrawFirmware } from '@/api';
+import { AlertCircle, Upload, Wifi, WifiOff } from 'lucide-react';
+import { getFirmwareStatus, publishFirmware, widenFirmware, withdrawFirmware } from '@/api';
+import { ConditionBadge } from '@/components/ConditionBadge';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
-import { firmwareSummary } from '@/lib/firmware';
+import { levelLook } from '@/lib/conditions';
+import { cleanProgress, firmwareSummary, holdSentence, rolloutNote } from '@/lib/firmware';
 import { formatHeap, formatSignal, formatUptime } from '@/lib/deviceInfo';
 import { formatAge } from '@/lib/reportTiming';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import type { Condition, FirmwareRelease, FirmwareStatus } from '@/types';
 import { DeleteButton, FieldHint, InlineError, InlineForm, SectionHeader, StatusLine } from './section';
 
 interface FirmwareSectionProps {
@@ -19,6 +23,9 @@ interface FirmwareSectionProps {
 }
 
 const dateOf = (iso: string): string => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+
+/** Whole seconds since `iso`, by this browser's clock, as the tables age a report. */
+const secondsSince = (iso: string): number => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
 
 const parseOnly = (text: string): string[] =>
   text
@@ -51,6 +58,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
   const { state, reload } = useResource(getFirmwareStatus);
   const publish = useChange(onUnauthorised);
   const withdraw = useChange(onUnauthorised);
+  const widen = useChange(onUnauthorised);
   const [file, setFile] = useState<File | null>(null);
   const [only, setOnly] = useState('');
   const [status, setStatus] = useState<string | null>(null);
@@ -65,7 +73,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
     if (!result.ok) return;
     setStatus(
       targets.length > 0
-        ? `Published to ${targets.join(', ')}. Once they run it, publish the same file again with the box empty for every Device.`
+        ? `Published to ${targets.join(', ')}. Release to all opens once they have run it cleanly; it holds by itself if one of them fails it.`
         : 'Published to every Device. Boards on version 3 or later install it within a Report interval; older ones within the hour.',
     );
     setFile(null);
@@ -80,6 +88,14 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
       await reload();
     }
     return result;
+  };
+
+  const releaseToAll = async () => {
+    setStatus(null);
+    const result = await widen.run(() => widenFirmware());
+    if (!result.ok) return;
+    setStatus('Released to every Device. Boards on version 3 or later install it within a Report interval; older ones within the hour.');
+    await reload();
   };
 
   const summary = state.status === 'ready' ? firmwareSummary(state.data, dateOf) : null;
@@ -114,6 +130,10 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
         </div>
       )}
 
+      {state.status === 'ready' && state.data.release !== null && state.data.rollout !== null && (
+        <StagedRollout release={state.data.release} rollout={state.data.rollout} pending={widen.pending} error={widen.error} onReleaseToAll={releaseToAll} />
+      )}
+
       {state.status === 'ready' && state.data.devices.length > 0 && (
         <div className="overflow-x-auto rounded-lg border">
           <Table aria-label="What each Device last reported about itself">
@@ -121,6 +141,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
               <TableRow>
                 <TableHead>Device</TableHead>
                 <TableHead>Version</TableHead>
+                <TableHead>Sensor</TableHead>
                 <TableHead>WiFi signal</TableHead>
                 <TableHead>Up for</TableHead>
                 <TableHead>Free memory</TableHead>
@@ -138,6 +159,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
                     </span>
                   </TableCell>
                   <TableCell className="tabular-nums">{device.firmwareVersion ?? '—'}</TableCell>
+                  <TableCell>{device.info?.sensor ?? '—'}</TableCell>
                   <TableCell className="tabular-nums">{formatSignal(device.info?.rssi ?? null)}</TableCell>
                   <TableCell className="tabular-nums">{formatUptime(device.info?.uptimeSeconds ?? null)}</TableCell>
                   <TableCell className="tabular-nums">{formatHeap(device.info?.freeHeap ?? null)}</TableCell>
@@ -146,7 +168,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
                     {device.info?.updateResult ?? '—'}
                     {device.info !== null && (
                       <span className="block text-xs text-muted-foreground">
-                        as of {formatAge(Math.max(0, Math.floor((Date.now() - new Date(device.info.at).getTime()) / 1000)))}
+                        as of {formatAge(secondsSince(device.info.at))}
                       </span>
                     )}
                   </TableCell>
@@ -188,7 +210,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
           TemperatureAlarms.ino.bin.signed from the build, with FIRMWARE_VERSION raised in version.h. The server refuses an unsigned build or a lower version.
         </FieldHint>
         <p id="firmware-only-hint" className="sr-only">
-          Leave empty for every Device. Name one bench board first, then publish the same file again with this empty.
+          Leave empty for every Device. Name one bench board first; Release to all then offers the build to every Device once that board has run it cleanly.
         </p>
         <InlineError message={publish.error} />
         <div>
@@ -201,5 +223,102 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
 
       <StatusLine message={status} />
     </>
+  );
+}
+
+/** Online, or the Offline Condition, then any other the server sent (Sensor fault), as a Device card shows them. */
+function Health({ conditions }: { conditions: Condition[] | null }) {
+  if (conditions === null) return <span className="text-muted-foreground">Not registered</span>;
+  const offline = conditions.find((c) => c.name === 'Offline');
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {offline === undefined ? (
+        <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
+          <Wifi aria-hidden />
+          Online
+        </Badge>
+      ) : (
+        <Badge className={levelLook(offline.level).badge}>
+          <WifiOff aria-hidden />
+          Offline
+        </Badge>
+      )}
+      {conditions
+        .filter((c) => c.name !== 'Offline')
+        .map((condition) => (
+          <ConditionBadge key={condition.name} condition={condition} className="px-2 py-0.5 text-xs" />
+        ))}
+    </div>
+  );
+}
+
+interface StagedRolloutProps {
+  release: FirmwareRelease;
+  rollout: NonNullable<FirmwareStatus['rollout']>;
+  pending: boolean;
+  error: string | null;
+  onReleaseToAll: () => void;
+}
+
+/**
+ * A staged release's named Devices (docs/adr/0007): each one's version, last report, health, and
+ * clean Readings on the new version, with "Release to all" once every one has run it cleanly. A held
+ * release says why and which Device instead, and offers nothing more.
+ */
+function StagedRollout({ release, rollout, pending, error, onReleaseToAll }: StagedRolloutProps) {
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1 space-y-1 text-sm">
+          <h3 id="rollout-heading" className="font-medium">
+            Named Devices first
+          </h3>
+          {release.hold === null ? (
+            <p id="rollout-note" className="max-w-prose text-muted-foreground">
+              {rolloutNote(rollout, release.version)}
+            </p>
+          ) : (
+            <p className="flex max-w-prose items-start gap-2 text-destructive">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>
+                {holdSentence(release.hold, dateOf)} No other Device is offered it. Withdraw it, or publish a fixed build with a higher version.
+              </span>
+            </p>
+          )}
+        </div>
+        {release.hold === null && (
+          <Button type="button" variant="outline" size="sm" disabled={!rollout.ready || pending} aria-describedby="rollout-note" onClick={onReleaseToAll}>
+            {pending ? 'Releasing…' : 'Release to all'}
+          </Button>
+        )}
+      </div>
+      <InlineError message={error} />
+      <div className="overflow-x-auto rounded-lg border">
+        <Table aria-labelledby="rollout-heading">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Device</TableHead>
+              <TableHead>Version</TableHead>
+              <TableHead>Last report</TableHead>
+              <TableHead>Health</TableHead>
+              <TableHead>Clean Readings</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rollout.devices.map((device) => (
+              <TableRow key={device.hostname}>
+                <TableCell className="font-mono">{device.hostname}</TableCell>
+                <TableCell className="tabular-nums">{device.firmwareVersion ?? '—'}</TableCell>
+                <TableCell className="tabular-nums">{device.lastReportAt === null ? '—' : formatAge(secondsSince(device.lastReportAt))}</TableCell>
+                <TableCell>
+                  <Health conditions={device.conditions} />
+                </TableCell>
+                <TableCell className="tabular-nums">{cleanProgress(device, rollout.cleanReportsToWiden)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
   );
 }
