@@ -39,9 +39,9 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 | `install` | Creates `.env` from `.env.example` with `ADMIN_TOKEN`, `DEVICE_TOKEN`, `DB_PASSWORD`, and `DB_ROOT_PASSWORD` from a cryptographic random source, 64 hex characters each, asks for the port, the SMTP relay for [email notifications](#email-notifications) (blank for none), and, if you want, the thresholds and retention (`--web-port`, `--smtp-host` and the rest, `--set KEY=VALUE` without asking), and limits `.env` to its owner. An existing `.env` is kept: only empty secrets are filled, and nothing else changes without a yes (or `--reconfigure`) |
 | `deploy` | Runs `install` if there is no `.env`, offers `git pull --ff-only` on a clean checkout (`--pull` to do it unasked, `--no-pull` to skip), runs preflight, `docker compose up -d --build --wait`, then checks `/api/health` through `web`. This is also the upgrade. On an install from before `DB_ROOT_PASSWORD`, it first gives MySQL root a password of its own, once, behind the typed project name ([Separate MySQL root password](#separate-mysql-root-password)) |
 | `status`, `logs` | `docker compose ps` and the health check; recent logs (`--service api`, `--tail 500`, `--follow`) |
-| `backup` | `mysqldump` through the `db` container to `backups/<project>_<date>-<time>.sql.gz`, checked for completeness. `--keep-days N` then deletes this project's backups older than N days |
+| `backup` | `mysqldump` through the `db` container to `backups/<project>_<date>-<time>.sql.gz`, checked for completeness, then records its time, name, and size in the database (`last_backup`) for Settings, System, which cannot see cron or `backups/` (a warning, and the backup kept, if the api is from before that table). `--keep-days N` then deletes this project's backups older than N days |
 | `schedule-backup`, `unschedule-backup` | Adds a line to your crontab that runs `backup --keep-days 7` every night at 02:00 (`--at HH:MM`, `--keep-days N`), logging to `backups/backup.log`; or removes it. Repeating `schedule-backup` replaces its own line, found by a `# temperature-alarms backup: <checkout>` comment, and other crontab lines are never touched. Linux and macOS; in Git Bash or `deploy.ps1` on Windows it prints the `schtasks` command for Task Scheduler instead |
-| `restore` | Replaces the whole database with a backup (`--file`, or pick from a list): it empties the database first, so a table the backup lacks does not survive it, and the api's migrations recreate any newer table, empty. Asks you to type the project name, and backs up the current database first |
+| `restore` | Replaces the whole database with a backup (`--file`, or pick from a list): it empties the database first, so a table the backup lacks does not survive it, and the api's migrations recreate any newer table, empty. Asks you to type the project name, and backs up the current database first, recording that backup again once the api is back |
 | `migrate-legacy` | Backs up, then runs `npm run migrate:legacy` in `api` (see [Migrating an old database in](#migrating-an-old-database-in)) |
 | `info` | The dashboard URL, the four secrets (and `DEVICE_TOKEN_PREVIOUS` during a rotation) masked (`--reveal` to print them), the email relay and recipients (or `off`) with the SMTP login, its password masked whole, and the two `config.h` lines for the firmware |
 | `rotate-device-token` | Starts a Device token rotation: the current token becomes `DEVICE_TOKEN_PREVIOUS`, still accepted, a new `DEVICE_TOKEN` is generated, `api` restarts with both, and the new `config.h` line is printed (masked unless `--reveal`). `--finish` ends it once Settings lists no Device on the previous token, and refuses otherwise; `--finish --force` ends it anyway, behind the typed project name ([Rotating the Device token](#rotating-the-device-token)) |
@@ -50,7 +50,7 @@ The two scripts are the same tool, with the same actions and the same flags; `--
 
 Running `deploy` twice is safe: an unchanged checkout leaves the containers running, and a changed one rebuilds and recreates only what changed. The destructive actions take `--confirm <project>` in place of typing the name, so they can be scripted too. The database volume is named after the Compose project, `<project>_db-data`, and the project is Compose's own default, the checkout's folder name. On first install the script writes that name into `.env` as `COMPOSE_PROJECT_NAME`, so renaming or moving the folder later still finds the same volume; it never rewrites the line. Pass `-p` only for a second stack on the same machine, and never to an existing install. An install made by hand before the script has no such line and keeps using the folder name; see [Docker Compose by hand](#docker-compose-by-hand) to pin it.
 
-For a nightly backup, `deploy/deploy.sh schedule-backup` writes the crontab line for you. Backups stay on the server, so copy `backups/` somewhere else too.
+For a nightly backup, `deploy/deploy.sh schedule-backup` writes the crontab line for you. Backups stay on the server, so copy `backups/` somewhere else too. Settings, System shows how old the last backup is and says to run one once it is over two days old, so a nightly backup that stopped shows there.
 
 ### Many servers from one machine
 
@@ -257,7 +257,10 @@ cd /path/to/temperature-alarms || exit 1
 umask 077
 DIR=/var/backups/temperature-alarms
 mkdir -p "$DIR"
-docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction temperature_alarms' | gzip > "$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+F="$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction temperature_alarms' | gzip > "$F"
+# Tells Settings, System when (deploy.sh backup does this itself).
+echo "REPLACE INTO last_backup (id, finished_at, file) VALUES (1, UTC_TIMESTAMP(), '$(basename "$F")');" | docker compose exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms'
 find "$DIR" -name 'backup_*.sql.gz' -mtime +7 -delete
 EOS
 sudo chmod +x /usr/local/bin/backup-temperature-db.sh
@@ -740,7 +743,10 @@ sudo tee /usr/local/bin/backup-temperature-db.sh >/dev/null <<'EOS'
 #!/bin/bash
 DIR=/var/backups/temperature-alarms
 mkdir -p "$DIR"
-mysqldump --defaults-extra-file=/root/.my.cnf temperature_alarms | gzip > "$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+F="$DIR/backup_$(date +%Y%m%d_%H%M%S).sql.gz"
+mysqldump --defaults-extra-file=/root/.my.cnf temperature_alarms | gzip > "$F"
+# Tells Settings, System when.
+mysql --defaults-extra-file=/root/.my.cnf temperature_alarms -e "REPLACE INTO last_backup (id, finished_at, file) VALUES (1, UTC_TIMESTAMP(), '$(basename "$F")')"
 find "$DIR" -name 'backup_*.sql.gz' -mtime +7 -delete
 EOS
 sudo chmod +x /usr/local/bin/backup-temperature-db.sh

@@ -364,3 +364,39 @@ export interface TestEmailResult {
   /** The relay's final reply, e.g. `250 2.0.0 OK`. */
   response: string;
 }
+
+/** A line of Settings, System, as the server decided it: fine, a feature not set up, or something to act on. */
+export type CheckStatus = 'ok' | 'off' | 'attention';
+
+/** A Device as a System line names it. */
+interface SystemDevice {
+  id: number;
+  hostname: string;
+  closet: string;
+  campus: Campus;
+}
+
+/** GET /api/system (Admin token): whether the system itself is OK, line by line, with the thresholds it was judged against. */
+export interface SystemHealth {
+  /** The server's clock when it looked: ages on the page are counted from it. */
+  checkedAt: string;
+  /** `storing` is false while the latest Reading could not be written. */
+  database: { status: CheckStatus; sizeBytes: number; storing: boolean };
+  /** Null figures, and why, when the disk could not be measured. */
+  disk: { status: CheckStatus; freeBytes: number | null; totalBytes: number | null; minFreePercent: number; error: string | null };
+  /** From the marker `deploy backup` writes; all null when none is recorded. */
+  backup: { status: CheckStatus; at: string | null; file: string | null; sizeBytes: number | null; maxAgeDays: number };
+  notifications: Pick<NotificationStatus, 'enabled' | 'lastSent' | 'lastFailure' | 'pending' | 'failed'> & { status: CheckStatus };
+  /** How many installed Devices the release is offered to, how many of them run it, and those that checked and still run an older build. */
+  firmware: {
+    status: CheckStatus;
+    release: Pick<FirmwareRelease, 'version' | 'publishedAt' | 'only'> | null;
+    offered: number;
+    current: number;
+    behind: Array<SystemDevice & { firmwareVersion: number | null }>;
+  };
+  /** Installed Devices whose signal has been under `belowDbm` for `forHours` or more. */
+  wifi: { status: CheckStatus; belowDbm: number; forHours: number; weak: Array<SystemDevice & { rssi: number; since: string }> };
+  /** `version` is the commit the server was built from, null when it was built by hand. */
+  server: { status: CheckStatus; version: string | null; startedAt: string; uptimeSeconds: number };
+}

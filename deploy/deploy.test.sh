@@ -65,6 +65,8 @@ cp "$here/../compose.yaml" "$here/../.env.example" "$repo/"
 cat > "$bin/docker" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_DIR:?}/docker.log"
+# What a build would bake into api's image (backend/Dockerfile).
+case "$*" in *" build "*|*" up "*--build*) printf 'APP_VERSION=%s\n' "${APP_VERSION:-}" >> "$FAKE_DIR/build.env" ;; esac
 case "$*" in
   "compose version --short") echo "2.30.0"; exit 0 ;;
   "info --format {{.OSType}}") echo "linux"; exit 0 ;;
@@ -88,7 +90,7 @@ run_fake() { (cd "$repo" && PATH="$bin:$PATH" bash deploy/deploy.sh "$@" --yes 2
 renv() { grep -E "^$1=" "$repo/.env" | tail -n 1 | cut -d= -f2-; }
 set_env() { sed -i "s/^$1=.*/$1=$2/" "$repo/.env"; }
 hex64() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'; }
-reset_fake() { rm -f "$work/docker.log" "$work/db.stdin" "$work/rotation.out" "$work/rotation.rc" "$work/db.rc" "$work/volumes"; }
+reset_fake() { rm -f "$work/docker.log" "$work/db.stdin" "$work/rotation.out" "$work/rotation.rc" "$work/db.rc" "$work/volumes" "$work/build.env"; }
 
 # install: four secrets from the CSPRNG, all different; info masks every one of them.
 reset_fake
@@ -254,7 +256,7 @@ out=$(run_fake install) || fail "legacy install: exit $?: $out"
 [ -z "$(renv DB_ROOT_PASSWORD)" ] || fail "legacy install: generated a DB_ROOT_PASSWORD the volume does not have"
 out=$(run_fake backup) || fail "legacy backup: exit $?: $out"
 printf '%s' "$out" | grep -q 'still shares DB_PASSWORD' || fail "legacy backup: no warning: $out"
-rm -rf "$repo/backups"
+rm -rf "$repo/backups" "$work/db.stdin"
 out=$(run_fake deploy --no-pull) && fail "legacy deploy without --confirm: exit 0"
 printf '%s' "$out" | grep -qF "DROP USER IF EXISTS 'root'@'%'" || fail "legacy deploy: no explanation: $out"
 [ -z "$(renv DB_ROOT_PASSWORD)" ] || fail "legacy deploy without --confirm: .env changed"
@@ -276,6 +278,53 @@ reset_fake; echo ta-test_db-data > "$work/volumes"
 out=$(run_fake deploy --no-pull) || fail "deploy after the move: exit $?: $out"
 [ -e "$work/db.stdin" ] && fail "deploy after the move: ran SQL again"
 [ "$(renv DB_ROOT_PASSWORD)" = "$root" ] || fail "deploy after the move: DB_ROOT_PASSWORD changed"
+
+# backup: once the dump is complete, its time, name and size go to api's database for Settings,
+# System (last_backup), as root inside db with the SQL on stdin. A refusal (an api without the
+# table yet) warns and keeps the backup.
+reset_fake; rm -rf "$repo/backups"
+out=$(run_fake backup) || fail "backup: exit $?: $out"
+file=$(ls "$repo"/backups/*.sql.gz 2>/dev/null | head -n 1)
+[ -n "$file" ] || fail "backup: no file"
+# Everything mysql was given: one statement, on one line.
+mark=$(grep -v '^--- ' "$work/db.stdin" 2>/dev/null)
+[ "$(printf '%s\n' "$mark" | grep -c .)" = 1 ] || fail "backup: more than the one statement sent: $mark"
+printf '%s' "$mark" | grep -Eq "^REPLACE INTO last_backup \(id, finished_at, file, size_bytes\) VALUES \(1, '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}', '$(basename "$file")', $(wc -c < "$file" | tr -cd '0-9')\);$" \
+  || fail "backup: not recorded for Settings, System: ${mark:-nothing reached db}"
+# shellcheck disable=SC2016 # the literal command line the fake logged
+grep -qF -- '--- compose exec -T db sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms' "$work/db.stdin" || fail "backup: the record did not go to mysql as root in db"
+printf '%s' "$out" | grep -q 'recorded as the last backup' || fail "backup: the record not reported: $out"
+reset_fake; rm -rf "$repo/backups"; echo 1 > "$work/db.rc"
+out=$(run_fake backup) || fail "backup with the record refused: exit $?: $out"
+printf '%s' "$out" | grep -q 'the backup is kept, but Settings, System could not be told' || fail "backup with the record refused: no warning: $out"
+[ "$(find "$repo/backups" -name '*.sql.gz' | wc -l)" -eq 1 ] || fail "backup with the record refused: the backup was not kept"
+
+# restore: the restored database holds only the records from before its dump, so once api is back
+# (its migrations run), the backup made just before the restore is recorded again.
+reset_fake; rm -rf "$repo/backups"
+printf -- '-- an older dump\n-- Dump completed\n' | gzip > "$work/older.sql.gz"
+out=$(run_fake restore --file "$work/older.sql.gz" --confirm ta-test < /dev/null) || fail "restore: exit $?: $out"
+saved=$(basename "$(find "$repo/backups" -name '*.sql.gz' | head -n 1)")
+[ "$(grep -c "^REPLACE INTO last_backup .*'$saved'" "$work/db.stdin")" = 2 ] && [ "$(grep -c '^REPLACE' "$work/db.stdin")" = 2 ] || fail "restore: the backup before it is not recorded again: $(grep -c REPLACE "$work/db.stdin") records"
+grep '^REPLACE INTO last_backup' "$work/db.stdin" | grep -q older && fail "restore: the restored file recorded as a backup"
+# shellcheck disable=SC2016 # the literal command line the fake logged
+mysql_line='exec -T db sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms$'
+[ "$(grep -n 'up -d --wait api' "$work/docker.log" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n -- "$mysql_line" "$work/docker.log" | tail -n 1 | cut -d: -f1)" ] \
+  || fail "restore: recorded before api came back"
+
+# deploy: api's image is built with the checkout's commit and date as APP_VERSION, passed by
+# compose.yaml as a build argument; outside a git checkout it is empty.
+grep -qE '^        APP_VERSION: \$\{APP_VERSION:-\}$' "$repo/compose.yaml" || fail "compose.yaml: api's build does not get APP_VERSION"
+{ grep -qE '^ARG APP_VERSION=$' "$here/../backend/Dockerfile" && grep -qE '^ENV APP_VERSION=\$APP_VERSION$' "$here/../backend/Dockerfile"; } || fail "backend/Dockerfile: APP_VERSION is not baked in"
+reset_fake
+run_fake deploy --no-pull > /dev/null || fail "deploy outside git: exit $?"
+[ "$(sort -u "$work/build.env")" = "APP_VERSION=" ] || fail "deploy outside git: built with $(sort -u "$work/build.env")"
+git -C "$repo" init -q && git -C "$repo" add deploy compose.yaml && git -C "$repo" -c user.name=t -c user.email=t@example.org commit -qm 'a commit'
+version=$(git -C "$repo" log -1 --format='%h %cd' --date=short)
+reset_fake
+run_fake deploy --no-pull > /dev/null || fail "deploy: exit $?"
+[ "$(sort -u "$work/build.env")" = "APP_VERSION=$version" ] || fail "deploy: built with $(sort -u "$work/build.env"), not APP_VERSION=$version"
+rm -rf "$repo/.git"
 
 # publish-firmware: the image reaches api as base64 on stdin, never as a file path or an argument;
 # --only is passed through and checked; status and withdraw call the same tool.

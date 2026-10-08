@@ -32,7 +32,7 @@ Never ask for the SMTP password in the chat, and never put it on a command line:
    | set up this new server | `bootstrap --yes`, then `deploy --yes --web-port PORT`; on servers, one call does both: `deploy --bootstrap --yes --web-port PORT --host USER@HOST`. On this machine, the deploy needs a new login after bootstrap adds the docker group: run it under the new group with `sg docker -c 'deploy/deploy.sh deploy --yes --web-port PORT'`, and tell the operator to log out and back in before using docker themselves |
    | deploy, install | `deploy --yes --web-port PORT`, plus `--set KEY=VALUE` for any threshold they named |
    | upgrade, update | `deploy --yes --pull` (a remote deploy pulls by default) |
-   | back up the database | `backup --yes` |
+   | back up the database | `backup --yes` (it also records the backup for Settings, System; a warning there, with the backup kept, means the api predates that, and `deploy` fixes it) |
    | back up nightly | `schedule-backup --yes`, plus `--at HH:MM` and `--keep-days N` if they named them (02:00 and 7 by default); `unschedule-backup --yes` stops it. On Windows it prints a `schtasks` line instead: give it to the operator |
    | restore | `restore --file backups/NAME.sql.gz --yes --confirm PROJECT` |
    | status, logs | `status --yes`; `logs --yes --service api --tail 200` |

@@ -75,7 +75,8 @@ With no action at a console, shows a menu. Actions:
                      check /api/health through web. Also the upgrade. Safe to repeat.
   status             Containers and the health check
   logs               Recent logs (--follow, --service api|web|db, --tail N)
-  backup             mysqldump to backups\<project>_<time>.sql.gz
+  backup             mysqldump to backups\<project>_<time>.sql.gz; records when in the database,
+                     for Settings, System
   bootstrap          Linux servers only (--host): Docker Engine, Compose, git, and cron from
                      the distribution's Docker repository; see deploy.sh --help
   schedule-backup    Linux and macOS servers (--host): nightly backup from cron (--at HH:MM,
@@ -853,6 +854,14 @@ function Get-SiteUrl {
     return "http://${h}:$port/"
 }
 
+# The commit this checkout is at and its date, which backend/Dockerfile bakes into api's image as
+# APP_VERSION for Settings, System. Empty outside a git checkout.
+function Get-AppVersion {
+    $version = & git -C $RepoDir log -1 '--format=%h %cd' --date=short 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $version) { return '' }
+    return "$version".Trim()
+}
+
 function Invoke-Deploy {
     if (-not (Test-Path -LiteralPath $EnvPath)) { Invoke-Install }
     Invoke-MigrateRootPassword
@@ -860,6 +869,8 @@ function Invoke-Deploy {
     Assert-Secrets
     Invoke-MaybePull
     if (-not (Invoke-Preflight)) { Fail 'preflight failed; fix the [FAIL] lines above' }
+    # After the pull, so the version is the code being built.
+    $env:APP_VERSION = Get-AppVersion
     # A plain `up --build` reuses whatever node and nginx base images are cached, so a server
     # would never get their security patches; --pull checks for newer ones on every deploy.
     Step 'Build with fresh base images (docker compose build --pull)'
@@ -912,6 +923,26 @@ function Invoke-Backup {
     if ($copied -ne 0 -or -not (Test-Path -LiteralPath $file)) { Fail 'could not copy the dump out of the db container' }
     Ok "backups\$name ($([int]((Get-Item -LiteralPath $file).Length / 1KB)) KB)"
     $script:LastBackup = $file
+    $script:LastBackupAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
+    Write-BackupRecord
+}
+
+# Tells api when the last backup finished, for Settings, System: api sees neither Task Scheduler
+# nor backups\, so the marker is a row in its database (last_backup, migration 0018). A failure
+# warns and keeps the backup: an api from before 0018 has no such table yet.
+function Write-BackupRecord {
+    # deploy's own name (project, time, .sql.gz); anything else is dropped, so the SQL needs no quoting.
+    $name = [IO.Path]::GetFileName($script:LastBackup) -replace '[^A-Za-z0-9._-]', ''
+    $bytes = 'NULL'
+    if (Test-Path -LiteralPath $script:LastBackup) { $bytes = [string](Get-Item -LiteralPath $script:LastBackup).Length }
+    $sql = "REPLACE INTO last_backup (id, finished_at, file, size_bytes) VALUES (1, '$($script:LastBackupAt)', '$name', $bytes);"
+    # One line on stdin, with the CR PowerShell adds removed.
+    $out = $sql | Invoke-DcStdin exec -T db sh -c "tr -d '\r' | MYSQL_PWD=`$MYSQL_ROOT_PASSWORD mysql -uroot $DbName" 2>&1 | Out-String
+    if ($LASTEXITCODE -eq 0) { Ok 'recorded as the last backup for Settings, System' }
+    else {
+        $why = $out.Trim(); if (-not $why) { $why = 'no answer from db' }
+        Warn "the backup is kept, but Settings, System could not be told ($why); deploy.ps1 deploy brings api up to date"
+    }
 }
 
 function Select-Backup {
@@ -962,6 +993,8 @@ function Invoke-Restore {
     Ok "restored $($O.File)"
     Invoke-Dc up -d --wait api
     if ($LASTEXITCODE -ne 0) { Fail 'api did not come back healthy; see: deploy.ps1 logs --service api' }
+    # The restored database knows only the backups before its own; the one just made is the latest.
+    Write-BackupRecord
     if (-not (Test-Health 30)) { Fail 'unhealthy after the restore' }
 }
 
@@ -1186,6 +1219,7 @@ function Invoke-Demo {
     if (Test-Path -LiteralPath $EnvPath) { Ok '.env.demo exists; keeping its secrets' } else { New-DemoEnv }
     Set-FlagsInEnv
     if (-not (Invoke-Preflight)) { Fail 'preflight failed; fix the [FAIL] lines above' }
+    $env:APP_VERSION = Get-AppVersion
     Step "Build and start the demo (project $DemoProject)"
     Invoke-Dc up -d --build --remove-orphans --wait --wait-timeout 600
     if ($LASTEXITCODE -ne 0) {

@@ -55,7 +55,7 @@ finally { Remove-Item -LiteralPath $EnvPath -ErrorAction SilentlyContinue }
 # and answers what the action asks. Nothing reaches a real daemon.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "deploy-test-$PID"
 New-Item -ItemType Directory -Path $work -Force | Out-Null
-$fake = @{ Log = @(); DbStdin = @(); FwStdin = @(); FwRc = 0; RotationOut = @(); RotationRc = 0; DbRc = 0; Volume = $false }
+$fake = @{ Log = @(); DbStdin = @(); FwStdin = @(); FwRc = 0; RotationOut = @(); RotationRc = 0; DbRc = 0; Volume = $false; RealBackup = $false; Built = @() }
 $run = {
     param([string[]]$Arguments)
     $script:ast = $ast
@@ -69,6 +69,11 @@ $run = {
     function Invoke-Dc {
         $line = "$args"; $fake.Log += $line
         $global:LASTEXITCODE = 0
+        # What a build would bake into api's image (backend/Dockerfile).
+        if ($line -like 'build*' -or $line -like 'up*--build*') { $fake.Built += @("APP_VERSION=$env:APP_VERSION") }
+        # The dump is made in db and copied out: the copy lands as a small file.
+        if ($line -like 'exec -T db sh -c*mysqldump*') { return }
+        if ($line -like 'cp db:*') { Set-Content -LiteralPath $args[2] -Value '-- Dump completed'; return }
         if ($line -like 'exec -T api node dist/firmwareCli.js*') { $fake.FwStdin += @($input | ForEach-Object { "$_" }); $global:LASTEXITCODE = $fake.FwRc; return }
         if ($line -like 'exec -T api node -e*') { $fake.RotationOut; $global:LASTEXITCODE = $fake.RotationRc; return }
         if ($line -like 'exec -T db sh -c*') { $fake.DbStdin += @($input | ForEach-Object { "$_" }); $global:LASTEXITCODE = $fake.DbRc; return }
@@ -80,7 +85,7 @@ $run = {
     function Test-DbVolume { return $fake.Volume }
     function Invoke-Preflight { return $true }
     function Invoke-MaybePull { }
-    function Invoke-Backup { $fake.Log += 'backup'; $script:LastBackup = 'backups\ta-test.sql.gz' }
+    if (-not $fake.RealBackup) { function Invoke-Backup { $fake.Log += 'backup'; $script:LastBackup = 'backups\ta-test.sql.gz' } }
     function Write-Host { $fake.Out += @("$args") }
     # Stdin is [Console]::In, which Invoke-FakeStdin points at a string; never the test's own console.
     function Test-StdinRedirected { return $true }
@@ -260,6 +265,55 @@ try {
     Expect ($fake.DbStdin.Count -eq 0) $true 'deploy after the move: ran SQL again'
     Expect ((EnvOf 'DB_ROOT_PASSWORD') -eq $root) $true 'deploy after the move: DB_ROOT_PASSWORD changed'
 
+    # backup: once the dump is copied out, its time, name and size go to api's database for Settings,
+    # System (last_backup), as root inside db with the SQL on stdin. A refusal (an api without the
+    # table yet) warns and keeps the backup.
+    $fake.RealBackup = $true
+    $backups = Join-Path $work 'backups'
+    Remove-Item -LiteralPath $backups -Recurse -Force -ErrorAction SilentlyContinue
+    Expect (Invoke-Fake @('backup')) $true "backup failed: $(& $said)"
+    $file = @(Get-ChildItem -LiteralPath $backups -Filter '*.sql.gz')[0]
+    $mark = @($fake.DbStdin | Where-Object { $_ -like 'REPLACE INTO last_backup*' })
+    Expect ($mark.Count -eq 1 -and $mark[0] -cmatch "\AREPLACE INTO last_backup \(id, finished_at, file, size_bytes\) VALUES \(1, '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d', '$([regex]::Escape($file.Name))', $($file.Length)\);\z") $true "backup: not recorded for Settings, System: $mark"
+    Expect (@($fake.Log | Where-Object { $_ -like 'exec -T db sh -c*mysql -uroot temperature_alarms' }).Count -eq 1) $true 'backup: the record did not go to mysql as root in db'
+    Expect ((& $said) -match 'recorded as the last backup') $true 'backup: the record not reported'
+    Remove-Item -LiteralPath $backups -Recurse -Force
+    $fake.DbRc = 1
+    Expect (Invoke-Fake @('backup')) $true "backup with the record refused failed: $(& $said)"
+    Expect ((& $said) -match 'the backup is kept, but Settings, System could not be told') $true 'backup with the record refused: no warning'
+    Expect (@(Get-ChildItem -LiteralPath $backups -Filter '*.sql.gz').Count -eq 1) $true 'backup with the record refused: the backup was not kept'
+    $fake.DbRc = 0
+
+    # restore: the restored database holds only the records from before its dump, so once api is back
+    # (its migrations run), the backup made just before the restore is recorded again.
+    Remove-Item -LiteralPath $backups -Recurse -Force
+    $older = Join-Path $work 'older.sql.gz'
+    Set-Content -LiteralPath $older -Value 'an older dump'
+    Expect (Invoke-Fake @('restore', '--file', $older, '--confirm', 'ta-test')) $true "restore failed: $(& $said)"
+    $saved = @(Get-ChildItem -LiteralPath $backups -Filter '*.sql.gz')[0].Name
+    Expect (@($fake.DbStdin | Where-Object { $_ -like "REPLACE INTO last_backup*'$saved'*" }).Count -eq 2) $true 'restore: the backup before it is not recorded again'
+    Expect (@($fake.DbStdin | Where-Object { $_ -like 'REPLACE INTO last_backup*older*' }).Count -eq 0) $true 'restore: the restored file recorded as a backup'
+    $up = [array]::LastIndexOf([string[]]$fake.Log, 'up -d --wait api')
+    $recorded = -1
+    for ($i = 0; $i -lt $fake.Log.Count; $i++) { if ($fake.Log[$i] -like 'exec -T db sh -c tr -d*mysql -uroot temperature_alarms') { $recorded = $i } }
+    Expect ($up -ge 0 -and $recorded -gt $up) $true 'restore: recorded before api came back'
+    $fake.RealBackup = $false
+
+    # deploy: api's image is built with the checkout's commit and date as APP_VERSION, passed by
+    # compose.yaml as a build argument; outside a git checkout it is empty.
+    $compose = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\compose.yaml')
+    Expect (@($compose | Where-Object { $_ -ceq '        APP_VERSION: ${APP_VERSION:-}' }).Count -eq 1) $true "compose.yaml: api's build does not get APP_VERSION"
+    $fake.Built = @()
+    Expect (Invoke-Fake @('deploy', '--no-pull')) $true "deploy outside git failed: $(& $said)"
+    Expect ((@($fake.Built | Sort-Object -Unique) -join ',') -eq 'APP_VERSION=') $true "deploy outside git: built with $($fake.Built -join ',')"
+    & git -C $work init -q
+    & git -C $work -c user.name=t -c user.email=t@example.org commit -q --allow-empty -m 'a commit'
+    $version = & git -C $work log -1 '--format=%h %cd' --date=short
+    $fake.Built = @()
+    Expect (Invoke-Fake @('deploy', '--no-pull')) $true "deploy failed: $(& $said)"
+    Expect ((@($fake.Built | Sort-Object -Unique) -join ',') -eq "APP_VERSION=$version") $true "deploy: built with $($fake.Built -join ','), not APP_VERSION=$version"
+    Remove-Item -LiteralPath (Join-Path $work '.git') -Recurse -Force
+
     # publish-firmware: the image reaches api as base64 on stdin; --only is passed through and checked.
     $bin = Join-Path $work 'fw.bin.signed'
     $bytes = New-Object byte[] 4096; (New-Object Random 7).NextBytes($bytes); [IO.File]::WriteAllBytes($bin, $bytes)
@@ -281,6 +335,7 @@ try {
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:APP_VERSION -ErrorAction SilentlyContinue
 }
 
 if ($fails -eq 0) { Write-Output 'deploy.test.ps1: all passed' } else { Write-Output "deploy.test.ps1: $fails failed"; exit 1 }
