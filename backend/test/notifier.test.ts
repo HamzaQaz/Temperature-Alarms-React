@@ -5,6 +5,7 @@ import { createTestPool, resetDatabase, testDatabaseConfig } from './helpers/dat
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, asAdmin, json, type Campus, type Device, type RecordedReading } from './helpers/api';
 import { startTestRelay, type TestRelay } from './helpers/smtp';
+import { createGate, settlesWithin } from './helpers/gate';
 import { createPool } from '../src/db';
 import type { Config, NotificationsConfig } from '../src/config';
 import { createListening, type Listening } from '../src/listening';
@@ -368,8 +369,38 @@ describe('email notifications: the outbox and the sender (docs/adr/0008)', () =>
       try {
         for (let i = 0; i < 50 && relay.received.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
       } finally {
-        notifier.stop();
+        await notifier.stop();
       }
+      assert.equal(relay.received.length, 1);
+    });
+
+    test('stop waits for a send in flight, which marks its rows sent, so the next process does not send them again', async () => {
+      await registerDevice();
+      await postReading(85);
+      assert.ok(mailer !== undefined);
+      const relayMailer = mailer;
+      const gate = createGate();
+      const slow: Mailer = {
+        send: async (email) => {
+          await gate.wait();
+          return relayMailer.send(email);
+        },
+      };
+      const notifier = startNotifier({ pool, config, mailer: slow }, { intervalMs: 50, timeZone: 'UTC' });
+
+      await gate.reached;
+      const stopped = notifier.stop();
+      try {
+        assert.equal(await settlesWithin(stopped, 150), false, 'stop waits for the send');
+      } finally {
+        // Otherwise the held claim's row locks would block every later test's reset.
+        gate.open();
+      }
+      await stopped;
+      assert.equal(relay.received.length, 1);
+      const [row] = await outbox();
+      assert.notEqual(row.sentAt, null, 'marked sent before the stop resolved');
+      assert.equal(await pass(), 0, 'nothing left to send again');
       assert.equal(relay.received.length, 1);
     });
   });

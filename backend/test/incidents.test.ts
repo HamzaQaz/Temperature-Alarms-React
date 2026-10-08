@@ -7,6 +7,7 @@ import { createListening } from '../src/listening';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, asAdmin, errorOf, json, type Incident, type RecordedReading } from './helpers/api';
 import { subscribe, type SseClient } from './helpers/sse';
+import { createGate, gatedPool, settlesWithin } from './helpers/gate';
 import { createBroadcaster, type IncidentEvent } from '../src/sse';
 import { runOfflineSweep, startOfflineSweep } from '../src/offlineSweep';
 import { insertIncident } from '../src/incidentStore';
@@ -246,8 +247,30 @@ describe('incidents', () => {
         await new Promise((resolve) => setTimeout(resolve, 600));
         assert.equal((await only()).condition, 'Offline', 'the first pass, one interval in');
       } finally {
-        job.stop();
+        await job.stop();
       }
+    });
+
+    test('stop waits for the pass in flight, which opens its incident, and no pass starts after', async () => {
+      const device = await registerDevice();
+      await readingAt(device.id, new Date(Date.now() - 5 * MINUTE));
+      const gate = createGate();
+      const statements: string[] = [];
+      const job = startOfflineSweep({ pool: gatedPool(pool, gate, statements), config: testConfig(), sse }, { intervalMs: 50 });
+
+      await gate.reached;
+      const stopped = job.stop();
+      try {
+        assert.equal(await settlesWithin(stopped, 150), false, 'stop waits for the pass');
+      } finally {
+        gate.open();
+      }
+      await stopped;
+      assert.equal((await only()).condition, 'Offline', 'the pass finished');
+      const passes = statements.filter((sql) => sql === 'SELECT 1').length;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      assert.equal(statements.filter((sql) => sql === 'SELECT 1').length, passes, 'no pass after the stop');
+      assert.equal(passes, 1, 'ticks during the held pass were skipped');
     });
 
     describe('the server\'s own downtime (resilience.md S2)', () => {

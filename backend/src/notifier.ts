@@ -40,8 +40,11 @@ export interface NotifierOptions {
 }
 
 export interface Notifier {
-  /** Stop the schedule. A pass already in flight finishes. */
-  stop(): void;
+  /**
+   * Stop the schedule; resolves once a pass in flight has finished, so an email the relay took is
+   * marked sent rather than rolled back and sent again by the next process.
+   */
+  stop(): Promise<void>;
 }
 
 type NotifierDeps = Pick<AppDeps, 'pool' | 'config' | 'now'> & { mailer: Mailer };
@@ -179,16 +182,20 @@ export async function runNotifierPass({ pool, config, mailer, now = () => new Da
 export function startNotifier(deps: NotifierDeps, options: NotifierOptions = {}): Notifier {
   const { intervalMs = DEFAULT_INTERVAL_MS, onError = (error) => console.error('notifications: send failed, will retry:', error instanceof Error ? error.message : error) } =
     options;
-  let inFlight = false;
+  let inFlight: Promise<unknown> | undefined;
   const timer = setInterval(() => {
-    if (inFlight) return;
-    inFlight = true;
-    runNotifierPass(deps, options)
+    if (inFlight !== undefined) return;
+    inFlight = runNotifierPass(deps, options)
       .catch(onError)
       .finally(() => {
-        inFlight = false;
+        inFlight = undefined;
       });
   }, intervalMs);
   timer.unref();
-  return { stop: () => clearInterval(timer) };
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }

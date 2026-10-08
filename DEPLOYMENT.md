@@ -581,7 +581,7 @@ sudo cp -r dist/* /path/to/frontend/dist/
 
 ### 4. PM2
 
-The backend must run as exactly one process (see ADR 0001). `backend/ecosystem.config.js` is already set to a single fork-mode instance; do not raise `instances`.
+The backend must run as exactly one process (see ADR 0001). `backend/ecosystem.config.js` is already set to a single fork-mode instance; do not raise `instances`. It also gives a stop 10 seconds, as Docker does, so `pm2 restart` lets the backend finish what it is doing (`backend/src/shutdown.ts`).
 
 ```bash
 cd /var/www/temperature-alarms/backend

@@ -29,6 +29,8 @@ export interface AppDeps {
   sightings?: DeviceSightings;
   /** How email leaves the server. createApp makes the SMTP one when notifications are on; tests may pass their own. */
   mailer?: Mailer;
+  /** True once the process has begun to stop (shutdown.ts); health then answers 503. Never, without one. */
+  stopping?: () => boolean;
 }
 
 /** AppDeps once createApp has filled in what the routes need. */
