@@ -142,8 +142,10 @@ export async function dropStaleReminders(db: Db, ids: number[]): Promise<number[
 
 /** How sending goes, as Settings shows it. */
 export interface OutboxStatus {
-  /** Waiting to be sent, retries included. */
+  /** Waiting to be sent, retries and those quiet hours hold included. */
   pending: number;
+  /** Of those, the warnings quiet hours hold, and when the last of them goes; null when none are held. */
+  held: { count: number; until: Date } | null;
   /** Given up on after a day of retries, within the last NOTIFICATION_KEEP_DAYS. */
   failed: number;
   /** The last email the relay took, and its subject. */
@@ -160,6 +162,11 @@ export type ListResult = { at: Date; sent: true; subject: string } | { at: Date;
 interface CountsRow extends RowDataPacket {
   pending: number | string | null;
   failed: number | string | null;
+}
+
+interface HeldRow extends RowDataPacket {
+  count: number | string;
+  until: Date | null;
 }
 
 interface SentRow extends RowDataPacket {
@@ -184,10 +191,15 @@ interface TryRow extends RowDataPacket {
 
 const givenUp = (error: string, failedAt: Date | null): string => (failedAt === null ? error : `Given up after a day of retries: ${error}`);
 
-/** What the outbox says about sending: read from its rows, so a restart keeps it. */
-export async function outboxStatus(db: Db): Promise<OutboxStatus> {
+/** What the outbox says about sending at `now`: read from its rows, so a restart keeps it. */
+export async function outboxStatus(db: Db, now: Date = new Date()): Promise<OutboxStatus> {
   const [[counts]] = await db.query<CountsRow[]>(
     'SELECT SUM(sent_at IS NULL AND failed_at IS NULL) AS pending, SUM(failed_at IS NOT NULL) AS failed FROM notifications',
+  );
+  // Held: quiet hours have not yet let them go the first time. One they held again after a failed try counts as pending.
+  const [[held]] = await db.query<HeldRow[]>(
+    'SELECT COUNT(*) AS count, MAX(not_before) AS until FROM notifications WHERE sent_at IS NULL AND failed_at IS NULL AND not_before > ?',
+    [now],
   );
   const [sent] = await db.query<SentRow[]>(
     'SELECT sent_at AS at, subject FROM notifications WHERE sent_at IS NOT NULL ORDER BY sent_at DESC, id DESC LIMIT 1',
@@ -213,6 +225,7 @@ export async function outboxStatus(db: Db): Promise<OutboxStatus> {
   }
   return {
     pending: Number(counts.pending ?? 0),
+    held: held.until === null || Number(held.count) === 0 ? null : { count: Number(held.count), until: held.until },
     failed: Number(counts.failed ?? 0),
     lastSent: sent[0] === undefined ? null : { at: sent[0].at, subject: sent[0].subject },
     lastFailure: failure === undefined ? null : { at: failure.at, error: givenUp(failure.error, failure.failedAt) },

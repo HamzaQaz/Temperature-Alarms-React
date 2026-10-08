@@ -364,10 +364,20 @@ export interface NotificationStatus {
   lists: RecipientList[];
   /** Whether a report on last month goes out on the 1st of each month (NOTIFY_MONTHLY_REPORT). */
   monthlyReport: boolean;
+  /**
+   * When warning emails wait, on the server's clock: the daily window as `18:00-07:00`
+   * (NOTIFY_QUIET_HOURS, null for none) and whether weekends are quiet (NOTIFY_QUIET_WEEKENDS).
+   * Null while notifications are off.
+   */
+  quietHours: { hours: string | null; weekends: boolean } | null;
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
-  /** Notifications waiting to be sent, retries included. */
+  /** Notifications waiting to be sent, retries and those quiet hours hold included. */
   pending: number;
+  /** Of `pending`, the warnings quiet hours hold. */
+  held: number;
+  /** When the last of those held goes; null when none are held. */
+  heldUntil: string | null;
   /** Notifications given up on after a day of retries, within the last week. */
   failed: number;
 }

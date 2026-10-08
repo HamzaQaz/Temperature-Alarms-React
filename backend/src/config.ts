@@ -1,6 +1,7 @@
 import type { DatabaseConfig } from './db';
 import { DEFAULT_THRESHOLDS, type Thresholds } from './conditions';
 import { isTimeZone, serverTimeZone } from './localDay';
+import { parseDailyWindow, type QuietHours } from './quietHours';
 
 /** Everything the backend reads from the environment, read once at startup. */
 export interface Config {
@@ -64,6 +65,12 @@ export interface NotificationsConfig {
    * (NOTIFY_MONTHLY_REPORT; docs/adr/0008). Off by default.
    */
   monthlyReport: boolean;
+  /**
+   * When warning emails wait, on the server's clock (NOTIFY_QUIET_HOURS, NOTIFY_QUIET_WEEKENDS;
+   * docs/adr/0008): held until the quiet ends, then sent together. No window and no weekends by
+   * default: nothing waits.
+   */
+  quietHours: QuietHours;
 }
 
 export class ConfigError extends Error {
@@ -207,8 +214,15 @@ function notifications(env: Env): NotificationsConfig | undefined {
   // Empty or false is off.
   const monthlyRaw = present(env, 'NOTIFY_MONTHLY_REPORT')?.trim().toLowerCase() ?? 'false';
   if (monthlyRaw !== 'true' && monthlyRaw !== 'false') problems.push(`NOTIFY_MONTHLY_REPORT must be true or false, got "${monthlyRaw}"`);
+  // Empty: no daily window. Two 24-hour times on the server's clock; the end may come before the start, past midnight.
+  const quietRaw = present(env, 'NOTIFY_QUIET_HOURS')?.trim();
+  const daily = quietRaw === undefined ? null : parseDailyWindow(quietRaw);
+  if (daily === undefined) problems.push(`NOTIFY_QUIET_HOURS must be two different 24-hour times like 18:00-07:00, got "${quietRaw}"`);
+  // Empty or false: weekends are like any other day.
+  const weekendsRaw = present(env, 'NOTIFY_QUIET_WEEKENDS')?.trim().toLowerCase() ?? 'false';
+  if (weekendsRaw !== 'true' && weekendsRaw !== 'false') problems.push(`NOTIFY_QUIET_WEEKENDS must be true or false, got "${weekendsRaw}"`);
 
-  if (problems.length > 0 || secure === undefined || from === undefined || publicUrl === undefined) {
+  if (problems.length > 0 || secure === undefined || from === undefined || publicUrl === undefined || daily === undefined) {
     throw new ConfigError(`Email notifications are half-configured: ${problems.join('; ')}`);
   }
   return {
@@ -220,6 +234,7 @@ function notifications(env: Env): NotificationsConfig | undefined {
     coalesceSeconds,
     remindHours,
     monthlyReport: monthlyRaw === 'true',
+    quietHours: { daily, weekends: weekendsRaw === 'true' },
   };
 }
 
@@ -241,6 +256,10 @@ export function loadConfig(env: Env = process.env): Config {
   if (missing.length > 0) {
     throw new ConfigError(`Missing required environment variable${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
   }
+  // The server's zone (localDay.ts): quiet hours, email times, and the monthly report's months. A
+  // zone Node does not know would silently be UTC.
+  const tz = present(env, 'TZ');
+  if (tz !== undefined && !isTimeZone(tz)) throw new ConfigError(`TZ must be an IANA time zone like America/Chicago, got "${tz}"`);
   if (required(env, 'ADMIN_TOKEN') === required(env, 'DEVICE_TOKEN')) {
     // Every board's flash holds the Device token, so it must not also open Settings.
     throw new ConfigError('ADMIN_TOKEN and DEVICE_TOKEN must differ: every Device carries the Device token');

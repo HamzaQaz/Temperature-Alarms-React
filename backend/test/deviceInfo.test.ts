@@ -17,6 +17,7 @@ const NOTIFY: NotificationsConfig = {
   coalesceSeconds: 0,
   remindHours: 0,
   monthlyReport: false,
+  quietHours: { daily: null, weekends: false },
 };
 
 /** A signed-looking image (firmware.test.ts has the format). */

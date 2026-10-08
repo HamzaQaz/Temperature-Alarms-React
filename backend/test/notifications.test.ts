@@ -16,9 +16,12 @@ interface NotificationStatus {
   toAll: boolean;
   lists: { recipients: string[]; campuses: string[]; isDefault: boolean; lastResult: unknown }[];
   monthlyReport: boolean;
+  quietHours: { hours: string | null; weekends: boolean } | null;
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
   pending: number;
+  held: number;
+  heldUntil: string | null;
   failed: number;
 }
 
@@ -72,9 +75,12 @@ describe('email notifications: the test email and the status (/api/notifications
       toAll: false,
       lists: [],
       monthlyReport: false,
+      quietHours: null,
       lastSent: null,
       lastFailure: null,
       pending: 0,
+      held: 0,
+      heldUntil: null,
       failed: 0,
     });
     const refused = await client.sendTest();

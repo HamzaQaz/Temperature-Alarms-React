@@ -85,6 +85,10 @@ _Avoid_: Alert, alarm (the old feature that was removed), page, message
 A Notification that an Incident is still open and no one has acknowledged it, sent once it has been open a set number of hours (`NOTIFY_REMIND_HOURS`, the same for every Condition and level) and again every as many hours after, counted from the Incident's start, until it closes or is acknowledged. Off unless configured, and only while Notifications are on; Devices on the Bench never get one; no cap on how many (docs/adr/0008).
 _Avoid_: Escalation, repeat alert, nag, follow-up
 
+**Quiet hours**:
+When warning Notifications wait instead of going out: a nightly window (`NOTIFY_QUIET_HOURS`, such as 18:00 to 07:00) and, if configured, the whole weekend (`NOTIFY_QUIET_WEEKENDS`), on the server's clock (`TZ`). Every warning waits, Mold risk high included, with its Reminders and its closing email; what waited goes out when they end, one email per recipient list. Critical Incidents, Offline, and Sensor fault never wait, and a warning that turns critical goes at once. Off unless configured; school holidays are not quiet hours (docs/adr/0008).
+_Avoid_: Do not disturb, snooze, mute, maintenance window
+
 **Monthly report**:
 An email on the month just ended, sent to the default list (`NOTIFY_TO`), never a Campus's own, on the 1st of each month when configured (`NOTIFY_MONTHLY_REPORT`), or on request from Settings: its Incidents and time in each Condition, the hottest and most humid closets with their peaks, the closets that **ran warm** (more than half their Readings within 3 °F of their Hot warning, or above it), and each Device's Offline and Sensor fault time, every closet linked to its History. Evidence for facilities' HVAC work. Devices on the Bench are left out (docs/adr/0008).
 _Avoid_: Digest, summary, newsletter, statement

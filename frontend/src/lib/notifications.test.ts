@@ -11,9 +11,12 @@ const off: NotificationStatus = {
   toAll: false,
   lists: [],
   monthlyReport: false,
+  quietHours: null,
   lastSent: null,
   lastFailure: null,
   pending: 0,
+  held: 0,
+  heldUntil: null,
   failed: 0,
 };
 const defaultList: RecipientList = {
@@ -30,9 +33,12 @@ const on: NotificationStatus = {
   toAll: false,
   lists: [defaultList],
   monthlyReport: false,
+  quietHours: { hours: null, weekends: false },
   lastSent: null,
   lastFailure: null,
   pending: 0,
+  held: 0,
+  heldUntil: null,
   failed: 0,
 };
 const day = (iso: string) => iso.slice(0, 10);
@@ -106,6 +112,29 @@ describe('notificationsSummary', () => {
     assert.equal(notificationsSummary({ ...on, failed: 1 }, day).failed, '1 notification could not be delivered within a day and was given up on this week.');
     assert.equal(notificationsSummary({ ...on, failed: 2 }, day).failed, '2 notifications could not be delivered within a day and were given up on this week.');
     assert.equal(notificationsSummary({ ...off, pending: 4 }, day).pending, null, 'off says only that it is off');
+  });
+
+  it('says when quiet hours hold warnings, and how to set them while there are none', () => {
+    const said = (quietHours: NotificationStatus['quietHours']) => notificationsSummary({ ...on, quietHours }, day).quietHours;
+    assert.equal(
+      said({ hours: '18:00-07:00', weekends: false }),
+      'Quiet hours 18:00–07:00: warnings wait until they end and go out together; critical Incidents, Offline, and Sensor fault are emailed at once.',
+    );
+    assert.match(said({ hours: '18:00-07:00', weekends: true }) ?? '', /^Quiet hours 18:00–07:00 and weekends: warnings wait/);
+    assert.match(said({ hours: null, weekends: true }) ?? '', /^Quiet weekends: warnings wait/);
+    assert.match(said({ hours: null, weekends: false }) ?? '', /^No quiet hours: warnings are emailed at any hour\. Set NOTIFY_QUIET_HOURS/);
+    assert.equal(notificationsSummary(off, day).quietHours, null);
+  });
+
+  it('counts what quiet hours hold and until when, apart from what waits to be sent', () => {
+    const until = (iso: string) => `${iso.slice(11, 16)} on ${iso.slice(0, 10)}`;
+    const summary = notificationsSummary({ ...on, pending: 3, held: 3, heldUntil: '2026-10-08T07:00:00.000Z' }, until);
+    assert.equal(summary.held, '3 notifications held until 07:00 on 2026-10-08, when quiet hours end.');
+    assert.equal(summary.pending, null, 'every one waiting is held');
+    const mixed = notificationsSummary({ ...on, pending: 2, held: 1, heldUntil: '2026-10-08T07:00:00.000Z' }, until);
+    assert.equal(mixed.pending, '1 notification waiting to be sent.');
+    assert.equal(mixed.held, '1 notification held until 07:00 on 2026-10-08, when quiet hours end.');
+    assert.equal(notificationsSummary({ ...on, pending: 1 }, until).held, null);
   });
 });
 

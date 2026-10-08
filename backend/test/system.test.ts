@@ -62,6 +62,7 @@ const notifications: NotificationsConfig = {
   coalesceSeconds: 0,
   remindHours: 0,
   monthlyReport: false,
+  quietHours: { daily: null, weekends: false },
 };
 
 describe('system health (GET /api/system)', () => {

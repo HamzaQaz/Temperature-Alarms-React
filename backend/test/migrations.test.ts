@@ -65,6 +65,7 @@ describe('migration runner', () => {
       '0016-device-sensor',
       '0017-monthly-report',
       '0018-system-health',
+      '0019-quiet-hours',
       '0020-device-network',
     ]);
   });
@@ -73,7 +74,7 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 20);
+    assert.equal(rows[0].n, 21);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {
@@ -94,10 +95,10 @@ describe('migration runner', () => {
   // MySQL commits DDL as it goes, so a run can die after a schema change and before recording it.
   test('a migration whose change landed but was never recorded runs again cleanly', async () => {
     await pool.query(
-      "DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders', '0014-campus-recipients', '0015-staged-rollout', '0016-device-sensor', '0017-monthly-report', '0018-system-health', '0020-device-network')",
+      "DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders', '0014-campus-recipients', '0015-staged-rollout', '0016-device-sensor', '0017-monthly-report', '0018-system-health', '0019-quiet-hours', '0020-device-network')",
     );
     const applied = await runMigrations(pool);
-    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders', '0014-campus-recipients', '0015-staged-rollout', '0016-device-sensor', '0017-monthly-report', '0018-system-health', '0020-device-network']);
+    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders', '0014-campus-recipients', '0015-staged-rollout', '0016-device-sensor', '0017-monthly-report', '0018-system-health', '0019-quiet-hours', '0020-device-network']);
     assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'last_backup', 'monthly_reports', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
     assert.deepEqual((await readingsIndexes()).get('ix_readings_recorded'), ['recorded_at']);
   });

@@ -22,8 +22,12 @@ export interface NotificationsSummary {
   lists: ListSummary[];
   /** Whether the monthly report goes out on its own, or null while notifications are off. */
   monthlyReport: string | null;
-  /** How many wait in the outbox, or null when none do. */
+  /** When warning emails wait, or that they never do; null while notifications are off. */
+  quietHours: string | null;
+  /** How many wait in the outbox, quiet hours aside, or null when none do. */
   pending: string | null;
+  /** How many quiet hours hold, and until when, or null when they hold none. */
+  held: string | null;
   /** How many were given up on, or null when none were. */
   failed: string | null;
 }
@@ -52,15 +56,26 @@ function listSummary({ recipients, campuses, isDefault, lastResult }: RecipientL
   };
 }
 
+/** "Quiet hours 18:00–07:00 and weekends: …", or how to set them while there are none. */
+function quietHoursLine({ hours, weekends }: NonNullable<NotificationStatus['quietHours']>): string {
+  if (hours === null && !weekends) {
+    return "No quiet hours: warnings are emailed at any hour. Set NOTIFY_QUIET_HOURS (and NOTIFY_QUIET_WEEKENDS) in the server's .env to hold them overnight.";
+  }
+  const when = hours === null ? 'Quiet weekends' : `Quiet hours ${hours.replace('-', '–')}${weekends ? ' and weekends' : ''}`;
+  return `${when}: warnings wait until they end and go out together; critical Incidents, Offline, and Sensor fault are emailed at once.`;
+}
+
 export function notificationsSummary(status: NotificationStatus, timeOf: (iso: string) => string): NotificationsSummary {
-  const { enabled, relay, from, toAll, lists, monthlyReport, pending, failed } = status;
+  const { enabled, relay, from, toAll, lists, monthlyReport, quietHours, pending, held, heldUntil, failed } = status;
   if (!enabled || relay === null) {
     return {
       state: 'Off.',
       detail: "Set SMTP_HOST, NOTIFY_FROM, NOTIFY_TO, and PUBLIC_URL in the server's .env and restart it to email technicians about Incidents.",
       lists: [],
       monthlyReport: null,
+      quietHours: null,
       pending: null,
+      held: null,
       failed: null,
     };
   }
@@ -71,7 +86,9 @@ export function notificationsSummary(status: NotificationStatus, timeOf: (iso: s
     monthlyReport: monthlyReport
       ? 'A report on last month goes to the default recipients on the 1st of each month.'
       : "The monthly report is off: set NOTIFY_MONTHLY_REPORT=true in the server's .env to send last month's to the default recipients on the 1st of each month.",
-    pending: pending === 0 ? null : `${notifications(pending)} waiting to be sent.`,
+    quietHours: quietHours === null ? null : quietHoursLine(quietHours),
+    pending: pending - held <= 0 ? null : `${notifications(pending - held)} waiting to be sent.`,
+    held: held === 0 || heldUntil === null ? null : `${notifications(held)} held until ${timeOf(heldUntil)}, when quiet hours end.`,
     failed: failed === 0 ? null : `${notifications(failed)} could not be delivered within a day and ${failed === 1 ? 'was' : 'were'} given up on this week.`,
   };
 }

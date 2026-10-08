@@ -20,10 +20,10 @@ $ExamplePath = Join-Path $RepoDir '.env.example'
 $BackupDir = Join-Path $RepoDir 'backups'
 $DbName = 'temperature_alarms'
 $Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD')
-$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_TO_ALL')
+$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'TZ', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_TO_ALL')
 # Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
 # flags or the install prompts, never with --set; the password never comes from the command line.
-$NotifyKeys = @('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_REMIND_HOURS', 'NOTIFY_MONTHLY_REPORT')
+$NotifyKeys = @('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_REMIND_HOURS', 'NOTIFY_MONTHLY_REPORT', 'NOTIFY_QUIET_HOURS', 'NOTIFY_QUIET_WEEKENDS')
 # The SMTP password once read from stdin or the hidden prompt (Read-SmtpPassword); never from the arguments.
 $SmtpPw = ''
 # Without build attestations an unchanged checkout rebuilds to the same image id, so a
@@ -47,7 +47,7 @@ $O = @{
     SshOpts = $env:DEPLOY_SSH_OPTS; Pass = @(); Bootstrap = $false; At = '02:00'; Down = $false
     Finish = $false; Force = $false; Only = ''
     SmtpHost = ''; SmtpPort = ''; SmtpSecure = ''; SmtpUser = ''; NotifyFrom = ''; NotifyTo = ''; PublicUrl = ''; NotifyRemindHours = ''
-    NotifyMonthlyReport = ''
+    NotifyMonthlyReport = ''; NotifyQuietHours = ''; NotifyQuietWeekends = ''
 }
 $OrigArgs = @($args | ForEach-Object { "$_" })
 # What is piped to the script, read only when the SMTP password is wanted (Read-SmtpPassword): a pipe
@@ -125,6 +125,10 @@ Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off u
                           every N hours after (1 to 168); 0 turns reminders off (the default)
       --notify-monthly-report on|off  Email the --notify-to recipients a report on the month
                           just ended on the 1st of each month (off by default)
+      --notify-quiet-hours HH:MM-HH:MM|off  Hold warning emails during these hours (e.g. 18:00-07:00,
+                          in TZ) and send them as one when they end; critical, Offline, and Sensor
+                          fault still go at once (off by default)
+      --notify-quiet-weekends on|off  Hold warning emails all Saturday and Sunday too
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
@@ -172,6 +176,8 @@ function Read-Args([string[]]$List) {
                 'publicurl' { $takesValue = $true; $O.PublicUrl = $next; $O.Pass += @('--public-url', $next) }
                 'notifyremindhours' { $takesValue = $true; $O.NotifyRemindHours = $next; $O.Pass += @('--notify-remind-hours', $next) }
                 'notifymonthlyreport' { $takesValue = $true; $O.NotifyMonthlyReport = $next; $O.Pass += @('--notify-monthly-report', $next) }
+                'notifyquiethours' { $takesValue = $true; $O.NotifyQuietHours = $next; $O.Pass += @('--notify-quiet-hours', $next) }
+                'notifyquietweekends' { $takesValue = $true; $O.NotifyQuietWeekends = $next; $O.Pass += @('--notify-quiet-weekends', $next) }
                 # Every process on the host can read another's command line; the password comes on stdin instead.
                 { $_ -like 'smtppassword*' } { Fail 'the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin' }
                 'pull' { $O.Pull = $true; $O.Pass += '--pull' }
@@ -359,6 +365,13 @@ function Test-Setting([string]$Key, [string]$Value) {
         'WEB_PORT' { return $Value -match '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' }
         'TRUST_PROXY' { return Test-TrustProxy $Value }
         'LEGACY_TIME_ZONE' { return ($Value -eq '') -or ($Value -match '^[A-Za-z0-9_/+:-]+$') }
+        # An IANA zone like America/Chicago, one this host knows when it keeps the zone files; api refuses
+        # one Node does not know at startup.
+        'TZ' {
+            if ($Value -eq '') { return $true }
+            if ($Value -notmatch '\A[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*\z') { return $false }
+            return (-not (Test-Path -LiteralPath '/usr/share/zoneinfo' -PathType Container)) -or (Test-Path -LiteralPath "/usr/share/zoneinfo/$Value" -PathType Leaf)
+        }
         # MySQL's size syntax: bytes, or a whole number of K, M, or G.
         'DB_BUFFER_POOL_SIZE' { return ($Value -eq '') -or ($Value -cmatch '^[1-9][0-9]*[KMG]?$') }
         'NOTIFY_COALESCE_SECONDS' { return ($Value -eq '') -or ($Value -match '^[0-9]+$') }
@@ -386,11 +399,14 @@ function Test-NotifySetting([string]$Key, [string]$Value) {
         # Whole hours, a week at most; 0 is off.
         'NOTIFY_REMIND_HOURS' { return ($Value -match '\A[0-9]{1,3}\z') -and ([int]$Value -le 168) }
         'NOTIFY_MONTHLY_REPORT' { return $Value -cin @('true', 'false') }
+        # Two different 24-hour times; the end may come before the start, past midnight.
+        'NOTIFY_QUIET_HOURS' { return ($Value -match '\A([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]\z') -and ($Value.Split('-')[0] -ne $Value.Split('-')[1]) }
+        'NOTIFY_QUIET_WEEKENDS' { return $Value -cin @('true', 'false') }
         default { return $false }
     }
 }
 
-function Test-NotifyFlags { return [bool]("$($O.SmtpHost)$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)$($O.NotifyRemindHours)$($O.NotifyMonthlyReport)") }
+function Test-NotifyFlags { return [bool]("$($O.SmtpHost)$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)$($O.NotifyRemindHours)$($O.NotifyMonthlyReport)$($O.NotifyQuietHours)$($O.NotifyQuietWeekends)") }
 
 function Test-StdinRedirected { return [Console]::IsInputRedirected }
 
@@ -421,9 +437,10 @@ function Clear-Notify {
     foreach ($k in $NotifyKeys) { if (Get-EnvValue $k) { Set-EnvValue $k '' } }
 }
 
-# The whole group at once. An empty port, security mode, reminder period, or monthly report setting leaves
-# the backend's default (587, starttls, no reminders, no monthly report); an empty user drops the login.
-function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string]$User, [string]$Password, [string]$From, [string]$To, [string]$Url, [string]$Remind, [string]$Monthly) {
+# The whole group at once. An empty port, security mode, reminder period, monthly report, or quiet hours
+# setting leaves the backend's default (587, starttls, no reminders, no monthly report, no quiet hours); an
+# empty user drops the login.
+function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string]$User, [string]$Password, [string]$From, [string]$To, [string]$Url, [string]$Remind, [string]$Monthly, [string]$Quiet, [string]$Weekends) {
     Set-EnvValue 'SMTP_HOST' $SmtpHost
     if ($Port -or (Get-EnvValue 'SMTP_PORT')) { Set-EnvValue 'SMTP_PORT' $Port }
     if ($Secure -or (Get-EnvValue 'SMTP_SECURE')) { Set-EnvValue 'SMTP_SECURE' $Secure }
@@ -434,6 +451,8 @@ function Write-Notify([string]$SmtpHost, [string]$Port, [string]$Secure, [string
     Set-EnvValue 'PUBLIC_URL' $Url
     if ($Remind -or (Get-EnvValue 'NOTIFY_REMIND_HOURS')) { Set-EnvValue 'NOTIFY_REMIND_HOURS' $Remind }
     if ($Monthly -or (Get-EnvValue 'NOTIFY_MONTHLY_REPORT')) { Set-EnvValue 'NOTIFY_MONTHLY_REPORT' $Monthly }
+    if ($Quiet -or (Get-EnvValue 'NOTIFY_QUIET_HOURS')) { Set-EnvValue 'NOTIFY_QUIET_HOURS' $Quiet }
+    if ($Weekends -or (Get-EnvValue 'NOTIFY_QUIET_WEEKENDS')) { Set-EnvValue 'NOTIFY_QUIET_WEEKENDS' $Weekends }
 }
 
 # "every 4 h", or "off" while NOTIFY_REMIND_HOURS is empty or 0.
@@ -445,13 +464,20 @@ function Get-RemindSummary {
     return "every $([int]$hours) h"
 }
 
+# "18:00-07:00 and weekends", "18:00-07:00", "weekends", or "off": when warning emails wait.
+function Get-QuietSummary {
+    $hours = Get-EnvValue 'NOTIFY_QUIET_HOURS'
+    if ((Get-EnvValue 'NOTIFY_QUIET_WEEKENDS') -ceq 'true') { if ($hours) { return "$hours and weekends" } else { return 'weekends' } }
+    if ($hours) { return $hours } else { return 'off' }
+}
+
 function Get-NotifySummary {
     $smtpHost = Get-EnvValue 'SMTP_HOST'
     if (-not $smtpHost) { return 'off (no SMTP_HOST)' }
     $secure = Get-EnvValue 'SMTP_SECURE'; if (-not $secure) { $secure = 'starttls' }
     $port = Get-EnvValue 'SMTP_PORT'; if (-not $port) { $port = if ($secure -eq 'tls') { '465' } else { '587' } }
     $monthly = if ((Get-EnvValue 'NOTIFY_MONTHLY_REPORT') -ceq 'true') { 'on' } else { 'off' }
-    return "${smtpHost}:$port ($secure), from $(Get-EnvValue 'NOTIFY_FROM') to $(Get-EnvValue 'NOTIFY_TO'), reminders $(Get-RemindSummary), monthly report $monthly"
+    return "${smtpHost}:$port ($secure), from $(Get-EnvValue 'NOTIFY_FROM') to $(Get-EnvValue 'NOTIFY_TO'), reminders $(Get-RemindSummary), monthly report $monthly, quiet hours $(Get-QuietSummary)"
 }
 
 function Get-FlagOrEnv([string]$Flag, [string]$Key) { if ($Flag) { return $Flag } else { return Get-EnvValue $Key } }
@@ -461,7 +487,7 @@ function Get-FlagOrEnv([string]$Flag, [string]$Key) { if ($Flag) { return $Flag 
 function Set-NotifyFlagsInEnv {
     if (-not (Test-NotifyFlags)) { return }
     if ($O.SmtpHost -eq 'off') {
-        if ("$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)$($O.NotifyRemindHours)$($O.NotifyMonthlyReport)") { Fail '--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it' }
+        if ("$($O.SmtpPort)$($O.SmtpSecure)$($O.SmtpUser)$($O.NotifyFrom)$($O.NotifyTo)$($O.PublicUrl)$($O.NotifyRemindHours)$($O.NotifyMonthlyReport)$($O.NotifyQuietHours)$($O.NotifyQuietWeekends)") { Fail '--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it' }
         Clear-Notify; Ok 'email notifications off'; return
     }
     $smtpHost = Get-FlagOrEnv $O.SmtpHost 'SMTP_HOST'
@@ -479,6 +505,17 @@ function Set-NotifyFlagsInEnv {
         'off' { 'false' }
         default { Fail "--notify-monthly-report: '$($O.NotifyMonthlyReport)' is not on or off" }
     }
+    $quiet = switch -CaseSensitive ($O.NotifyQuietHours) {
+        '' { Get-EnvValue 'NOTIFY_QUIET_HOURS' }
+        'off' { '' }
+        default { $O.NotifyQuietHours }
+    }
+    $weekends = switch -CaseSensitive ($O.NotifyQuietWeekends) {
+        '' { Get-EnvValue 'NOTIFY_QUIET_WEEKENDS' }
+        'on' { 'true' }
+        'off' { 'false' }
+        default { Fail "--notify-quiet-weekends: '$($O.NotifyQuietWeekends)' is not on or off" }
+    }
     if (-not (Test-NotifySetting 'SMTP_HOST' $smtpHost)) { Fail "--smtp-host: '$smtpHost' is not a host name or IPv4 address" }
     if ($port -and -not (Test-NotifySetting 'SMTP_PORT' $port)) { Fail "--smtp-port: '$port' is not a port number" }
     if ($secure -and -not (Test-NotifySetting 'SMTP_SECURE' $secure)) { Fail "--smtp-secure: '$secure' is not starttls, tls, or none" }
@@ -491,6 +528,8 @@ function Set-NotifyFlagsInEnv {
     if (-not (Test-NotifySetting 'PUBLIC_URL' $url)) { Fail "--public-url: '$url' is not an http:// or https:// address" }
     if ($remind -and -not (Test-NotifySetting 'NOTIFY_REMIND_HOURS' $remind)) { Fail "--notify-remind-hours: '$remind' is not a whole number of hours from 0 (off) to 168" }
     if ($monthly -and -not (Test-NotifySetting 'NOTIFY_MONTHLY_REPORT' $monthly)) { Fail "NOTIFY_MONTHLY_REPORT in .env is '$monthly', not true or false: give --notify-monthly-report on or off" }
+    if ($quiet -and -not (Test-NotifySetting 'NOTIFY_QUIET_HOURS' $quiet)) { Fail "--notify-quiet-hours: '$quiet' is not two different 24-hour times like 18:00-07:00, or off" }
+    if ($weekends -and -not (Test-NotifySetting 'NOTIFY_QUIET_WEEKENDS' $weekends)) { Fail "NOTIFY_QUIET_WEEKENDS in .env is '$weekends', not true or false: give --notify-quiet-weekends on or off" }
     $script:SmtpPw = ''
     if ($O.SmtpUser) { Read-SmtpPassword $user ([bool](Get-EnvValue 'SMTP_PASSWORD')) }
     if (-not $script:SmtpPw -and $user) {
@@ -498,7 +537,7 @@ function Set-NotifyFlagsInEnv {
         if (-not $script:SmtpPw) { Fail "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin" }
     }
     if ($user -and -not (Test-NotifySetting 'SMTP_PASSWORD' $script:SmtpPw)) { Fail 'the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads $ and # literally)' }
-    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url $remind $monthly
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url $remind $monthly $quiet $weekends
     $script:SmtpPw = ''
     $login = if ($user) { ", login $user" } else { '' }
     Ok "email notifications: $(Get-NotifySummary)$login"
@@ -569,7 +608,15 @@ function Read-Notifications {
     }
     $monthlyDefault = (Get-EnvValue 'NOTIFY_MONTHLY_REPORT') -cne 'false'
     $monthly = if (Confirm-Choice 'Email the recipients a report on the month just ended (hottest closets, incidents, Offline time) on the 1st of each month' $monthlyDefault) { 'true' } else { 'false' }
-    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url $remind $monthly
+    $current = Get-EnvValue 'NOTIFY_QUIET_HOURS'; if (-not $current) { $current = 'off' }
+    while ($true) {
+        $quiet = Ask 'Hold warning emails during quiet hours, HH:MM-HH:MM in TZ, and send them when they end (off: never; critical always goes at once)' $current
+        if ($quiet -ceq 'off') { $quiet = ''; break }
+        if (Test-NotifySetting 'NOTIFY_QUIET_HOURS' $quiet) { break }
+        Warn "'$quiet' is not two different 24-hour times like 18:00-07:00, or off"
+    }
+    $weekends = if (Confirm-Choice 'Hold warning emails all weekend too, until Monday' ((Get-EnvValue 'NOTIFY_QUIET_WEEKENDS') -ceq 'true')) { 'true' } else { 'false' }
+    Write-Notify $smtpHost $port $secure $user $script:SmtpPw $from $to $url $remind $monthly $quiet $weekends
     $script:SmtpPw = ''
     Write-Host '  Settings, Notifications, has a "Send test email" button once deployed.'
 }
@@ -620,7 +667,7 @@ function Read-Tunables {
                 if (Test-Setting $k $value) { break }
                 Warn "'$value' is not valid for $k"
             }
-            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_TO_ALL') -and -not $value) { continue }
+            if ($k -in @('LEGACY_TIME_ZONE', 'TZ', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_TO_ALL') -and -not $value) { continue }
             Set-EnvValue $k $value
         }
     }
@@ -1044,6 +1091,8 @@ function Invoke-Info {
     if ($previous) { Write-Host "  Previous      $(Hide-Secret $previous)   (still accepted: rotate-device-token --finish ends that)" }
     Write-Host "  DB password   $(Hide-Secret (Get-EnvValue 'DB_PASSWORD'))"
     Write-Host "  DB root       $(Hide-Secret (Get-EnvValue 'DB_ROOT_PASSWORD'))"
+    $zone = Get-EnvValue 'TZ'; if (-not $zone) { $zone = 'UTC (TZ not set)' }
+    Write-Host "  Time zone     $zone"
     Write-Host "  Email         $(Get-NotifySummary)"
     # Masked whole: unlike the 64-hex secrets, a chosen password would give away its first and last four.
     $smtpUser = Get-EnvValue 'SMTP_USER'
