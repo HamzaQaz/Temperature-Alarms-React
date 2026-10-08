@@ -11,6 +11,8 @@
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
 import type { ConditionLevel, ConditionName } from './conditions';
 import type { AppDeps } from './deps';
+import { dropStaleHolds, queuedHold } from './firmwareStore';
+import { holdEmail } from './holdEmail';
 import { serverTimeZone } from './localDay';
 import { MailerError, type Mailer } from './mailer';
 import { notificationEmail, type QueuedNotification } from './notificationEmail';
@@ -51,6 +53,8 @@ type NotifierDeps = Pick<AppDeps, 'pool' | 'config' | 'now'> & { mailer: Mailer 
 
 interface DueRow extends RowDataPacket {
   id: number;
+  /** `hold` is a firmware release held by itself (firmwareStore.ts): no Incident, an email of its own. */
+  kind: NotificationKind | 'hold';
   createdAt: Date;
   attempts: number;
 }
@@ -135,25 +139,32 @@ export async function runNotifierPass({ pool, config, mailer, now = () => new Da
     await conn.beginTransaction();
     const at = now();
     const [due] = await conn.query<DueRow[]>(
-      `SELECT id, created_at AS createdAt, attempts FROM notifications
+      `SELECT id, kind, created_at AS createdAt, attempts FROM notifications
        WHERE sent_at IS NULL AND failed_at IS NULL AND next_attempt_at <= ?
        ORDER BY next_attempt_at, id LIMIT ? FOR UPDATE SKIP LOCKED`,
       [at, BATCH_LIMIT],
     );
-    // A reminder whose incident was acknowledged or ended since it was queued has nothing left to say.
-    const dropped = new Set(await dropStaleReminders(conn, due.map((r) => r.id)));
+    // A reminder whose incident was acknowledged or ended since it was queued has nothing left to say,
+    // nor has a hold whose release was withdrawn or replaced.
+    const ids = due.map((r) => r.id);
+    const dropped = new Set([...(await dropStaleReminders(conn, ids)), ...(await dropStaleHolds(conn, ids))]);
     const live = due.filter((r) => !dropped.has(r.id));
-    if (!readyToSend(live, at, coalesceMs)) {
+    // A held release is its own email, ahead of any Incidents; they go in the next pass.
+    const holds = live.filter((r) => r.kind === 'hold');
+    const hold = readyToSend(holds, at, coalesceMs) ? await queuedHold(conn) : null;
+    const batch = hold !== null ? holds : live.filter((r) => r.kind !== 'hold');
+    if (!readyToSend(batch, at, coalesceMs)) {
       await conn.commit();
       return 0;
     }
-    const ids = live.map((r) => r.id);
-    const email = notificationEmail(await queuedNotifications(conn, ids), { publicUrl: notifications.publicUrl, timeZone });
+    const batchIds = batch.map((r) => r.id);
+    const settings = { publicUrl: notifications.publicUrl, timeZone };
+    const email = hold !== null ? holdEmail(hold, settings) : notificationEmail(await queuedNotifications(conn, batchIds), settings);
     try {
       await mailer.send(email);
     } catch (error) {
       if (!(error instanceof MailerError)) throw error;
-      await recordFailure(conn, live, error, now(), retry);
+      await recordFailure(conn, batch, error, now(), retry);
       await conn.commit();
       throw error;
     }
@@ -162,10 +173,10 @@ export async function runNotifierPass({ pool, config, mailer, now = () => new Da
       sentAt,
       email.subject.slice(0, SUBJECT_MAX),
       sentAt,
-      ids,
+      batchIds,
     ]);
     await conn.commit();
-    return ids.length;
+    return batchIds.length;
   } catch (error) {
     // After a relay failure the rows are already committed; this rolls back nothing.
     await conn.rollback();

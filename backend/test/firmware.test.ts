@@ -8,37 +8,13 @@ import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, resetDatabase, testDatabaseConfig } from './helpers/database';
 import { startServer, testConfig, TEST_ADMIN_TOKEN, TEST_DEVICE_TOKEN, type RunningServer } from './helpers/server';
 import { api, asAdmin, json } from './helpers/api';
+import { check, image } from './helpers/firmware';
 import { DEVICE_AUTH_FAILURE_LIMIT } from '../src/routes/readings';
-import { FirmwareImageError, parseFirmwareImage, publishFirmware, withdrawFirmware } from '../src/firmwareStore';
+import { FirmwareImageError, holdRelease, parseFirmwareImage, publishFirmware, withdrawFirmware } from '../src/firmwareStore';
 
 const PREVIOUS = 'test-device-token-previous';
 
-/** A firmware image as the Arduino build signs it: ESP image magic, the version marker, a signature, its length. */
-function image(version: number, { signatureLength = 256, marker = true, magic = 0xe9 } = {}): Buffer {
-  const body = Buffer.concat([
-    Buffer.from([magic, 0x01, 0x02, 0x03]),
-    Buffer.alloc(1000, 0x55),
-    Buffer.from(marker ? `TA-FIRMWARE-VERSION=${version}\0` : 'nothing here\0'),
-    Buffer.alloc(500, 0xaa),
-  ]);
-  const signature = Buffer.alloc(signatureLength, 0x5a);
-  const length = Buffer.alloc(4);
-  length.writeUInt32LE(signatureLength);
-  return Buffer.concat([body, signature, length]);
-}
-
 const md5 = (data: Buffer) => createHash('md5').update(data).digest('hex');
-
-/** As the board's update check sends it: the Device token as Basic credentials, its MAC and version. */
-const check = (url: string, { mac = '5C:CF:7F:A1:B2:C3', version = '1', token = TEST_DEVICE_TOKEN, address }: { mac?: string; version?: string; token?: string; address?: string } = {}) =>
-  fetch(`${url}/api/firmware`, {
-    headers: {
-      Authorization: `Basic ${Buffer.from(`device:${token}`).toString('base64')}`,
-      'x-ESP8266-STA-MAC': mac,
-      'x-ESP8266-version': version,
-      ...(address === undefined ? {} : { 'X-Forwarded-For': address }),
-    },
-  });
 
 describe('firmware images', () => {
   test('a signed image with a version marker is read', () => {
@@ -312,5 +288,16 @@ describe('firmware command line (deploy.sh publish-firmware, firmware-status, wi
     assert.match(result.stderr, /Refused: the image is not signed/);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM firmware_release');
     assert.equal(rows.length, 0);
+  });
+
+  test('says when the release is held and why, and refuses to widen it by publishing it again', async () => {
+    await publishFirmware(pool, image(4), ['ESP_A1B2C3']);
+    await holdRelease(pool, 4, { hostname: 'ESP_A1B2C3', reason: 'Offline', detail: null }, new Date(), false);
+    const status = run(['status']);
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /version 4 .*held since \S+ \(ESP_A1B2C3 went Offline after taking it\), offered to no one/);
+    const again = run(['publish'], image(4).toString('base64'));
+    assert.equal(again.status, 1);
+    assert.match(again.stderr, /Refused: version 4 is held/);
   });
 });

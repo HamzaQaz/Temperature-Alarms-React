@@ -58,7 +58,7 @@ interface Entry {
   device: QueuedNotification['device'];
 }
 
-const SUBJECT_PREFIX = '[Temperature Alarms]';
+export const SUBJECT_PREFIX = '[Temperature Alarms]';
 
 /** Offline and Sensor fault have one level each, so it goes unsaid. */
 const SINGLE_LEVEL: ReadonlySet<ConditionName> = new Set(['Offline', 'Sensor fault']);
@@ -95,7 +95,7 @@ const readingText = ({ tempF, humidity }: TimedReading): string => (humidity ===
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
 /** "Tue, Oct 6, 2:05 PM CDT" in the zone. */
-function when(at: Date, timeZone: string): string {
+export function when(at: Date, timeZone: string): string {
   let formatter = formatters.get(timeZone);
   if (formatter === undefined) {
     formatter = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
@@ -213,7 +213,7 @@ function linesOf(entry: Entry, { publicUrl, timeZone }: EmailSettings): EntryLin
   };
 }
 
-const escapeHtml = (text: string): string =>
+export const escapeHtml = (text: string): string =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /**

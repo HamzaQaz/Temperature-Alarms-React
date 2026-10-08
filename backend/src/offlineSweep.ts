@@ -2,12 +2,14 @@
  * The Offline sweep (docs/adr/0006). Offline is computed when read, from how long ago the last
  * report arrived, a Reading or a fault report (docs/adr/0009), so no report ever opens an
  * Offline incident. This pass does instead: once
- * every Report interval it opens one for each Device the server would now report Offline, and
- * queues the reminders due for long incidents (docs/adr/0008).
+ * every Report interval it opens one for each Device the server would now report Offline, holds a
+ * staged firmware release one of whose named Devices went Offline after taking it (docs/adr/0007),
+ * and queues the reminders due for long incidents (docs/adr/0008).
  * The backend runs as one process (docs/adr/0001), so one sweep runs, as one retention job does;
  * the unique key on open incidents would stop a second from duplicating anything all the same.
  */
 import type { RouteDeps } from './deps';
+import { holdOnIncidents } from './firmwareStore';
 import { broadcastIncidentChanges, sweepOffline } from './incidentStore';
 import { enqueueReminders } from './outboxStore';
 
@@ -42,6 +44,8 @@ export async function runOfflineSweep({ pool, config, sse, now = () => new Date(
     // Each opening is queued for email in its own transaction when notifications are on (docs/adr/0008).
     const changed = await sweepOffline(pool, rules, at, listening?.since(), config.notifications !== undefined);
     await broadcastIncidentChanges(pool, sse, changed);
+    // A named Device of a staged release that went Offline, or into Sensor fault, after taking it holds the release.
+    await holdOnIncidents(pool, at, config.notifications !== undefined);
     // Then the reminders for incidents still open and unacknowledged, when they are on.
     const remindHours = config.notifications?.remindHours ?? 0;
     if (remindHours > 0) await enqueueReminders(pool, remindHours * HOUR_MS, at);

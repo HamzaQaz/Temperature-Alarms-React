@@ -40,6 +40,15 @@ export interface PendingDevice {
   ignored: boolean;
 }
 
+/** A staged release stopped by itself: one of its named Devices failed it (docs/adr/0007). */
+export interface FirmwareHold {
+  at: string;
+  hostname: string;
+  reason: 'Offline' | 'Sensor fault' | 'update failed';
+  /** What the board said, for a failed update; null otherwise. */
+  detail: string | null;
+}
+
 /** The firmware build on offer to Devices over the air (docs/adr/0007). */
 export interface FirmwareRelease {
   version: number;
@@ -48,11 +57,36 @@ export interface FirmwareRelease {
   publishedAt: string;
   /** The Devices it is offered to, or null for every Device. */
   only: string[] | null;
+  /** The named Devices it went to first, kept once it is widened; null when it went to every Device at once. */
+  staged: string[] | null;
+  /** Offered to named Devices only, or to every Device. */
+  stage: 'named' | 'all';
+  /** When a staged release was opened to every Device; null until then. */
+  widenedAt: string | null;
+  /** Held releases are offered to no one, until withdrawn or replaced by a higher version. */
+  hold: FirmwareHold | null;
 }
 
-/** GET /api/firmware/status (Admin token): the release and the version each Device last reported. */
+/** One named Device of a staged release, as "Release to all" waits on it. */
+export interface StagedDevice {
+  hostname: string;
+  /** Null when no Device is registered with this hostname. */
+  id: number | null;
+  firmwareVersion: number | null;
+  lastReportAt: string | null;
+  /** Offline and Sensor fault, as the server judges them from its reports; none is Online. Null when not registered. */
+  conditions: Condition[] | null;
+  /** Good Readings in a row on the version it runs. */
+  cleanReports: number;
+  /** It runs the release's version and has sent cleanReportsToWiden clean Readings on it. */
+  ready: boolean;
+}
+
+/** GET /api/firmware/status (Admin token): the release, the version each Device last reported, and a staged release's named Devices. */
 export interface FirmwareStatus {
   release: FirmwareRelease | null;
+  /** Null unless the release is staged. */
+  rollout: { cleanReportsToWiden: number; devices: StagedDevice[]; ready: boolean } | null;
   devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null; info: DeviceInfo | null }>;
 }
 

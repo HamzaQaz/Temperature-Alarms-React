@@ -13,7 +13,8 @@ import { MonotonicStore } from '../monotonicStore';
 import { LATEST_READING_ID, lastReportAt, latestAllowed } from '../latestReading';
 import { notePending } from '../pendingDevices';
 import { parseDeviceInfo } from '../deviceInfo';
-import { cachedRelease, offers } from '../firmwareStore';
+import { cachedRelease, holdOnReport, offers } from '../firmwareStore';
+import { cleanReportsAfter } from '../rollout';
 import type { DeviceSightings } from '../deviceSightings';
 import type { TimedReading } from '../incidents';
 import {
@@ -33,6 +34,9 @@ interface DeviceIdRow extends RowDataPacket {
   hostname: string;
   lastReportAt: Date | null;
   sensorFaults: number;
+  firmwareVersion: number | null;
+  cleanReports: number;
+  sentAt: Date | null;
 }
 
 interface ReadingInput {
@@ -139,6 +143,8 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
     // Null for a fault report: the sensor did not answer, so there is nothing to record.
     const values = 'fault' in parsed ? null : { tempF: parsed.tempF, humidity: parsed.humidity };
     const info = parseDeviceInfo(req.body);
+    // To the millisecond, unlike the Reading's own time: a staged release tells a report from the download just after it.
+    const arrivedAt = new Date();
     try {
       // The report and what it does to the Device's incidents commit together, under the Device's
       // row lock, so two reports of one Device are never judged at once (docs/adr/0006, 0009).
@@ -151,7 +157,9 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       try {
         await conn.beginTransaction();
         const [devices] = await conn.query<DeviceIdRow[]>(
-          'SELECT id, hostname, last_report_at AS lastReportAt, sensor_faults AS sensorFaults FROM devices WHERE hostname = ? FOR UPDATE',
+          `SELECT id, hostname, last_report_at AS lastReportAt, sensor_faults AS sensorFaults, firmware_version AS firmwareVersion,
+                  firmware_clean_reports AS cleanReports, firmware_sent_at AS sentAt
+           FROM devices WHERE hostname = ? FOR UPDATE`,
           [hostname],
         );
         device = devices[0];
@@ -178,7 +186,18 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         }
         // Either is a report, so the Device is heard from now. A Reading clears the fault count; a fault report adds one.
         sensorFaults = values === null ? device.sensorFaults + 1 : 0;
-        await conn.query('UPDATE devices SET last_report_at = ?, sensor_faults = ? WHERE id = ?', [recordedAt, sensorFaults, device.id]);
+        // And a good Reading on the version of the one before counts toward a staged release's "Release to all" (rollout.ts).
+        const cleanReports = cleanReportsAfter(
+          { version: device.firmwareVersion, cleanReports: device.cleanReports, lastReportAt: device.lastReportAt },
+          { version: info?.firmwareVersion ?? null, reading: values !== null, at: recordedAt },
+          config.reportIntervalSeconds,
+        );
+        await conn.query('UPDATE devices SET last_report_at = ?, sensor_faults = ?, firmware_clean_reports = ? WHERE id = ?', [
+          recordedAt,
+          sensorFaults,
+          cleanReports,
+          device.id,
+        ]);
         // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware
         // tab, and its sensor (firmware 6) for History too.
         if (info !== null) {
@@ -206,12 +225,31 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       // Only for a registered Device, so neither the log nor the list can be filled with made-up hostnames.
       rotation.heard(device.hostname, deviceTokenOf(res));
       sightings.accepted(device.hostname);
+      const release = await cachedRelease(pool).catch(() => null);
+      // One of a staged release's named Devices failing it holds the release, before this answer could
+      // nudge anyone toward it. Its own failure never costs the board its report.
+      const held = await holdOnReport(
+        pool,
+        release,
+        {
+          hostname: device.hostname,
+          sentAt: device.sentAt,
+          version: info?.firmwareVersion ?? device.firmwareVersion,
+          updateResult: info?.updateResult ?? null,
+          arrivedAt,
+          incidentsChanged: changed.length > 0,
+        },
+        recordedAt,
+        config.notifications !== undefined,
+      ).catch((error: unknown) => {
+        console.error('firmware: could not check the staged release:', error instanceof Error ? error.message : error);
+        return null;
+      });
       // A newer build waiting for this board: said in a header, so the board checks for it now instead
       // of at its hourly check. Only for a board that says its version, the firmware that can act on it.
       // A board with a dead sensor gets it too: it can still be updated.
-      if (info?.firmwareVersion != null) {
-        const release = await cachedRelease(pool).catch(() => null);
-        if (release !== null && offers(release, device.hostname, info.firmwareVersion)) res.set('X-Firmware-Available', String(release.version));
+      if (info?.firmwareVersion != null && held === null && release !== null && offers(release, device.hostname, info.firmwareVersion)) {
+        res.set('X-Firmware-Available', String(release.version));
       }
       const reportedAt = recordedAt.toISOString();
       if (values === null) {
