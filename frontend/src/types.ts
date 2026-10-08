@@ -322,6 +322,17 @@ export interface IncidentEvent {
   incident: Incident;
 }
 
+/**
+ * What the live stream sends when firmware status can have changed: the signal alone, since the
+ * status is behind the Admin token and the stream is not. An open Firmware tab reads it again.
+ */
+export interface FirmwareEvent {
+  type: 'firmware';
+}
+
+/** Every message the live stream sends, told apart by `type`. */
+export type StreamEvent = ReadingEvent | FaultEvent | IncidentEvent | FirmwareEvent;
+
 /** How many closets at a Campus are in one Condition at one level. */
 export interface ConditionCount extends Condition {
   count: number;

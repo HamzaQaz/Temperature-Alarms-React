@@ -14,7 +14,7 @@ import { LATEST_READING_ID, lastReportAt, latestAllowed } from '../latestReading
 import { notePending } from '../pendingDevices';
 import { onFallbackNetwork, parseDeviceInfo } from '../deviceInfo';
 import { cachedRelease, holdOnReport, offers } from '../firmwareStore';
-import { cleanReportsAfter } from '../rollout';
+import { cleanReportsAfter, reportMovesRollout } from '../rollout';
 import type { DeviceSightings } from '../deviceSightings';
 import type { TimedReading } from '../incidents';
 import {
@@ -38,6 +38,7 @@ interface DeviceIdRow extends RowDataPacket {
   firmwareVersion: number | null;
   cleanReports: number;
   sentAt: Date | null;
+  updateResult: string | null;
   wifiNetwork: number | null;
 }
 
@@ -154,13 +155,14 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       let device: DeviceIdRow | undefined;
       let recordedAt: Date;
       let sensorFaults: number;
+      let cleanReports: number;
       let lastReading: TimedReading | null = null;
       let changed: ChangedIncident[];
       try {
         await conn.beginTransaction();
         const [devices] = await conn.query<DeviceIdRow[]>(
           `SELECT id, hostname, last_report_at AS lastReportAt, sensor_faults AS sensorFaults, firmware_version AS firmwareVersion,
-                  firmware_clean_reports AS cleanReports, firmware_sent_at AS sentAt, wifi_network AS wifiNetwork
+                  firmware_clean_reports AS cleanReports, firmware_sent_at AS sentAt, update_result AS updateResult, wifi_network AS wifiNetwork
            FROM devices WHERE hostname = ? FOR UPDATE`,
           [hostname],
         );
@@ -189,7 +191,7 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         // Either is a report, so the Device is heard from now. A Reading clears the fault count; a fault report adds one.
         sensorFaults = values === null ? device.sensorFaults + 1 : 0;
         // And a good Reading on the version of the one before counts toward a staged release's "Release to all" (rollout.ts).
-        const cleanReports = cleanReportsAfter(
+        cleanReports = cleanReportsAfter(
           { version: device.firmwareVersion, cleanReports: device.cleanReports, lastReportAt: device.lastReportAt },
           { version: info?.firmwareVersion ?? null, reading: values !== null, at: recordedAt },
           config.reportIntervalSeconds,
@@ -290,6 +292,11 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
           onFallbackNetwork: fallback,
         });
       }
+      // An open Firmware tab reads the status again when the hold, or this report, moved what it shows (rollout.ts).
+      const offered = release !== null && (release.only === null || release.only.includes(device.hostname));
+      const before = { version: device.firmwareVersion, updateResult: device.updateResult, cleanReports: device.cleanReports };
+      const after = { version: info?.firmwareVersion ?? device.firmwareVersion, updateResult: info === null ? device.updateResult : info.updateResult, cleanReports };
+      if (held !== null || reportMovesRollout(before, after, offered)) sse.firmwareChanged();
       await broadcastIncidentChanges(pool, sse, changed);
     } catch (error) {
       // Only before the 201 or 202: a failed broadcast afterwards is not a report lost.

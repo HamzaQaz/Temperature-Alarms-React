@@ -1,17 +1,21 @@
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Upload, WifiOff } from 'lucide-react';
-import { getFirmwareStatus, publishFirmware, widenFirmware, withdrawFirmware } from '@/api';
+import { describeError, getFirmwareStatus, publishFirmware, widenFirmware, withdrawFirmware } from '@/api';
 import { ConditionBadge } from '@/components/ConditionBadge';
+import { LiveStatus } from '@/components/LiveStatus';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useChange } from '@/hooks/use-change';
+import { usePageVisible } from '@/hooks/use-page-visible';
+import { useReadingStream, type StreamStatus } from '@/hooks/use-reading-stream';
 import { useResource } from '@/hooks/use-resource';
 import { levelLook } from '@/lib/conditions';
 import { firmwareSummary, holdSentence, progressDetail, rolloutNote, STEP_TEXT } from '@/lib/firmware';
 import { formatHeap, formatSignal, formatUptime } from '@/lib/deviceInfo';
 import { formatAge } from '@/lib/reportTiming';
+import { liveReloads, type LiveReloads } from '@/lib/reload';
 import { cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import type { DeviceProgress, FirmwareRelease, FirmwareStatus } from '@/types';
@@ -30,6 +34,9 @@ const timeOf = (iso: string): string => {
   const at = new Date(iso);
   return at.toDateString() === new Date().toDateString() ? at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : dateOf(iso);
 };
+
+/** "11:42:05 PM": when the status was last read, to the second, so each re-read shows. */
+const clockOf = (at: number): string => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
 
 /** Whole seconds since `iso`, by this browser's clock, as the tables age a report. */
 const secondsSince = (iso: string): number => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
@@ -64,8 +71,49 @@ export function FirmwareSection({ canEdit, onUnauthorised }: FirmwareSectionProp
   );
 }
 
+/**
+ * Keeps the tab current while it is open: reads the status again on each `firmware` event the stream
+ * carries, when the stream is back after a drop, and every 30 s whatever the stream does, only while
+ * the page is visible (lib/reload.ts, liveReloads). The stream's status is the tab's Live indicator.
+ */
+function useLiveReloads(reload: () => Promise<void>): StreamStatus {
+  const visible = usePageVisible();
+  const live = useRef<LiveReloads | null>(null);
+  useEffect(() => {
+    const reloads = liveReloads(reload, () => document.visibilityState === 'visible');
+    live.current = reloads;
+    return () => {
+      reloads.stop();
+      live.current = null;
+    };
+  }, [reload]);
+  useEffect(() => {
+    live.current?.visibilityChanged();
+  }, [visible]);
+  return useReadingStream({ onFirmware: () => live.current?.changed(), onReconnect: () => live.current?.changed() });
+}
+
 function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => void }) {
-  const { state, reload } = useResource(getFirmwareStatus);
+  // A re-read that fails keeps the status last read on screen, with when, and says so beside the
+  // indicator, so a server restart blanks nothing; only a first read that fails shows its error alone.
+  const lastRead = useRef<FirmwareStatus | null>(null);
+  const [readAt, setReadAt] = useState<number | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const load = useCallback(async (): Promise<FirmwareStatus> => {
+    try {
+      const status = await getFirmwareStatus();
+      lastRead.current = status;
+      setReadAt(Date.now());
+      setReadError(null);
+      return status;
+    } catch (error) {
+      if (lastRead.current === null) throw error;
+      setReadError(`Could not update the firmware status. ${describeError(error)}`);
+      return lastRead.current;
+    }
+  }, []);
+  const { state, reload } = useResource(load);
+  const stream = useLiveReloads(reload);
   const publish = useChange(onUnauthorised);
   const withdraw = useChange(onUnauthorised);
   const widen = useChange(onUnauthorised);
@@ -119,6 +167,11 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
 
   return (
     <>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <LiveStatus status={stream} />
+        {readAt !== null && <span className="text-sm text-muted-foreground tabular-nums">Updated {clockOf(readAt)}</span>}
+      </div>
+      <InlineError message={readError} />
       {state.status === 'loading' && <p className="text-sm text-muted-foreground">Loading…</p>}
       {state.status === 'error' && <InlineError message={`Could not load the firmware status. ${state.message}`} />}
       {summary !== null && (

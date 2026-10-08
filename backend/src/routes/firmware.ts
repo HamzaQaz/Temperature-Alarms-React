@@ -60,9 +60,10 @@ interface StatusRow extends RowDataPacket {
  * are doing. POST /api/firmware publishes a signed build from the Settings page (`?only=ESP_A,ESP_B`
  * for named Devices first, each a registered Device), POST /api/firmware/widen offers a staged one to
  * every Device, and DELETE withdraws it, all with the Admin token. Publishing and widening answer
- * with the release and who it is now offered to.
+ * with the release and who it is now offered to. Each of these, and each check a board makes, tells
+ * open Firmware tabs over the stream that the status can have changed (sse.ts, firmwareChanged).
  */
-export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date() }: RouteDeps): Router {
+export function firmwareRouter({ pool, config, sse, deviceAuth, now = () => new Date() }: RouteDeps): Router {
   const router = Router();
 
   router.get('/', ...deviceAuth, async (req, res, next) => {
@@ -86,6 +87,8 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
         res.status(404).json({ error: `No device is registered with the hostname ${hostname}` });
         return;
       }
+      // A check moves the board's line on the Firmware tab, whatever the answer; the event goes out a second from now.
+      sse.firmwareChanged();
       const release = await currentRelease(pool);
       if (!offers(release, hostname, version)) {
         res.status(304).end();
@@ -126,6 +129,7 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
     const only = typeof req.query.only === 'string' && req.query.only.trim() !== '' ? req.query.only.split(',') : undefined;
     try {
       res.status(201).json(await toJson(await publishFirmware(pool, image, only)));
+      sse.firmwareChanged();
     } catch (error) {
       if (error instanceof FirmwareImageError) {
         res.status(422).json({ error: error.message });
@@ -150,6 +154,7 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
         return;
       }
       res.json(await toJson(release));
+      sse.firmwareChanged();
     } catch (error) {
       next(error);
     }
@@ -159,6 +164,7 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
     try {
       await withdrawFirmware(pool);
       res.status(204).end();
+      sse.firmwareChanged();
     } catch (error) {
       next(error);
     }

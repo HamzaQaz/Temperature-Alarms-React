@@ -35,6 +35,14 @@ Firmware 7 went out on the bench for a name that did not match the test board, w
 - **Who, and where each one is.** The publish answer, the Firmware tab and `deploy.sh firmware-status` say who the release is offered to ("Offered to ESP_64533B (CHS IDF 2, running 4)", "Offered to every Device (12)"), then give each of them one line, decided on the server (`rollout.ts`): waiting for its next check, with when (at its next Reading for a board that says its version with its Readings, nudged; for a silent one, or firmware before 3, its hourly check or 30 s after a restart), downloading (the server sent it the image), running the new version with its clean Readings; or stuck: Offline, refused the image (its update result), never checked in.
 - **The board says what the server answered** (firmware 8): `update: v8 offered, downloading`, `update: installed, restarting`, `update: refused, <reason>`, and `update: none newer for ESP_64533B (running 8)`, the name a release must use. The result it reports with its Readings stays `failed, ...`, which the hold reads.
 
+## Update (2026-10-08): the Firmware tab updates live
+
+The owner watched ESP_64533B take a build on the bench while refreshing the tab by hand (`.scratch/firmware-2/issues/05-live-firmware-tab.md`).
+
+- **A signal on the dashboard's stream, never the status.** The status names WiFi networks and needs the Admin token; the stream (ADR 0001) needs none. So the stream carries `{type: "firmware"}` and nothing else when firmware status can have changed: a release published, widened, withdrawn, or held (by ingest or the Offline sweep), a board's update check answered (304 or the image), or a Reading that changes a Device's version or update result, or the count of clean Readings of a Device the release is offered to, up to the 10 the tab counts to. The open tab then reads `GET /api/firmware/status` with the Admin token.
+- **At most one a second.** The server sends one event a second after the first change, covering every change until then, so a fleet's Readings never flood the stream and a burst is one request per open tab.
+- **The tab reads again** on each event (one request in flight, one more queued), when the stream is back after a drop, and every 30 s whatever the stream does, only while the page is visible. The 30 s read is what shows changes no event announces, such as a build published with `deploy.sh publish-firmware`, which runs in a process of its own and has no stream to tell.
+
 ## Consequences
 
 - Flashing day is the last USB flash, provided those builds have the keys. A board flashed before this decision needs one more.
