@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
-import { failedToInstall, type HoldReason } from './rollout';
+import { conditionsFor, isOffline, type Condition, type ConditionRules } from './conditions';
+import { failedToInstall, progressOf, type HoldReason, type NextCheck, type ProgressStep } from './rollout';
 
 /**
  * The firmware release on offer to Devices (docs/adr/0007): one at a time, published from the build
@@ -139,7 +140,41 @@ export async function releaseImage(pool: Pool): Promise<Buffer | null> {
   return rows.length === 0 ? null : (rows[0].image as Buffer);
 }
 
-const HOSTNAME = /^ESP_[0-9A-F]{6}$/;
+/**
+ * The Device hostname a technician means: `ESP-64533B` (the board's network hostname, in its serial
+ * log), `esp_64533b`, and `64533B` are all ESP_64533B. Null for anything that is not one.
+ */
+export function readHostname(name: string): string | null {
+  const match = /^(?:ESP[_-]?)?([0-9A-F]{6})$/.exec(name.trim().toUpperCase());
+  return match === null ? null : `ESP_${match[1]}`;
+}
+
+/**
+ * The Devices `only` names, read as hostnames, or every Device when it names none. Refused, before
+ * anything is stored, when a name is not a hostname or no Device is registered under it, naming it as
+ * typed; and when there is no Device at all to offer it to.
+ */
+async function audience(db: Db, only: string[] | undefined): Promise<string | null> {
+  const typed = (only ?? []).map((name) => name.trim()).filter((name) => name !== '');
+  if (typed.length === 0) {
+    const [[{ devices }]] = await db.query<(RowDataPacket & { devices: number })[]>('SELECT COUNT(*) AS devices FROM devices');
+    if (devices === 0) throw new FirmwareImageError('no Device is registered, so it would reach no Device; add the boards in Settings first');
+    return null;
+  }
+  const named = typed.map((name) => ({ name, hostname: readHostname(name) }));
+  const malformed = named.filter((n) => n.hostname === null).map((n) => n.name);
+  if (malformed.length > 0) throw new FirmwareImageError(`${malformed.join(', ')}: not a Device hostname (ESP_ and the six hex digits, as ESP_A1B2C3)`);
+  const hostnames = [...new Set(named.map((n) => n.hostname as string))];
+  const [rows] = await db.query<(RowDataPacket & { hostname: string })[]>('SELECT hostname FROM devices WHERE hostname IN (?)', [hostnames]);
+  const registered = new Set(rows.map((r) => r.hostname));
+  const unknown = named.filter((n) => !registered.has(n.hostname as string)).map((n) => (n.name === n.hostname ? n.name : `${n.name} (${n.hostname})`));
+  if (unknown.length > 0) {
+    throw new FirmwareImageError(
+      `no Device is registered as ${[...new Set(unknown)].join(', ')}; check the hostname on its card, or add it in Settings first`,
+    );
+  }
+  return hostnames.join(',');
+}
 
 /** "ESP_A1B2C3 went Offline after taking it": a hold in words, for refusals, the email, and the command line. */
 export const holdText = ({ hostname, reason, detail }: Omit<FirmwareHold, 'at'>): string =>
@@ -151,18 +186,15 @@ const heldError = (version: number, hold: FirmwareHold): FirmwareImageError =>
   new FirmwareImageError(`version ${version} is held: ${holdText(hold)}; withdraw it, or publish a fixed build with a higher version`);
 
 /**
- * Offers `image` to every Device, or only to `only`. A higher version is a new release, unheld. The
- * same build again changes only who it is offered to: every Device widens a staged one (as
- * widenRelease does, keeping when it was published), named Devices stage it again; a held one is
- * refused. An older version is refused, since boards never go back.
+ * Offers `image` to every Device, or only to `only`, each a registered Device (readHostname reads
+ * the forms a technician types). A higher version is a new release, unheld. The same build again
+ * changes only who it is offered to: every Device widens a staged one (as widenRelease does, keeping
+ * when it was published), named Devices stage it again; a held one is refused. An older version is
+ * refused, since boards never go back.
  */
 export async function publishFirmware(pool: Pool, image: Buffer, only?: string[], at = new Date()): Promise<FirmwareRelease> {
   const parsed = parseFirmwareImage(image);
-  const hostnames = only?.map((h) => h.trim().toUpperCase().replace(/-/g, '_')).filter((h) => h !== '');
-  for (const hostname of hostnames ?? []) {
-    if (!HOSTNAME.test(hostname)) throw new FirmwareImageError(`${hostname} is not a Device hostname (ESP_ and six hex digits)`);
-  }
-  const named = hostnames && hostnames.length > 0 ? hostnames.join(',') : null;
+  const named = await audience(pool, only);
   const current = await currentRelease(pool);
   if (current !== null && parsed.version < current.version) {
     throw new FirmwareImageError(`version ${parsed.version} is older than the published ${current.version}; boards only ever take a higher version (raise FIRMWARE_VERSION)`);
@@ -212,6 +244,104 @@ export async function withdrawFirmware(pool: Pool): Promise<void> {
 /** Whether a Device on `reportedVersion` should be sent the release. A held one is sent to no one. */
 export const offers = (release: FirmwareRelease | null, hostname: string, reportedVersion: number): boolean =>
   release !== null && release.hold === null && release.version > reportedVersion && (release.only === null || release.only.includes(hostname));
+
+interface OfferedRow extends RowDataPacket {
+  id: number;
+  hostname: string;
+  closet: string;
+  campusName: string;
+  campusShortcode: string;
+  firmwareVersion: number | null;
+  checkedAt: Date | null;
+  sentAt: Date | null;
+  updateResult: string | null;
+  infoAt: Date | null;
+  lastReportAt: Date | null;
+  sensorFaults: number;
+  cleanReports: number;
+}
+
+/** The registered Devices among `hostnames`, or every Device for null, with what the rollout needs to know of each. */
+async function offeredRows(db: Db, hostnames: string[] | null): Promise<OfferedRow[]> {
+  if (hostnames !== null && hostnames.length === 0) return [];
+  const [rows] = await db.query<OfferedRow[]>(
+    `SELECT d.id, d.hostname, d.closet, c.name AS campusName, c.shortcode AS campusShortcode,
+            d.firmware_version AS firmwareVersion, d.firmware_checked_at AS checkedAt, d.firmware_sent_at AS sentAt,
+            d.update_result AS updateResult, d.info_at AS infoAt, d.last_report_at AS lastReportAt,
+            d.sensor_faults AS sensorFaults, d.firmware_clean_reports AS cleanReports
+     FROM devices d JOIN campuses c ON c.id = d.campus_id
+     ${hostnames === null ? '' : 'WHERE d.hostname IN (?)'}
+     ORDER BY c.name, d.closet, d.hostname`,
+    hostnames === null ? [] : [hostnames],
+  );
+  return rows;
+}
+
+/**
+ * Who the release is offered to, in words, for the publish answer, the Firmware tab, and the command
+ * line: "Offered to ESP_64533B (CHS IDF 2, running 4)", or "Offered to every Device (12)".
+ */
+export async function offeredTo(db: Db, release: FirmwareRelease): Promise<string> {
+  if (release.hold !== null) return 'Offered to no Device while it is held';
+  if (release.only === null) return `Offered to every Device (${(await offeredRows(db, null)).length})`;
+  const byHostname = new Map((await offeredRows(db, release.only)).map((row) => [row.hostname, row]));
+  const each = release.only.map((hostname) => {
+    const row = byHostname.get(hostname);
+    if (row === undefined) return `${hostname} (not registered)`;
+    return `${hostname} (${row.campusShortcode} ${row.closet}, ${row.firmwareVersion === null ? 'version not known yet' : `running ${row.firmwareVersion}`})`;
+  });
+  return `Offered to ${each.join(', ')}`;
+}
+
+/** One offered Device on its way to the release (rollout.ts, progressOf), for the Firmware tab and `deploy.sh firmware-status`. */
+export interface DeviceProgress {
+  hostname: string;
+  /** Where it is installed; null when no Device has the hostname now. */
+  device: { id: number; campus: { name: string; shortcode: string }; closet: string } | null;
+  firmwareVersion: number | null;
+  step: ProgressStep;
+  nextCheck: NextCheck | null;
+  sentAt: Date | null;
+  updateResult: string | null;
+  lastReportAt: Date | null;
+  cleanReports: number;
+  /** Offline and Sensor fault, as a hold watches them, or neither (Online); null when not registered. */
+  conditions: Condition[] | null;
+}
+
+/** Stuck first, then the furthest from done, so what needs a hand is at the top of a long list. */
+const STEP_ORDER: ProgressStep[] = ['refused', 'offline', 'never-checked', 'unregistered', 'held', 'waiting', 'downloading', 'running'];
+
+/** Where each Device the release is offered to is, as of `at`: a staged one's named Devices, or every Device. */
+export async function releaseProgress(db: Db, release: FirmwareRelease, at: Date, rules: ConditionRules): Promise<DeviceProgress[]> {
+  const rows = await offeredRows(db, release.only);
+  const byHostname = new Map(rows.map((row) => [row.hostname, row]));
+  const hostnames = release.only ?? rows.map((row) => row.hostname);
+  const target = { version: release.version, publishedAt: release.publishedAt, held: release.hold !== null };
+  const progress = hostnames.map((hostname): DeviceProgress => {
+    const row = byHostname.get(hostname);
+    if (row === undefined) {
+      const unknown = progressOf(target, null, rules.reportIntervalSeconds);
+      return { hostname, device: null, firmwareVersion: null, ...unknown, sentAt: null, updateResult: null, lastReportAt: null, cleanReports: 0, conditions: null };
+    }
+    const secondsSinceReport = row.lastReportAt === null ? null : Math.max(0, Math.floor((at.getTime() - row.lastReportAt.getTime()) / 1000));
+    // No Reading is judged here, so Hot, Cold, Dry and Mold risk never appear.
+    const conditions = conditionsFor({ reading: null, secondsSinceReport, sensorFaults: row.sensorFaults, ...rules });
+    return {
+      hostname,
+      device: { id: row.id, campus: { name: row.campusName, shortcode: row.campusShortcode }, closet: row.closet },
+      firmwareVersion: row.firmwareVersion,
+      ...progressOf(target, { ...row, offline: isOffline(conditions) }, rules.reportIntervalSeconds),
+      sentAt: row.sentAt,
+      updateResult: row.updateResult,
+      lastReportAt: row.lastReportAt,
+      cleanReports: row.cleanReports,
+      conditions,
+    };
+  });
+  // Array sort is stable, so each step keeps the Campus, Closet, hostname order.
+  return progress.sort((a, b) => STEP_ORDER.indexOf(a.step) - STEP_ORDER.indexOf(b.step));
+}
 
 /** True while `release` is offered to named Devices only, unheld: the stretch in which they can hold it. */
 const watched = (release: FirmwareRelease | null): release is FirmwareRelease & { staged: string[] } =>

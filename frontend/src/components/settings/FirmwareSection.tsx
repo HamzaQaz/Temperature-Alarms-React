@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { AlertCircle, Upload, Wifi, WifiOff } from 'lucide-react';
+import { AlertCircle, Upload, WifiOff } from 'lucide-react';
 import { getFirmwareStatus, publishFirmware, widenFirmware, withdrawFirmware } from '@/api';
 import { ConditionBadge } from '@/components/ConditionBadge';
 import { Badge } from '@/components/ui/badge';
@@ -9,11 +9,12 @@ import { Label } from '@/components/ui/label';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
 import { levelLook } from '@/lib/conditions';
-import { cleanProgress, firmwareSummary, holdSentence, rolloutNote } from '@/lib/firmware';
+import { firmwareSummary, holdSentence, progressDetail, rolloutNote, STEP_TEXT } from '@/lib/firmware';
 import { formatHeap, formatSignal, formatUptime } from '@/lib/deviceInfo';
 import { formatAge } from '@/lib/reportTiming';
+import { cn } from '@/lib/utils';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import type { Condition, FirmwareRelease, FirmwareStatus } from '@/types';
+import type { DeviceProgress, FirmwareRelease, FirmwareStatus } from '@/types';
 import { DeleteButton, FieldHint, InlineError, InlineForm, SectionHeader, StatusLine } from './section';
 
 interface FirmwareSectionProps {
@@ -24,8 +25,17 @@ interface FirmwareSectionProps {
 
 const dateOf = (iso: string): string => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
+/** "11:55 PM" today, else with its date: the times a rollout line gives. */
+const timeOf = (iso: string): string => {
+  const at = new Date(iso);
+  return at.toDateString() === new Date().toDateString() ? at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : dateOf(iso);
+};
+
 /** Whole seconds since `iso`, by this browser's clock, as the tables age a report. */
 const secondsSince = (iso: string): number => Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+
+/** How soon boards take a build offered to them (docs/adr/0007), said after publishing it. */
+const TAKES_IT = 'A board that sends Readings takes it at its next one; a silent one within the hour, or when it restarts.';
 
 const parseOnly = (text: string): string[] =>
   text
@@ -69,12 +79,16 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
     if (file === null) return;
     setStatus(null);
     const targets = parseOnly(only);
-    const result = await publish.run(() => publishFirmware(file, targets));
-    if (!result.ok) return;
+    const answer: { release?: FirmwareRelease } = {};
+    const result = await publish.run(async () => {
+      answer.release = await publishFirmware(file, targets);
+    });
+    if (!result.ok || answer.release === undefined) return;
+    // Who it reached, as the server read the names: ESP-64533B and 64533B are ESP_64533B there.
     setStatus(
       targets.length > 0
-        ? `Published to ${targets.join(', ')}. Release to all opens once they have run it cleanly; it holds by itself if one of them fails it.`
-        : 'Published to every Device. Boards on version 3 or later install it within a Report interval; older ones within the hour.',
+        ? `${answer.release.offeredTo}. Release to all opens once they have run it cleanly; it holds by itself if one of them fails it.`
+        : `${answer.release.offeredTo}. ${TAKES_IT}`,
     );
     setFile(null);
     if (fileInput.current) fileInput.current.value = '';
@@ -92,9 +106,12 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
 
   const releaseToAll = async () => {
     setStatus(null);
-    const result = await widen.run(() => widenFirmware());
-    if (!result.ok) return;
-    setStatus('Released to every Device. Boards on version 3 or later install it within a Report interval; older ones within the hour.');
+    const answer: { release?: FirmwareRelease } = {};
+    const result = await widen.run(async () => {
+      answer.release = await widenFirmware();
+    });
+    if (!result.ok || answer.release === undefined) return;
+    setStatus(`Released to all. ${answer.release.offeredTo}. ${TAKES_IT}`);
     await reload();
   };
 
@@ -110,7 +127,6 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
             <p>
               <span className="font-medium">{summary.release}</span> {summary.progress}
             </p>
-            {summary.behind.length > 0 && <p className="text-muted-foreground">Still on an older build: {summary.behind.join(', ')}.</p>}
             {summary.neverChecked.length > 0 && (
               <p className="text-muted-foreground">
                 Never checked for an update (flashed before over-the-air updates, or not online since): {summary.neverChecked.join(', ')}.
@@ -130,8 +146,17 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
         </div>
       )}
 
-      {state.status === 'ready' && state.data.release !== null && state.data.rollout !== null && (
-        <StagedRollout release={state.data.release} rollout={state.data.rollout} pending={widen.pending} error={widen.error} onReleaseToAll={releaseToAll} />
+      {state.status === 'ready' && state.data.release !== null && state.data.progress !== null && (
+        <div className="space-y-3">
+          {state.data.rollout !== null ? (
+            <StagedRollout release={state.data.release} rollout={state.data.rollout} pending={widen.pending} error={widen.error} onReleaseToAll={releaseToAll} />
+          ) : (
+            <h3 id="rollout-heading" className="text-sm font-medium">
+              Where each Device is
+            </h3>
+          )}
+          {state.data.progress.devices.length > 0 && <RolloutProgress progress={state.data.progress} />}
+        </div>
       )}
 
       {state.status === 'ready' && state.data.devices.length > 0 && (
@@ -232,32 +257,6 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
   );
 }
 
-/** Online, or the Offline Condition, then any other the server sent (Sensor fault), as a Device card shows them. */
-function Health({ conditions }: { conditions: Condition[] | null }) {
-  if (conditions === null) return <span className="text-muted-foreground">Not registered</span>;
-  const offline = conditions.find((c) => c.name === 'Offline');
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {offline === undefined ? (
-        <Badge className="border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-          <Wifi aria-hidden />
-          Online
-        </Badge>
-      ) : (
-        <Badge className={levelLook(offline.level).badge}>
-          <WifiOff aria-hidden />
-          Offline
-        </Badge>
-      )}
-      {conditions
-        .filter((c) => c.name !== 'Offline')
-        .map((condition) => (
-          <ConditionBadge key={condition.name} condition={condition} className="px-2 py-0.5 text-xs" />
-        ))}
-    </div>
-  );
-}
-
 interface StagedRolloutProps {
   release: FirmwareRelease;
   rollout: NonNullable<FirmwareStatus['rollout']>;
@@ -267,13 +266,13 @@ interface StagedRolloutProps {
 }
 
 /**
- * A staged release's named Devices (docs/adr/0007): each one's version, last report, health, and
- * clean Readings on the new version, with "Release to all" once every one has run it cleanly. A held
- * release says why and which Device instead, and offers nothing more.
+ * A staged release's heading (docs/adr/0007): what "Release to all" waits on, with the button once
+ * every named Device has run it cleanly. A held release says why and which Device instead, and
+ * offers nothing more. RolloutProgress beneath has a line for each named Device.
  */
 function StagedRollout({ release, rollout, pending, error, onReleaseToAll }: StagedRolloutProps) {
   return (
-    <div className="space-y-3">
+    <>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-1 text-sm">
           <h3 id="rollout-heading" className="font-medium">
@@ -299,32 +298,79 @@ function StagedRollout({ release, rollout, pending, error, onReleaseToAll }: Sta
         )}
       </div>
       <InlineError message={error} />
-      <div className="overflow-x-auto rounded-lg border">
-        <Table aria-labelledby="rollout-heading">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Device</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Last report</TableHead>
-              <TableHead>Health</TableHead>
-              <TableHead>Clean Readings</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rollout.devices.map((device) => (
+    </>
+  );
+}
+
+/**
+ * One line per Device the release is offered to, in the server's order (stuck ones first): where it
+ * is on the way, waiting, downloading, running the new version and counting clean Readings, or stuck,
+ * and what to expect next. `deploy.sh firmware-status` prints the same lines.
+ */
+function RolloutProgress({ progress }: { progress: NonNullable<FirmwareStatus['progress']> }) {
+  const now = Date.now();
+  return (
+    <div className="overflow-x-auto rounded-lg border">
+      <Table aria-labelledby="rollout-heading">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Device</TableHead>
+            <TableHead>Version</TableHead>
+            <TableHead>Where it is</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {progress.devices.map((device) => {
+            const detail = progressDetail(device, progress.cleanReportsToWiden, now, timeOf);
+            return (
               <TableRow key={device.hostname}>
-                <TableCell className="font-mono">{device.hostname}</TableCell>
-                <TableCell className="tabular-nums">{device.firmwareVersion ?? '—'}</TableCell>
-                <TableCell className="tabular-nums">{device.lastReportAt === null ? '—' : formatAge(secondsSince(device.lastReportAt))}</TableCell>
                 <TableCell>
-                  <Health conditions={device.conditions} />
+                  <span className="font-mono">{device.hostname}</span>
+                  {device.device !== null && (
+                    <span className="block text-xs text-muted-foreground">
+                      {device.device.campus.name} · {device.device.closet}
+                    </span>
+                  )}
                 </TableCell>
-                <TableCell className="tabular-nums">{cleanProgress(device, rollout.cleanReportsToWiden)}</TableCell>
+                <TableCell className="tabular-nums">{device.firmwareVersion ?? '—'}</TableCell>
+                <TableCell className="whitespace-normal">
+                  <Step device={device} />
+                  {detail !== null && <span className="mt-0.5 block max-w-prose text-muted-foreground tabular-nums">{detail}</span>}
+                </TableCell>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
+            );
+          })}
+        </TableBody>
+      </Table>
     </div>
+  );
+}
+
+/**
+ * The step, in words. Offline is the Offline badge, in the warning look it has everywhere; a refused
+ * image, or a Device no longer registered, is an error; a Sensor fault the server reports (which a
+ * staged release holds on) follows as its badge. Every other step is plain text: it is on its way.
+ */
+function Step({ device }: { device: DeviceProgress }) {
+  const faults = (device.conditions ?? []).filter((c) => c.name !== 'Offline');
+  const offline = device.conditions?.find((c) => c.name === 'Offline');
+  const error = device.step === 'refused' || device.step === 'unregistered';
+  return (
+    <span className="flex flex-wrap items-center gap-1.5">
+      {device.step === 'offline' && offline !== undefined ? (
+        <Badge className={levelLook(offline.level).badge}>
+          <WifiOff aria-hidden />
+          {STEP_TEXT.offline}
+        </Badge>
+      ) : (
+        <span className={cn('inline-flex items-start gap-1.5 font-medium', error && 'text-destructive')}>
+          {error && <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />}
+          {STEP_TEXT[device.step]}
+        </span>
+      )}
+      {faults.map((condition) => (
+        <ConditionBadge key={condition.name} condition={condition} className="px-2 py-0.5 text-xs" />
+      ))}
+    </span>
   );
 }

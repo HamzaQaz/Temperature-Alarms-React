@@ -372,6 +372,9 @@ try {
     Expect (@($fake.Log | Where-Object { $_ -eq 'exec -T api node dist/firmwareCli.js publish --only ESP_A1B2C3,ESP_D4E5F6' }).Count -eq 1) $true 'publish-firmware: wrong command'
     Expect ([Convert]::ToBase64String($bytes) -eq ($fake.FwStdin -join '')) $true 'publish-firmware: the image did not arrive intact on stdin'
     Expect ((& $said) -match 'without --only') $true 'publish-firmware --only: no next step'
+    # The forms a technician copies from a board's log reach the tool, which reads them as the Device.
+    Expect (Invoke-Fake @('publish-firmware', '--file', $bin, '--only', 'ESP-64533B,64533b')) $true "publish-firmware with ESP-64533B failed: $(& $said)"
+    Expect (@($fake.Log | Where-Object { $_ -eq 'exec -T api node dist/firmwareCli.js publish --only ESP-64533B,64533b' }).Count -eq 1) $true 'publish-firmware with ESP-64533B: wrong command'
     $fake.FwRc = 1
     Expect (Invoke-Fake @('publish-firmware', '--file', $bin)) $false 'publish-firmware refused by api: succeeded'
     $fake.FwRc = 0
