@@ -56,6 +56,7 @@ describe('GET /api/dashboard', () => {
       secondsSinceReport: entry.secondsSinceReport,
       conditions: [],
       openIncidents: [],
+      onFallbackNetwork: false,
     });
     assert.ok(entry.secondsSinceReading !== null && entry.secondsSinceReading >= 0 && entry.secondsSinceReading <= 5, `just posted: ${entry.secondsSinceReading}`);
   });
@@ -91,6 +92,7 @@ describe('GET /api/dashboard', () => {
         secondsSinceReport: null,
         conditions: [{ name: 'Offline', level: 'warning' }],
         openIncidents: [],
+        onFallbackNetwork: false,
       },
     ]);
   });

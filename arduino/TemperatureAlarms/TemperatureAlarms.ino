@@ -2,7 +2,8 @@
 // SENSOR_TYPE) posts one Reading per Report interval to the backend with the Device token.
 //
 // Copy config.example.h to config.h before compiling. Each module has one job:
-//   network.*  connect to WiFi, reconnect in the loop, know the Device hostname
+//   network.*  connect to WiFi, fall back to a second network, reconnect in the loop, know the
+//              Device hostname
 //   sensor.*   read the sensor, once more on a failed read, and skip bad samples
 //   reporter.* build the JSON Reading (or a fault report, when the sensor did not answer) and POST
 //              it, logging the HTTP status

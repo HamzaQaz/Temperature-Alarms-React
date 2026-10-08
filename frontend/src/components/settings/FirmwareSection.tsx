@@ -142,6 +142,7 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
                 <TableHead>Device</TableHead>
                 <TableHead>Version</TableHead>
                 <TableHead>Sensor</TableHead>
+                <TableHead>WiFi network</TableHead>
                 <TableHead>WiFi signal</TableHead>
                 <TableHead>Up for</TableHead>
                 <TableHead>Free memory</TableHead>
@@ -160,6 +161,11 @@ function FirmwareStatusAndPublish({ onUnauthorised }: { onUnauthorised: () => vo
                   </TableCell>
                   <TableCell className="tabular-nums">{device.firmwareVersion ?? '—'}</TableCell>
                   <TableCell>{device.info?.sensor ?? '—'}</TableCell>
+                  <TableCell>
+                    {device.info?.ssid ?? '—'}
+                    {/* A note, as on its card: the first network could not be joined. Not a warning (owner decision). */}
+                    {device.info?.fallback === true && <span className="block text-xs text-muted-foreground">Fallback network</span>}
+                  </TableCell>
                   <TableCell className="tabular-nums">{formatSignal(device.info?.rssi ?? null)}</TableCell>
                   <TableCell className="tabular-nums">{formatUptime(device.info?.uptimeSeconds ?? null)}</TableCell>
                   <TableCell className="tabular-nums">{formatHeap(device.info?.freeHeap ?? null)}</TableCell>

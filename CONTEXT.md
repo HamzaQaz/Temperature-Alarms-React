@@ -8,6 +8,10 @@ Live temperature and humidity monitoring for network closets across school campu
 One NodeMCU board with a sensor (a DHT11, DHT22, or SHT31, chosen when its firmware is built), installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings. From firmware 6 the board says which sensor it carries with every report, and the Device's History shows it, so its Readings are read with that sensor's accuracy in mind.
 _Avoid_: Sensor, node, board, table
 
+**Fallback network**:
+The second WiFi network a board's firmware may name (`WIFI_SSID_2`), joined when the first cannot be: the board tries the two in turn and stays on whichever joined until it drops. From firmware 7 the board says which network it is on with every report. A Device on its fallback network shows a note on its card and Settings names the network, but it is not a Condition: no Incident, no Notification. Moving closets to a new network over the air goes through it: a build whose fallback is the new network, then one that makes it the first.
+_Avoid_: Backup network, secondary SSID, failover
+
 **Reading**:
 One temperature and humidity sample sent by a Device at a single moment.
 _Avoid_: Record, data point, temp data, row

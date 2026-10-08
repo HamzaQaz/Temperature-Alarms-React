@@ -323,6 +323,13 @@ export function DeviceCard({ device, secondsSinceReading, secondsSinceReport, an
             ))}
           </div>
         )}
+        {/* A note, not a Condition (owner decision): grey like who is on an incident, no badge, no border, no email. */}
+        {device.onFallbackNetwork && (
+          <p className="flex items-start gap-1.5 text-sm text-muted-foreground">
+            <Wifi className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <span className="min-w-0">On its fallback WiFi network</span>
+          </p>
+        )}
       </CardContent>
 
       <CardFooter className="relative mt-auto justify-between gap-3 border-t px-5 pt-4 text-sm text-muted-foreground">

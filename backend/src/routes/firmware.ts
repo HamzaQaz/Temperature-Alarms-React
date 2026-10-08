@@ -4,6 +4,7 @@ import { requireAdminToken } from '../auth';
 import type { RouteDeps } from '../deps';
 import { notePending } from '../pendingDevices';
 import { conditionsFor } from '../conditions';
+import { onFallbackNetwork } from '../deviceInfo';
 import {
   currentRelease,
   FirmwareImageError,
@@ -39,6 +40,8 @@ interface StatusRow extends RowDataPacket {
   resetReason: string | null;
   updateResult: string | null;
   sensor: string | null;
+  ssid: string | null;
+  wifiNetwork: number | null;
   infoAt: Date | null;
   lastReportAt: Date | null;
   sensorFaults: number;
@@ -154,7 +157,7 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
       const [rows] = await pool.query<StatusRow[]>(`
         SELECT d.id, d.hostname, d.closet, d.firmware_version AS firmwareVersion, d.firmware_checked_at AS checkedAt,
                d.rssi, d.uptime_s AS uptimeSeconds, d.free_heap AS freeHeap, d.reset_reason AS resetReason,
-               d.update_result AS updateResult, d.sensor, d.info_at AS infoAt, d.last_report_at AS lastReportAt,
+               d.update_result AS updateResult, d.sensor, d.wifi_ssid AS ssid, d.wifi_network AS wifiNetwork, d.info_at AS infoAt, d.last_report_at AS lastReportAt,
                d.sensor_faults AS sensorFaults, d.firmware_clean_reports AS cleanReports,
                c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode
         FROM devices d JOIN campuses c ON c.id = d.campus_id
@@ -205,6 +208,9 @@ export function firmwareRouter({ pool, config, deviceAuth, now = () => new Date(
                   resetReason: rest.resetReason,
                   updateResult: rest.updateResult,
                   sensor: rest.sensor,
+                  // The network it is on (firmware 7), and whether that is its fallback; null before.
+                  ssid: rest.ssid,
+                  fallback: rest.wifiNetwork === null ? null : onFallbackNetwork(rest.wifiNetwork),
                   at: rest.infoAt.toISOString(),
                 },
         })),

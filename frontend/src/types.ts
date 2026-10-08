@@ -102,6 +102,9 @@ export interface DeviceInfo {
   updateResult: string | null;
   /** Firmware 6 and later; null before. */
   sensor: SensorType | null;
+  /** The WiFi network it is on, and whether that is its fallback network (the second its config.h names). Firmware 7 and later; null before. */
+  ssid: string | null;
+  fallback: boolean | null;
   /** When it said so. */
   at: string;
 }
@@ -148,6 +151,8 @@ export interface DashboardDevice {
   tokenMismatchAt: string | null;
   /** Its incidents still open, oldest first, each with who acknowledged it: the card says who is on them. */
   openIncidents: OpenIncident[];
+  /** The board said it is on its fallback network (firmware 7 and later): a note on the card, never a Condition. */
+  onFallbackNetwork: boolean;
 }
 
 /** Who said they are on an incident, and when (CONTEXT.md, Acknowledgement). Free text: there are no user accounts. */
@@ -177,6 +182,8 @@ export interface ReadingEvent {
   conditions: Condition[];
   /** The Reading's own time: it is the Device's last report. */
   lastReportAt: string;
+  /** The board is on its fallback network, as the dashboard payload says. */
+  onFallbackNetwork: boolean;
 }
 
 /**
@@ -191,6 +198,8 @@ export interface FaultEvent {
   conditions: Condition[];
   /** When the fault report arrived: the Device's last report. */
   lastReportAt: string;
+  /** The board is on its fallback network, as the dashboard payload says. */
+  onFallbackNetwork: boolean;
 }
 
 /** How the dashboard lists its Devices; the server sorts, the browser shows the order it gets. */
