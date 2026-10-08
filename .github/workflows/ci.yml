@@ -1,0 +1,266 @@
+# Every push and pull request: the backend against a real MySQL, the frontend, the firmware for each
+# sensor, the bench watcher, and the deploy scripts on Linux and Windows, each its own job. On master,
+# the api and frontend images go to GitHub's container registry once all of them pass, and each
+# unsigned firmware build is attached to the run (.scratch/ci/issues/01-ci-cd.md). Nothing here signs
+# firmware (private.key stays on the build laptop), holds a secret beyond GITHUB_TOKEN, or deploys
+# anywhere.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A newer push cancels the run in progress on a branch or pull request. On master a started run
+  # finishes, so latest never steps back to an older commit; the newest queued run waits its turn.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+
+env:
+  # The CD half: true only for a push to master.
+  PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+
+defaults:
+  run:
+    # Named, so a step runs with -eo pipefail rather than the runner's default bash -e.
+    shell: bash
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    # The suite runs one file at a time, about 8 minutes on a developer machine.
+    timeout-minutes: 30
+    # The suite drops every table before each test, so it gets a MySQL of its own: the same 8.4 as
+    # backend/docker-compose.yml, data in tmpfs, and a database name containing "test".
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: temperature_alarms_test
+          MYSQL_USER: temp
+          MYSQL_PASSWORD: temp
+        ports:
+          - 3306:3306
+        options: >-
+          --tmpfs /var/lib/mysql
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      TEST_DATABASE_URL: mysql://temp:temp@127.0.0.1:3306/temperature_alarms_test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Typecheck (src and tests)
+        run: npm run typecheck
+      - name: Typecheck (production build)
+        run: npx tsc --noEmit -p tsconfig.json
+      - name: Test
+        run: npm test
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  firmware:
+    name: Firmware (${{ matrix.sensor }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        sensor: [DHT11, DHT22, SHT31]
+    env:
+      # The versions in the README's "Libraries and board settings": change both together.
+      ARDUINO_CLI_VERSION: 1.5.1
+      ARDUINO_CLI_SHA256: 28a8e119c498a25607821c36cb2dc49e8463941b261a0d99091baa7bc692dd2b
+      ESP8266_CORE: 3.1.2
+      ARDUINO_LIBS: DHT sensor library@1.4.7;Adafruit Unified Sensor@1.1.15;Adafruit SHT31 Library@2.2.2;Adafruit BusIO@1.17.4
+      ARDUINO_BOARD_MANAGER_ADDITIONAL_URLS: https://arduino.esp8266.com/stable/package_esp8266com_index.json
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/arduino-cli.tar.gz" \
+            "https://github.com/arduino/arduino-cli/releases/download/v$ARDUINO_CLI_VERSION/arduino-cli_${ARDUINO_CLI_VERSION}_Linux_64bit.tar.gz"
+          echo "$ARDUINO_CLI_SHA256  $RUNNER_TEMP/arduino-cli.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/arduino-cli.tar.gz" -C "$RUNNER_TEMP/bin" arduino-cli
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Cache key
+        id: key
+        run: echo "key=arduino-$RUNNER_OS-cli-$ARDUINO_CLI_VERSION-esp8266-$ESP8266_CORE-libs-$(printf '%s' "$ARDUINO_LIBS" | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - name: Cache the esp8266 core and libraries
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.arduino15
+            ~/Arduino/libraries
+          key: ${{ steps.key.outputs.key }}
+      - name: Install the esp8266 core and libraries
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install "esp8266:esp8266@$ESP8266_CORE"
+          IFS=';' read -ra libs <<< "$ARDUINO_LIBS"
+          # --no-deps: exactly these versions, dependencies included, never whatever is newest.
+          arduino-cli lib install --no-deps "${libs[@]}"
+          rm -rf ~/.arduino15/staging
+      - name: Compile
+        env:
+          SENSOR: ${{ matrix.sensor }}
+        run: |
+          sketch=arduino/TemperatureAlarms
+          # config.example.h with only the sensor changed: placeholder WiFi, server, and Device token.
+          sed "s/^#define SENSOR_TYPE .*/#define SENSOR_TYPE $SENSOR/" "$sketch/config.example.h" > "$sketch/config.h"
+          grep -qx "#define SENSOR_TYPE $SENSOR" "$sketch/config.h"
+          arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 --output-dir "build/$SENSOR" "$sketch" | tee compile.log
+          # RAM, IRAM (the tight one, see the README), and flash on the run's summary page.
+          { echo "### Firmware, $SENSOR"; echo '```'; grep -E '^\. ' compile.log || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Attach the unsigned build to the run
+        if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: firmware-${{ matrix.sensor }}-unsigned
+          path: build/${{ matrix.sensor }}/TemperatureAlarms.ino.bin
+          if-no-files-found: error
+
+  bench:
+    name: Bench watcher
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: test_bench.py
+        run: python3 -m unittest arduino/test_bench.py
+
+  deploy-linux:
+    name: Deploy scripts (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SHELLCHECK_VERSION: 0.11.0
+      SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install shellcheck
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/shellcheck.tar.xz" \
+            "https://github.com/koalaman/shellcheck/releases/download/v$SHELLCHECK_VERSION/shellcheck-v$SHELLCHECK_VERSION.linux.x86_64.tar.xz"
+          echo "$SHELLCHECK_SHA256  $RUNNER_TEMP/shellcheck.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP/bin" --strip-components=1 "shellcheck-v$SHELLCHECK_VERSION/shellcheck"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: shellcheck
+        run: shellcheck deploy/deploy.sh deploy/deploy.test.sh frontend/real-ip.sh frontend/real-ip.test.sh
+      - name: deploy.test.sh
+        run: bash deploy/deploy.test.sh
+      - name: real-ip.test.sh
+        run: sh frontend/real-ip.test.sh
+
+  deploy-windows:
+    name: Deploy scripts (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: deploy.test.ps1 under PowerShell 7
+        shell: pwsh
+        run: ./deploy/deploy.test.ps1
+      - name: deploy.test.ps1 under Windows PowerShell 5.1
+        shell: powershell
+        run: ./deploy/deploy.test.ps1
+
+  images:
+    name: Image (${{ matrix.image }})
+    # Built on every run, so a broken Dockerfile shows before master; pushed only from master, and
+    # only once every check above has passed.
+    needs: [backend, frontend, firmware, bench, deploy-linux, deploy-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: api
+            context: backend
+          - image: frontend
+            context: frontend
+    env:
+      IMAGE: ghcr.io/hamzaqaz/temperature-alarms-react-${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - name: Log in to ghcr.io
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, and push from master
+        uses: docker/build-push-action@v7
+        with:
+          context: ${{ matrix.context }}
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
