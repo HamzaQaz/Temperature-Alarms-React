@@ -104,7 +104,7 @@ static int post(WiFiClient& client, const String& body, int accepted, String& re
   http.setReuse(false);
   if (!http.begin(client, serverUrl(READINGS_PATH))) return HTTPC_ERROR_CONNECTION_FAILED;
   http.addHeader(F("Content-Type"), F("application/json"));
-  http.addHeader(F("Authorization"), F("Bearer " DEVICE_TOKEN));  // one string in flash, built at compile time
+  http.addHeader(F("Authorization"), String(F("Bearer ")) + serverDeviceToken());
   // The server names a newer build waiting for this board in a header, so the board checks at once.
   // An absent header reads as "", which is 0: none waiting.
   const char* wanted[] = {"X-Firmware-Available"};

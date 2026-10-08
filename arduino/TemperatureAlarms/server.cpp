@@ -11,6 +11,11 @@
 #define SERVER_URL_2 ""
 #endif
 
+// The fallback server's own Device token, optional: none (or empty) means it takes DEVICE_TOKEN too.
+#ifndef DEVICE_TOKEN_2
+#define DEVICE_TOKEN_2 ""
+#endif
+
 // sizeof a string literal counts its NUL, so an empty SERVER_URL_2 is 1: no fallback server.
 static const uint8_t SERVER_COUNT = sizeof(SERVER_URL_2) > 1 ? 2 : 1;
 // Failed reports in a row before moving to the other server: one miss is not an outage.
@@ -122,6 +127,10 @@ bool serverUsesTls() {
 
 uint8_t serverNumber() {
   return current + 1;
+}
+
+const char* serverDeviceToken() {
+  return current == 1 && sizeof(DEVICE_TOKEN_2) > 1 ? DEVICE_TOKEN_2 : DEVICE_TOKEN;
 }
 
 static void moveTo(uint8_t index, const __FlashStringHelper* why) {
