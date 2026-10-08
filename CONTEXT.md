@@ -1,11 +1,11 @@
 # Temperature Alarms
 
-Live temperature and humidity monitoring for network closets across school campuses, fed by NodeMCU boards with DHT11 sensors.
+Live temperature and humidity monitoring for network closets across school campuses, fed by NodeMCU boards with DHT11 sensors (or the more accurate DHT22 or SHT31).
 
 ## Language
 
 **Device**:
-One NodeMCU board with a DHT11 sensor, installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings.
+One NodeMCU board with a sensor (a DHT11, DHT22, or SHT31, chosen when its firmware is built), installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings. From firmware 6 the board says which sensor it carries with every report, and the Device's History shows it, so its Readings are read with that sensor's accuracy in mind.
 _Avoid_: Sensor, node, board, table
 
 **Reading**:

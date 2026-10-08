@@ -78,6 +78,8 @@ export interface History {
     closet: string;
     closetType: 'IDF' | 'MDF' | null;
     campus: Campus;
+    /** The sensor its board last said it carries (firmware 6 and later); null until one has. */
+    sensor: 'DHT11' | 'DHT22' | 'SHT31' | null;
   };
   /** The day asked for, YYYY-MM-DD. */
   date: string;

@@ -223,6 +223,7 @@ describe('upgrading a production database', () => {
       '0011-notifications',
       '0012-incident-acknowledgement',
       '0013-incident-reminders',
+      '0016-device-sensor',
     ]);
   });
 });

@@ -179,12 +179,13 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         // Either is a report, so the Device is heard from now. A Reading clears the fault count; a fault report adds one.
         sensorFaults = values === null ? device.sensorFaults + 1 : 0;
         await conn.query('UPDATE devices SET last_report_at = ?, sensor_faults = ? WHERE id = ?', [recordedAt, sensorFaults, device.id]);
-        // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware tab.
+        // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware
+        // tab, and its sensor (firmware 6) for History too.
         if (info !== null) {
           await conn.query(
             `UPDATE devices SET firmware_version = COALESCE(?, firmware_version), rssi = ?, uptime_s = ?, free_heap = ?,
-               reset_reason = ?, update_result = ?, info_at = ? WHERE id = ?`,
-            [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, recordedAt, device.id],
+               reset_reason = ?, update_result = ?, sensor = ?, info_at = ? WHERE id = ?`,
+            [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, info.sensor, recordedAt, device.id],
           );
         }
         changed =
@@ -430,7 +431,8 @@ export function historyRouter({ pool, config, now = () => new Date() }: RouteDep
       const truncated = rows.length > HISTORY_ROW_LIMIT;
       const readings: ReadingPayload[] = rows.slice(0, HISTORY_ROW_LIMIT).map(({ tempF, humidity, recordedAt }) => ({ tempF, humidity, recordedAt: recordedAt.toISOString() }));
       res.json({
-        device: { ...toDevice(device), closetType: closetType(device.closet) },
+        // The sensor its board last named (firmware 6), so the day's Readings are read with its accuracy in mind.
+        device: { ...toDevice(device), closetType: closetType(device.closet), sensor: device.sensor },
         date: day.date,
         timeZone: day.timeZone,
         from: day.from.toISOString(),

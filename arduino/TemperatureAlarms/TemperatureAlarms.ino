@@ -1,9 +1,9 @@
-// Temperature Alarms Device firmware: a NodeMCU (ESP8266) with a DHT11 on GPIO 5
-// posts one Reading per Report interval to the backend with the Device token.
+// Temperature Alarms Device firmware: a NodeMCU (ESP8266) with a DHT11, DHT22 or SHT31 (config.h,
+// SENSOR_TYPE) posts one Reading per Report interval to the backend with the Device token.
 //
 // Copy config.example.h to config.h before compiling. Each module has one job:
 //   network.*  connect to WiFi, reconnect in the loop, know the Device hostname
-//   sensor.*   read the DHT11, once more on a failed read, and skip bad samples
+//   sensor.*   read the sensor, once more on a failed read, and skip bad samples
 //   reporter.* build the JSON Reading (or a fault report, when the sensor did not answer) and POST
 //              it, logging the HTTP status
 //   server.*   where SERVER_URL is, and a TLS client that checks its certificate (roots.*)
@@ -16,7 +16,7 @@
 #include "server.h"
 #include "updater.h"
 
-static_assert(REPORT_INTERVAL_SECONDS >= 2, "The DHT11 cannot be read more often than every 2 seconds");
+static_assert(REPORT_INTERVAL_SECONDS >= 2, "The DHT sensors cannot be read more often than every 2 seconds");
 
 static const unsigned long REPORT_INTERVAL_MS = REPORT_INTERVAL_SECONDS * 1000UL;
 

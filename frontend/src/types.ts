@@ -56,6 +56,9 @@ export interface FirmwareStatus {
   devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null; info: DeviceInfo | null }>;
 }
 
+/** The sensor a board carries, as its firmware names it (config.h, `SENSOR_TYPE`). */
+export type SensorType = 'DHT11' | 'DHT22' | 'SHT31';
+
 /** What a board said about itself with its latest Reading (firmware 3 and later); null for older firmware. */
 export interface DeviceInfo {
   rssi: number | null;
@@ -63,6 +66,8 @@ export interface DeviceInfo {
   freeHeap: number | null;
   resetReason: string | null;
   updateResult: string | null;
+  /** Firmware 6 and later; null before. */
+  sensor: SensorType | null;
   /** When it said so. */
   at: string;
 }
@@ -180,6 +185,8 @@ export interface History {
     closet: string;
     closetType: ClosetType | null;
     campus: Campus;
+    /** The sensor its board last said it carries (firmware 6 and later); null until one has. */
+    sensor: SensorType | null;
   };
   /** The day shown, YYYY-MM-DD in `timeZone`. */
   date: string;

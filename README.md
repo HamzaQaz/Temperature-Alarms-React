@@ -2,7 +2,7 @@
 
 **Know a closet is in trouble before the equipment does.**
 
-Live temperature and humidity monitoring for the network closets across a school district. A NodeMCU board with a DHT11 sensor sits in each closet and posts a Reading every 30 seconds. The backend works out which Conditions a closet is in (Hot, Cold, Dry, Mold risk, Sensor fault, Offline) and pushes every Reading to every open dashboard the moment it arrives.
+Live temperature and humidity monitoring for the network closets across a school district. A NodeMCU board with a DHT11 sensor (or a more accurate DHT22 or SHT31) sits in each closet and posts a Reading every 30 seconds. The backend works out which Conditions a closet is in (Hot, Cold, Dry, Mold risk, Sensor fault, Offline) and pushes every Reading to every open dashboard the moment it arrives.
 
 ![The dashboard on the demo, worst first: 24 closets across four campuses, three needing attention, led by a closet in Hot critical, then Mold risk high and Dry](docs/screenshots/dashboard-dark.png)
 
@@ -92,7 +92,7 @@ The vocabulary used throughout the code and docs is defined in [`CONTEXT.md`](CO
 
 ```
 .
-├── arduino/       # ESP8266 sketch for the NodeMCU + DHT11 Device, its wiring diagram, and the bench watcher
+├── arduino/       # ESP8266 sketch for the NodeMCU Device (DHT11, DHT22 or SHT31), its wiring diagram, and the bench watcher
 ├── backend/       # Express + TypeScript API, MySQL, the migration runner, the virtual Device
 ├── frontend/      # React + TypeScript + Vite, Tailwind, shadcn/ui; src/pages/ holds Dashboard, Incidents, Campuses, History and Settings; e2e/ holds the browser walk
 ├── deploy/        # deploy.sh and deploy.ps1: install, upgrade, back up, and remove the stack, here or over ssh
@@ -216,12 +216,12 @@ Every response with a body is JSON. Errors carry `{ "error": "<message>" }` with
 | `PATCH /api/devices/pending/:hostname` | Admin | `{ignored: boolean}`: hide a waiting board from the pop-up (it stays listed); 404 if it is not listed |
 | `DELETE /api/devices/pending/:hostname` | Admin | 204; forgotten until it reports again |
 | `GET /api/devices/rotation` | Admin | `{active, since, previous, unheard}` for a Device token rotation: `active` is true while `DEVICE_TOKEN_PREVIOUS` is set; `previous` lists the Devices whose latest Reading came with the previous token, and `unheard` those not heard at all since `since`, when api started (both empty when not `active`). Settings shows it; `deploy.sh rotate-device-token --finish` waits for both to be empty |
-| `POST /api/readings` | Device | The Device token, or during a rotation the previous one too. `{device, temp, humidity}`, plus, from firmware 3, what the board says about itself: `fw` (its `FIRMWARE_VERSION`), `rssi` (dBm), `uptime` (seconds), `heap` (free bytes), `reset` (why it last restarted) and `update` (its last update check). Each is optional and dropped if out of range; the Firmware tab shows the latest. When a newer build is published for that board, the 201 carries `X-Firmware-Available: <version>` and the board checks for it at once. from the board (`device` is its hostname, `temp` in °F) → 201 `{device, reading: {tempF, humidity, recordedAt}}`; 404 when no Device has that hostname; 422 when a number is missing, `temp` is outside -40 to 200 °F, or `humidity` is outside 0 to 100 (a sensor fault, not a Reading). From firmware 5, a board whose sensor does not answer posts a fault report instead, `{device, fault: "sensor"}` with the same self-report fields and no values → 202 `{device, fault: "sensor"}`: no Reading is stored, the Device stays Online, and three in a row raise Sensor fault (docs/adr/0009); any other `fault`, or a fault with values, is 422. Limited to 20 Readings and fault reports a minute per Device, then 429 |
+| `POST /api/readings` | Device | The Device token, or during a rotation the previous one too. `{device, temp, humidity}`, plus, from firmware 3, what the board says about itself: `fw` (its `FIRMWARE_VERSION`), `rssi` (dBm), `uptime` (seconds), `heap` (free bytes), `reset` (why it last restarted) and `update` (its last update check); from firmware 6, `sensor` (`DHT11`, `DHT22` or `SHT31`; any other value is dropped). Each is optional and dropped if out of range; the Firmware tab shows the latest. When a newer build is published for that board, the 201 carries `X-Firmware-Available: <version>` and the board checks for it at once. from the board (`device` is its hostname, `temp` in °F) → 201 `{device, reading: {tempF, humidity, recordedAt}}`; 404 when no Device has that hostname; 422 when a number is missing, `temp` is outside -40 to 200 °F, or `humidity` is outside 0 to 100 (a sensor fault, not a Reading). From firmware 5, a board whose sensor does not answer posts a fault report instead, `{device, fault: "sensor"}` with the same self-report fields and no values → 202 `{device, fault: "sensor"}`: no Reading is stored, the Device stays Online, and three in a row raise Sensor fault (docs/adr/0009); any other `fault`, or a fault with values, is 422. Limited to 20 Readings and fault reports a minute per Device, then 429 |
 | `GET /api/dashboard?campus=SHORTCODE&order=worst\|campus` | none | `{reportIntervalSeconds, offlineAfterSeconds, devices}`: every Device (or only that Campus's), worst first by default (critical, high, warning with Offline among it, moderate, then none; ties by Campus name then closet), or by Campus name then closet with `order=campus`; any other order is 422. Each Device comes with `latestReading`, `online`, `secondsSinceReading`, `lastReportAt` and `secondsSinceReport` (its last Reading or fault report, which Online counts from), its `conditions` worst first, `tokenMismatchAt` (as in `GET /api/devices`; the card says "Token mismatch" while it is set), and `openIncidents`, its incidents still open, oldest first, each `{id, condition, level, start, acknowledgement}` |
 | `GET /api/dashboard/stream` | none | Server-Sent Events: one message per Reading ingested, `{type: "reading", device, reading, online, conditions, lastReportAt}`; one per fault report, `{type: "fault", device, fault: "sensor", online, conditions, lastReportAt}`; one per incident that opens, changes level, closes, or is acknowledged, `{type: "incident", change: "opened" \| "level" \| "closed" \| "acknowledged", incident}` with the incident as `/api/incidents` sends it; plus a heartbeat comment every 25 seconds to keep proxies from closing the stream. Every message is unnamed: tell them apart by `type` |
 | `GET /api/incidents?from=<ISO>&to=<ISO>` | none | `{from, to, incidents}`: every incident that overlaps the window, ongoing ones included, oldest first. Each is `{id, device: {id, hostname, closet, campus}, condition, level, start, end, peak: {value, tempF, humidity, recordedAt}, segments: [{level, start, end}], acknowledgement}`: `level` is the worst reached, `acknowledgement` is `{by, at}` once someone said they are on it (null until then, and kept after the end), `end` is null while ongoing, `peak.value` is °F for Hot and Cold, percent for Dry and Mold risk, and null for Offline and Sensor fault (whose peak is the last good Reading before it). `from` and `to` are ISO instants with a zone; 422 unless `from` is before `to` and the window is at most 8 days. An incident is a Condition at warning or worse; see ADR 0006 for when one opens and closes |
 | `POST /api/incidents/:id/acknowledge` | Admin | Body `{by}`: a name or short note, 1 to 60 characters once trimmed, no control characters, line or paragraph separators, or text-reordering marks (422 otherwise). Records who is on an open incident and when, and sends it on the stream; answers the incident as `/api/incidents` sends it. The first acknowledgement stands: a repeat while it is open answers 200 with the incident as it is and sends nothing. 409 once the incident has ended, acknowledged before or not; 404 for an unknown one. It stops reminders, never the other emails: later emails about the incident name it (ADR 0008) |
-| `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` | none | One local day of Readings, oldest first, with `summary` min, max, and average for each measure. `date` defaults to today and `tz` to the server's zone. At most 30,000 Readings, more than a day at the ingest limit: past that, the first 30,000 are sent, `truncated` is true, the summary covers only those, and the History page says so. `retentionDays` says how far back Readings go, the longest range the CSV download takes |
+| `GET /api/devices/:id/history?date=YYYY-MM-DD&tz=America/Chicago` | none | One local day of Readings, oldest first, with `summary` min, max, and average for each measure. `date` defaults to today and `tz` to the server's zone. At most 30,000 Readings, more than a day at the ingest limit: past that, the first 30,000 are sent, `truncated` is true, the summary covers only those, and the History page says so. `retentionDays` says how far back Readings go, the longest range the CSV download takes. `device.sensor` is the sensor its board last said it carries, null until a board on firmware 6 has said |
 | `GET /api/devices/:id/readings.csv?from=YYYY-MM-DD&to=YYYY-MM-DD&tz=America/Chicago` | none | A CSV download for Excel: a header row, then one row per Reading over the days `from` to `to` (both included, cut in `tz`, the server's zone by default), oldest first: local time and UTC time (`2026-09-05 14:30:00`), °F, °C to one decimal, and % humidity, as bare numbers. UTF-8 with a byte order mark, CRLF line ends, named like `CHS_IDF-2_readings_2026-09-01_to_2026-09-28.csv`. Streamed a page at a time. 422 for a missing or backwards range, or one longer than `RETENTION_DAYS`; 404 for an unknown Device. Text that starts with `=`, `+`, `-`, or `@` is written with a leading `'` so a spreadsheet never runs it |
 | `GET /api/incidents.csv?from=<ISO>&to=<ISO>&tz=America/Chicago&device=<id>` | none | The incidents of `/api/incidents` as a CSV download, in the same form: one row per incident overlapping the window, oldest first, with its Campus, Closet, hostname, Condition, worst level, start and end (local and UTC; empty while ongoing), duration in minutes (to now while ongoing), peak °F, °C, and humidity and when (for Offline and Sensor fault, the last good Reading), and who acknowledged it and when. `device` keeps one Device's. The window may run to `RETENTION_DAYS` plus one day (422 past it); named like `incidents_2026-10-04_to_2026-10-05.csv`, or with the Campus and Closet first when `device` is given |
 | `DELETE /api/devices/:id/history` | Admin | 204; every Reading and incident of that Device is gone |
@@ -268,7 +268,15 @@ Apart from Readings, which have the per-Device limit above, `/api/` allows each 
 | Part | Notes |
 | --- | --- |
 | NodeMCU (ESP8266) | Identifies itself by hostname: `ESP_` plus the last six hex digits of its MAC |
-| DHT11 | Temperature and humidity, data pin on GPIO 5 (D1) when wired separately, GPIO 4 (D2) on boards that carry it soldered on |
+| One sensor, chosen per build (`SENSOR_TYPE` in `config.h`) | Temperature and humidity; the firmware treats each the same, and the board names its sensor with every report, so its History page shows it |
+
+| Sensor | Accuracy (typical, from the datasheet) | Connection |
+| --- | --- | --- |
+| DHT11 | ±2 °C (±3.6 °F), ±5 % humidity | One data pin: GPIO 5 (D1) when wired separately, GPIO 4 (D2) on boards that carry it soldered on |
+| DHT22 (AM2302) | ±0.5 °C (±0.9 °F), ±2 % humidity (up to ±5 % at the extremes) | One data pin, wired as the DHT11: GPIO 5 (D1) |
+| SHT31, on a breakout board such as Adafruit's SHT31-D | ±0.3 °C (±0.5 °F), ±2 % humidity | I²C: SDA on GPIO 4 (D2), SCL on GPIO 5 (D1), address 0x44 (0x45 with ADDR tied high) |
+
+Readings are stored in whole degrees and whole percent whatever the sensor (docs/adr/0002), so a DHT22 or SHT31 makes a Reading closer to the truth, not finer.
 
 ### Wiring
 
@@ -284,37 +292,55 @@ A bare four-pin sensor needs a 10 kΩ pull-up between DATA and VCC or every read
 
 A NodeMCU sold with the DHT11 already soldered on needs no wiring at all, but its sensor sits on D2 (GPIO 4), so set `DHT_PIN 4` in `config.h`. Every read comes back NaN until the pin matches the board.
 
+A **DHT22** has the same pinout and wires exactly as the DHT11 above (DATA on D1, and the same pull-up rule); set `SENSOR_TYPE DHT22`.
+
+An **SHT31** is an I²C sensor. Use it on a breakout board, which carries the bus's pull-up resistors, and set `SENSOR_TYPE SHT31`:
+
+| SHT31 breakout pin | NodeMCU pin |
+| --- | --- |
+| VIN | 3V3 |
+| GND | GND |
+| SDA | D2 (GPIO 4) |
+| SCL | D1 (GPIO 5) |
+| ADDR | unconnected (address 0x44); to 3V3 for 0x45, then set `SHT31_ADDRESS 0x45` |
+
+Other pins work too, named in `SHT31_SDA_PIN` and `SHT31_SCL_PIN`. A board whose SHT31 does not answer at boot says so on serial and keeps trying every interval, as a DHT board with a loose wire does.
+
 ## Firmware
 
-The sketch in [`arduino/TemperatureAlarms/`](arduino/TemperatureAlarms/) is the one firmware for every Device: a NodeMCU reads a DHT11 and posts a Reading every Report interval. It is a folder the Arduino IDE compiles together, one job per file:
+The sketch in [`arduino/TemperatureAlarms/`](arduino/TemperatureAlarms/) is the one firmware for every Device: a NodeMCU reads its sensor (a DHT11, DHT22 or SHT31, set in `config.h`) and posts a Reading every Report interval. It is a folder the Arduino IDE compiles together, one job per file:
 
 | File | Job |
 | --- | --- |
 | `TemperatureAlarms.ino` | `setup` and `loop` only: when a Reading is due, read once and report once |
 | `network.h/.cpp` | Join WiFi at boot, reconnect from the loop without a reboot, name the Device |
-| `sensor.h/.cpp` | Read the DHT11, try a NaN read once more 2 s later, then skip the sample and say so on serial |
-| `reporter.h/.cpp` | Build the JSON Reading, or a fault report when the sensor did not answer (firmware 5), and POST it with the Device token, log the HTTP status |
+| `sensor.h/.cpp` | Read the sensor `config.h` names behind one `sensorRead`, try a NaN read once more 2 s later, then skip the sample and say so on serial |
+| `reporter.h/.cpp` | Build the JSON Reading, or a fault report when the sensor did not answer (firmware 5), with what the board says about itself (its sensor too, from firmware 6), and POST it with the Device token, log the HTTP status |
 | `server.h/.cpp`, `roots.h/.cpp` | Where `SERVER_URL` is; over `https://`, a TLS client that accepts only a Let's Encrypt certificate for that name, with the time taken from the server |
 | `updater.h/.cpp`, `version.h` | Over-the-air updates: every hour, install a newer signed build if the server offers one; `FIRMWARE_VERSION` is this build's number |
-| `config.example.h` | Template for the gitignored `config.h`: SSID, password, server URL, Device token, interval, sensor pin |
+| `config.example.h` | Template for the gitignored `config.h`: SSID, password, server URL, Device token, interval, the sensor (`SENSOR_TYPE`) and its pins |
 
 There is no on-device web server, no retry loop, and no per-Device setting. Your router's DHCP list shows the same six digits as `ESP-xxxxxx`.
 
 ### Libraries and board settings
 
-The sketch compiles clean against these versions; install them from the IDE's Boards Manager and Library Manager. Build production binaries with exactly these, not whatever is newest: the same `config.h` and the same three versions give the same firmware, so a board flashed months later behaves like the rest of its batch. When a version changes, compile, run one board through the bench checklist, and update this table in the same commit.
+The sketch compiles clean against these versions; install them from the IDE's Boards Manager and Library Manager. Build production binaries with exactly these, not whatever is newest: the same `config.h` and the same versions give the same firmware, so a board flashed months later behaves like the rest of its batch. When a version changes, compile, run one board through the bench checklist, and update this table in the same commit.
 
 | Dependency | Version | Where |
 | --- | --- | --- |
 | esp8266 by ESP8266 Community | 3.1.2 | Boards Manager, after adding `https://arduino.esp8266.com/stable/package_esp8266com_index.json` under Preferences, Additional boards manager URLs |
 | DHT sensor library by Adafruit | 1.4.7 | Library Manager |
 | Adafruit Unified Sensor | 1.1.15 | Library Manager (the DHT library depends on it; accept the prompt to install it) |
+| Adafruit SHT31 Library | 2.2.2 | Library Manager; only `SENSOR_TYPE SHT31` builds use it |
+| Adafruit BusIO | 1.17.4 | Library Manager (the SHT31 library depends on it; accept the prompt to install it) |
 
 Board settings, under Tools: board **NodeMCU 1.0 (ESP-12E Module)**, upload speed 115200, CPU 80 MHz, flash size 4MB (any FS split), everything else at its default. The serial monitor runs at 115200.
 
+Room to grow: a signed build of firmware 6 uses 92 % of the ESP8266's instruction RAM (IRAM) with a DHT11 or DHT22 (60,847 of 65,536 bytes) and 93 % with an SHT31 (61,447; the I²C driver adds 600), and 37 % of its 1 MB of code flash (38 % with an SHT31). IRAM is the tight one: compile any change that could add to it (an interrupt handler, another core library) for each sensor and check that figure first.
+
 ### Flashing
 
-1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials (leave the password `""` for an open network that admits Devices by MAC allowlist, and see [Secrets on the board](#secrets-on-the-board) first), and the server URL without a trailing slash (the sketch appends `/api/readings`). For production boards that is `https://YOUR_DOMAIN`, the same name the dashboard is served at, HTTPS, checked against Let's Encrypt's roots like a browser checks it, is the transport the district chose (see [Transport for production boards](#transport-for-production-boards) below, and run its checks first). On a desk or a lab network, `http://<host>` works too. A Device flashed with `http://<host>` keeps reporting after TLS goes in front, by hostname or by address, but only through the plain-HTTP Readings route that DEPLOYMENT.md's TLS proxy keeps; the Device cannot follow a redirect to HTTPS. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor pin (5 for a wired DHT11, 4 for an integrated one). `config.h` is gitignored.
+1. Copy `arduino/TemperatureAlarms/config.example.h` to `config.h` in the same folder and fill in the WiFi credentials (leave the password `""` for an open network that admits Devices by MAC allowlist, and see [Secrets on the board](#secrets-on-the-board) first), and the server URL without a trailing slash (the sketch appends `/api/readings`). For production boards that is `https://YOUR_DOMAIN`, the same name the dashboard is served at, HTTPS, checked against Let's Encrypt's roots like a browser checks it, is the transport the district chose (see [Transport for production boards](#transport-for-production-boards) below, and run its checks first). On a desk or a lab network, `http://<host>` works too. A Device flashed with `http://<host>` keeps reporting after TLS goes in front, by hostname or by address, but only through the plain-HTTP Readings route that DEPLOYMENT.md's TLS proxy keeps; the Device cannot follow a redirect to HTTPS. Then the `DEVICE_TOKEN` from the stack's `.env`, the interval, which must equal the backend's `REPORT_INTERVAL_SECONDS`, and the sensor: `SENSOR_TYPE` (`DHT11`, `DHT22` or `SHT31`) and its pins (`DHT_PIN` 5 for a wired DHT11 or DHT22, 4 for an integrated DHT11; the SHT31's I²C pins as wired above). `config.h` is gitignored.
 2. Open `TemperatureAlarms.ino` in the Arduino IDE, choose the board setting above and the port the NodeMCU appears on, and click Upload.
 3. Open the serial monitor at 115200 and watch the Device join WiFi.
 
@@ -323,7 +349,7 @@ The same build from the command line, with the sketch's dependencies installed o
 ```bash
 arduino-cli config init --additional-urls https://arduino.esp8266.com/stable/package_esp8266com_index.json
 arduino-cli core update-index && arduino-cli core install esp8266:esp8266@3.1.2
-arduino-cli lib install "DHT sensor library@1.4.7" "Adafruit Unified Sensor@1.1.15"
+arduino-cli lib install "DHT sensor library@1.4.7" "Adafruit Unified Sensor@1.1.15" "Adafruit SHT31 Library@2.2.2" "Adafruit BusIO@1.17.4"
 arduino-cli compile --fqbn esp8266:esp8266:nodemcuv2 arduino/TemperatureAlarms
 arduino-cli upload  --fqbn esp8266:esp8266:nodemcuv2 -p /dev/ttyUSB0 arduino/TemperatureAlarms
 arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
@@ -366,12 +392,21 @@ Every board carries the WiFi password and the Device token in plain text: in `co
 
 ### Bench checklist
 
-Run through this once per Device, on a desk, before it goes into a closet.
+Run through this once per Device, on a desk, before it goes into a closet. What differs by sensor is in the table after the steps.
 
 1. **Hostname on serial.** After `wifi: connected` the log prints `device: ESP_xxxxxx`. Add that hostname as a Device in Settings, or adopt it: a board reporting with the right token but not added yet appears under Settings, New devices (and as a pop-up for anyone with the Admin token), with its last Reading and address. Until it is added, every POST is refused with a 404 naming the hostname. A board flashed with the wrong token shows "Token mismatch" on its card instead, if it is already added.
-2. **First POST returns 201.** Within one interval the log shows a `sensor:` line with the temperature and humidity, then `report: 201 created`, and the Device's card updates on the dashboard. A `report: 401` means the token in `config.h` does not match the backend's `DEVICE_TOKEN`.
-3. **Unplugged sensor yields fault reports, never zeros.** Pull the DATA wire: each interval logs `sensor: read failed (NaN), trying once more`, then `sensor: read failed (NaN), sample skipped` and `report: 202 sensor fault reported` (firmware 5 and later; earlier firmware posts nothing). The history never records a zero. On the Firmware tab the board stays Online, and after three intervals its card shows **Sensor fault** (docs/adr/0009). Plug it back in: the next interval posts a Reading (`report: 201 created`), and the Sensor fault Incident ends after two Readings in a row.
+2. **First POST returns 201.** At boot the log names the sensor the binary was built for, and within one interval it shows a `sensor:` line with the temperature and humidity, then `report: 201 created`, and the Device's card updates on the dashboard. Its History page names the sensor beside the hostname. A `report: 401` means the token in `config.h` does not match the backend's `DEVICE_TOKEN`.
+3. **Unplugged sensor yields fault reports, never zeros.** Pull the sensor's wire (see the table): each interval logs `sensor: read failed (NaN), trying once more`, then `sensor: read failed (NaN), sample skipped` and `report: 202 sensor fault reported` (firmware 5 and later; earlier firmware posts nothing). The history never records a zero. On the Firmware tab the board stays Online, and after three intervals its card shows **Sensor fault** (docs/adr/0009). Plug it back in: the next interval posts a Reading (`report: 201 created`), and the Sensor fault Incident ends after two Readings in a row.
 4. **Router reboot yields resumed posting.** Power-cycle the access point: the log shows `wifi: connection lost, reconnecting`, then `wifi: reconnected` with the new address, and the next Reading goes out without the Device restarting. The `report:` lines that fail in between are logged and not retried.
+
+| | DHT11 | DHT22 | SHT31 |
+| --- | --- | --- | --- |
+| Boot line (step 2) | `sensor: DHT11 on GPIO 5` (`GPIO 4` integrated) | `sensor: DHT22 on GPIO 5` | `sensor: SHT31 at 0x44, SDA GPIO 4, SCL GPIO 5`; `not answering at` means the wiring or the address |
+| History and the Firmware tab name | DHT11 | DHT22 | SHT31 |
+| Wire to pull (step 3) | DATA | DATA | SDA |
+| The first board of a new sensor or a new supplier: beside a reference thermometer and hygrometer for 10 minutes, every Reading within | 5 °F and 6 % | 2 °F and 3 % | 2 °F and 3 % |
+
+The last row is the sensor's accuracy (Hardware) plus one for the whole-degree rounding of a Reading. Outside it, the sensor is bad or is warmed by the board it sits against.
 
 ### Flashing a batch
 
@@ -381,7 +416,7 @@ For a box of boards, [`arduino/bench.py`](arduino/bench.py) does the checklist's
 pip install esptool pyserial
 ```
 
-1. **Export the binary once.** Fill in `config.h` as above, then in the IDE choose Sketch, Export Compiled Binary: it lands under `build/` in the sketch folder as `TemperatureAlarms.ino.bin`. One board type per batch, since `DHT_PIN` is in the binary; a batch of integrated boards is a second export.
+1. **Export the binary once.** Fill in `config.h` as above, then in the IDE choose Sketch, Export Compiled Binary: it lands under `build/` in the sketch folder as `TemperatureAlarms.ino.bin`. One kind of board per batch, since the sensor and its pins are in the binary: integrated DHT11 boards, DHT22 boards, and SHT31 boards are each an export of their own.
 2. **Set the Admin token**, from the stack's `.env`, in the environment and nowhere else: `$env:ADMIN_TOKEN = "..."` in PowerShell, `set ADMIN_TOKEN=...` in cmd. The watcher never prints it or writes it to the sheet or the log. It does send it with every registration, so give `--server` an `https://` URL once a TLS proxy is in front; over `http://`, run the bench only on a network you trust, such as the Devices' VLAN or a cable to the server's LAN. The watcher never follows a redirect, so an `http://` URL that the proxy redirects stops it at startup, naming the URL to use instead. Close the PowerShell window when the batch is done.
 3. **Run the watcher** against the live server and the inventory sheet, a CSV with a `MAC` column (`ID` and `HOSTNAME` columns are used when present). Close the sheet in Excel first, since an open sheet cannot be written. Keep the sheet outside the repo: it lists every board's MAC, and the watcher writes `<sheet>.bench.csv` and, while saving, `<sheet>.tmp` next to it (`.gitignore` covers CSVs at the repo root and in `arduino/` in case one lands there):
 

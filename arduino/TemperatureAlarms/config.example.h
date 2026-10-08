@@ -19,10 +19,22 @@
 // Must match DEVICE_TOKEN in the backend .env (docs/adr/0003).
 #define DEVICE_TOKEN "change-me-device"
 
-// GPIO the DHT11 DATA pin is on. 5 is D1, where dht11-pinout.svg wires a separate sensor.
-// A NodeMCU with the DHT11 soldered on (the "ESP8266 + DHT11" boards) has it on GPIO 4, D2.
+// The sensor on the board: DHT11 (the original, to within 2 C and 5 % humidity), DHT22 (0.5 C, 2 %)
+// or SHT31 (I2C, 0.3 C, 2 %). One per build: a batch of each kind is its own export. The README's
+// Hardware section has the wiring for each; only the pins of the sensor named here are used.
+#define SENSOR_TYPE DHT11
+
+// DHT11 and DHT22: the GPIO the DATA pin is on. 5 is D1, where dht11-pinout.svg wires a separate
+// sensor (a DHT22 wires the same way). A NodeMCU with the DHT11 soldered on (the "ESP8266 + DHT11"
+// boards) has it on GPIO 4, D2.
 #define DHT_PIN 5
 
+// SHT31: the GPIOs of the I2C bus, 4 (D2) for SDA and 5 (D1) for SCL as wired in the README, and the
+// sensor's address: 0x44, or 0x45 on a breakout whose ADDR pin is tied to 3V3.
+#define SHT31_SDA_PIN 4
+#define SHT31_SCL_PIN 5
+#define SHT31_ADDRESS 0x44
+
 // How often a Reading is sent. Must match REPORT_INTERVAL_SECONDS in the backend
-// .env, which is 30 unless changed there. The DHT11 cannot sample faster than every 2 s.
+// .env, which is 30 unless changed there. The DHT sensors cannot sample faster than every 2 s.
 #define REPORT_INTERVAL_SECONDS 30

@@ -25,6 +25,7 @@ interface StatusRow extends RowDataPacket {
   freeHeap: number | null;
   resetReason: string | null;
   updateResult: string | null;
+  sensor: string | null;
   infoAt: Date | null;
 }
 
@@ -107,7 +108,7 @@ export function firmwareRouter({ pool, config, deviceAuth }: RouteDeps): Router 
       const [rows] = await pool.query<StatusRow[]>(`
         SELECT d.id, d.hostname, d.closet, d.firmware_version AS firmwareVersion, d.firmware_checked_at AS checkedAt,
                d.rssi, d.uptime_s AS uptimeSeconds, d.free_heap AS freeHeap, d.reset_reason AS resetReason,
-               d.update_result AS updateResult, d.info_at AS infoAt,
+               d.update_result AS updateResult, d.sensor, d.info_at AS infoAt,
                c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode
         FROM devices d JOIN campuses c ON c.id = d.campus_id
         ORDER BY c.name, d.closet, d.hostname`);
@@ -130,6 +131,7 @@ export function firmwareRouter({ pool, config, deviceAuth }: RouteDeps): Router 
                   freeHeap: rest.freeHeap,
                   resetReason: rest.resetReason,
                   updateResult: rest.updateResult,
+                  sensor: rest.sensor,
                   at: rest.infoAt.toISOString(),
                 },
         })),
