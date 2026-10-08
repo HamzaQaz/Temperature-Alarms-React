@@ -126,9 +126,18 @@ try {
     Expect ((& $said) -match 'DB root') $true 'info: no DB root line'
 
     # Email notifications (docs/adr/0008); deploy.test.sh says why each case matters.
-    $notifyNames = 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_REMIND_HOURS'
+    $notifyNames = 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_REMIND_HOURS', 'NOTIFY_TO_ALL'
     foreach ($k in $notifyNames) { Expect ((EnvOf $k) -eq '') $true "install: $k has a value without --smtp-host" }
     Expect ((& $said) -match 'Email +off') $true 'info: notifications not shown as off'
+
+    # NOTIFY_TO_ALL (recipients per Campus) is a tunable: --set takes true, false, or empty, and nothing else.
+    $before = Get-EnvText
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'NOTIFY_TO_ALL=yes')) $false '--set NOTIFY_TO_ALL=yes: succeeded'
+    Expect ((Get-EnvText) -eq $before) $true '--set NOTIFY_TO_ALL=yes: .env changed'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'NOTIFY_TO_ALL=true')) $true "--set NOTIFY_TO_ALL=true failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_TO_ALL') -eq 'true') $true '--set NOTIFY_TO_ALL=true: not written'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'NOTIFY_TO_ALL=')) $true "--set NOTIFY_TO_ALL= failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_TO_ALL') -eq '') $true '--set NOTIFY_TO_ALL=: not emptied'
 
     $before = Get-EnvText
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'relay.example.org', '--smtp-password', 'hunter2')) $false '--smtp-password: succeeded'

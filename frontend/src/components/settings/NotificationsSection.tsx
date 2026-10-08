@@ -16,9 +16,9 @@ interface NotificationsSectionProps {
 const timeOf = (iso: string): string => new Date(iso).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
 
 /**
- * Email notifications (docs/adr/0008): whether Incidents are emailed, to whom, how the last send
- * went, what waits to be sent or was given up on, and a test email to prove the relay works. The
- * settings themselves live in the server's .env.
+ * Email notifications (docs/adr/0008): whether Incidents are emailed, to which lists and how the
+ * last send to each went, what waits to be sent or was given up on, and a test email to prove the
+ * relay works. The settings themselves live in the server's .env, a Campus's own list on Campuses.
  */
 export function NotificationsSection({ canEdit, onUnauthorised }: NotificationsSectionProps) {
   return (
@@ -26,7 +26,7 @@ export function NotificationsSection({ canEdit, onUnauthorised }: NotificationsS
       <SectionHeader
         id="notifications-heading"
         title="Notifications"
-        description="Emails to technicians when an Incident opens, gets worse, or ends, sent through the district's SMTP relay. The relay and the recipients are set in the server's .env."
+        description="Emails to technicians when an Incident opens, gets worse, or ends, sent through the district's SMTP relay. The relay and the default recipients are set in the server's .env; a Campus can name its own under Campuses."
       />
       {canEdit ? (
         <NotificationStatusAndTest onUnauthorised={onUnauthorised} />
@@ -62,22 +62,30 @@ function NotificationStatusAndTest({ onUnauthorised }: { onUnauthorised: () => v
             <p className="break-words">
               <span className="font-medium">{summary.state}</span> {summary.detail}
             </p>
-            {summary.lastSent !== null && <p className="break-words text-muted-foreground">{summary.lastSent}</p>}
-            {summary.pending !== null && <p className="text-muted-foreground">{summary.pending}</p>}
-            {summary.lastFailure !== null && (
-              <p className="flex items-start gap-2 text-destructive">
-                <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
-                <span className="min-w-0 break-words">{summary.lastFailure}</span>
-              </p>
+            {summary.lists.length > 0 && (
+              <ul className="space-y-2 py-1" aria-label="Recipient lists">
+                {summary.lists.map((list) => (
+                  <li key={list.recipients} className="space-y-0.5">
+                    <p className="break-words">{list.recipients}</p>
+                    <p className="break-words text-muted-foreground">{list.campuses}</p>
+                    {list.failed ? (
+                      <p className="flex items-start gap-2 text-destructive">
+                        <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                        <span className="min-w-0 break-words">{list.lastResult}</span>
+                      </p>
+                    ) : (
+                      <p className="break-words text-muted-foreground">{list.lastResult}</p>
+                    )}
+                  </li>
+                ))}
+              </ul>
             )}
+            {summary.pending !== null && <p className="text-muted-foreground">{summary.pending}</p>}
             {summary.failed !== null && (
               <p className="flex items-start gap-2 text-destructive">
                 <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
                 <span className="min-w-0 break-words">{summary.failed}</span>
               </p>
-            )}
-            {enabled && summary.lastSent === null && summary.lastFailure === null && (
-              <p className="text-muted-foreground">Nothing sent in the last week.</p>
             )}
           </div>
           {enabled && (

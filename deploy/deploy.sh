@@ -16,7 +16,7 @@ ENV_FILE=".env"
 BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
 SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD"
-TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE NOTIFY_COALESCE_SECONDS"
+TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE NOTIFY_COALESCE_SECONDS NOTIFY_TO_ALL"
 # Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
 # flags or the install prompts, never with --set; the password never comes from the command line.
 NOTIFY_KEYS="SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS"
@@ -375,6 +375,8 @@ valid_tunable() {
     # MySQL's size syntax: bytes, or a whole number of K, M, or G.
     DB_BUFFER_POOL_SIZE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[1-9][0-9]*[KMG]?$' ;;
     NOTIFY_COALESCE_SECONDS) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
+    # Empty or false: a Campus with its own recipients emails only them; true copies NOTIFY_TO in.
+    NOTIFY_TO_ALL) case "$2" in ''|true|false) return 0 ;; esac; return 1 ;;
     *) printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
   esac
 }
@@ -636,7 +638,7 @@ prompt_tunables() {
         valid_tunable "$k" "$value" && break
         warn "'$value' is not valid for $k"
       done
-      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ] || [ "$k" = NOTIFY_COALESCE_SECONDS ]; } && [ -z "$value" ]; then continue; fi
+      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ] || [ "$k" = NOTIFY_COALESCE_SECONDS ] || [ "$k" = NOTIFY_TO_ALL ]; } && [ -z "$value" ]; then continue; fi
       env_set "$k" "$value"
     done
   fi

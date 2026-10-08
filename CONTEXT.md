@@ -74,7 +74,7 @@ A technician saying they are on an open Incident, with their name or a short not
 _Avoid_: Claim, assign, ownership, ack
 
 **Notification**:
-An email the server sends to a fixed list of recipients, through the district's SMTP relay, when an Incident opens, gets worse (its level rises), or closes, and when a Firmware release goes on Hold (its own email). A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
+An email the server sends through the district's SMTP relay when an Incident opens, gets worse (its level rises), or closes, to its Campus's recipients: the Campus's own list, set on Settings, or the default list (`NOTIFY_TO`) for a Campus without one; and, to the default list, when a Firmware release goes on Hold (its own email). A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email to each recipient list, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
 _Avoid_: Alert, alarm (the old feature that was removed), page, message
 
 **Reminder**:

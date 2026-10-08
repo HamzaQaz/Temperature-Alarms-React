@@ -43,11 +43,21 @@ An Incident still open and unacknowledged after `NOTIFY_REMIND_HOURS` is emailed
 - **Dropped unsent when stale.** A reminder whose Incident has been acknowledged or has ended by the time the sender claims it is deleted, not sent: someone is on it, or the closing email says it is over.
 - **What it says.** Alone: `[Temperature Alarms] Still open: CHS IDF 2 Hot critical, 6 h`, counted in whole hours (then days) from the start to when it was queued; the entry reads "Hot critical: still open after 6 h" and adds that acknowledging it on the Dashboard stops these reminders. In a digest it counts as `(2 still open)` beside `(1 resolved)`. Other news about the same Incident in one batch (worse, closed) takes its place.
 
+## Update 2026-10-07: Recipients per Campus
+
+Each Campus can name its own recipients, so a campus's technicians get only their campus's mail (GitHub #13). The owner decided the lists live in the database, edited on Settings, not in `.env`; the rest was decided by the coordinator, open to the owner:
+
+- **`campuses.notify_to`** (migration 0014): comma-separated bare addresses, checked by the rule `NOTIFY_TO` is (`config.ts`), 1000 characters at most; empty for a Campus that emails `NOTIFY_TO`, which stays the default. Set when a Campus is added or with `PATCH /api/campuses/:id`, both behind the Admin token, and read only through `GET /api/campuses/recipients`, so the public Campus list carries no address. A backup carries the lists with the rest of the database.
+- **`NOTIFY_TO_ALL=true`** copies `NOTIFY_TO` on every email, after a Campus's own list, for a district office that wants all of it. Off by default, ignored while email is off like the window, set with `deploy --set NOTIFY_TO_ALL=true`.
+- **One email per list per pass.** The sender reads each claimed row's list from its Device's Campus as it stands when the email is built (a plain read, locking no Device or Campus), so a list changed while a row waits sends to the new one. A row with no Campus goes to `NOTIFY_TO`. Rows naming the same people, in any order or case, are one list and one email. Each list is claimed, sent, and marked in its own transaction, one turn a pass: a list the relay refuses records the failure on its own rows, which back off and give up on their own schedule, while the other lists still go, and none is sent twice. Each list coalesces on its own window, so a retry or a full window in one never hurries another. A pass cut short now rolls back only the list in flight.
+- **What a row records.** `notifications.recipients` is the list it was last tried with (its key: the addresses lower-cased and sorted), so Settings, Notifications, can show every list with the Campuses on it and its last result, read from the rows and so kept across a restart. The test email still goes to `NOTIFY_TO` and counts as that list's result.
+- **The Bench** never emails, so it appears on no list.
+
 ## Consequences
 
 - One new dependency, `nodemailer`.
 - The email builder and the queueing rules (`outbox.ts`) are pure, so content is unit-tested without SMTP, and another channel could reuse the outbox later.
-- Recipients are global. Recipients per Campus and quiet hours are left for later; acknowledgement and reminders came on 2026-10-07 (above).
+- Quiet hours are left for later; acknowledgement, reminders, and recipients per Campus came on 2026-10-07 (above).
 - Sent and failed rows are kept 7 days for the Settings status, then removed by the retention job; pending rows cascade with their Incident and their Device, so Reset history takes them too. The status (pending, given up, last sent with its subject, last failure) is read from the rows, so it survives a restart. The Settings test email skips the outbox, so its own result is kept by the running process only.
 - Rows record `level`, `attempts`, `last_attempt_at`, `last_error`, and the `subject` they were sent under, beyond the columns first sketched, so Settings can say what went out and when the relay last failed.
 - A row queued while the sender could not run at all (the backend down for days) is still tried when it returns; if that try fails, it is given up at once, being past its day.

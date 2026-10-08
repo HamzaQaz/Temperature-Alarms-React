@@ -105,12 +105,21 @@ printf '%s' "$out" | grep -q 'DB root' || fail "info: no DB root line: $out"
 
 # Email notifications (docs/adr/0008). Off after a plain install: no SMTP setting has a value, since
 # one set without SMTP_HOST stops api from starting. Compose passes every one to api, empty when unset.
-for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS NOTIFY_REMIND_HOURS; do
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS NOTIFY_REMIND_HOURS NOTIFY_TO_ALL; do
   [ -z "$(renv $k)" ] || fail "install: $k has a value without --smtp-host"
   grep -qE "^      $k: \\\$\{$k:-\}\$" "$repo/compose.yaml" || fail "compose.yaml: api does not get $k (empty when unset)"
   grep -qE "^# $k=" "$repo/.env.example" || fail ".env.example: $k is not listed, commented"
 done
 printf '%s' "$out" | grep -q 'Email *off' || fail "info: notifications not shown as off: $out"
+
+# NOTIFY_TO_ALL (recipients per Campus) is a tunable: --set takes true, false, or empty, and nothing else.
+cp "$repo/.env" "$work/env.before"
+out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL=yes < /dev/null) && fail "--set NOTIFY_TO_ALL=yes: exit 0"
+cmp -s "$repo/.env" "$work/env.before" || fail "--set NOTIFY_TO_ALL=yes: .env changed"
+out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL=true < /dev/null) || fail "--set NOTIFY_TO_ALL=true: exit $?: $out"
+[ "$(renv NOTIFY_TO_ALL)" = true ] || fail "--set NOTIFY_TO_ALL=true: not written"
+out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL= < /dev/null) || fail "--set NOTIFY_TO_ALL=: exit $?: $out"
+[ -z "$(renv NOTIFY_TO_ALL)" ] || fail "--set NOTIFY_TO_ALL=: not emptied"
 
 # The password is never an argument: --smtp-password is refused before anything is written.
 cp "$repo/.env" "$work/env.before"

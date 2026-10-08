@@ -90,6 +90,7 @@ services:
       PUBLIC_URL: ${PUBLIC_URL:-}
       NOTIFY_COALESCE_SECONDS: ${NOTIFY_COALESCE_SECONDS:-}
       NOTIFY_REMIND_HOURS: ${NOTIFY_REMIND_HOURS:-}
+      NOTIFY_TO_ALL: ${NOTIFY_TO_ALL:-}
     depends_on:
       db:
         condition: service_healthy

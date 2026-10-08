@@ -1,22 +1,25 @@
 /**
  * The sender (docs/adr/0008). Ingest and the Offline sweep only write rows to the notifications
- * outbox; this loop delivers them. Each pass claims the due rows, and once the oldest has waited
- * the coalescing window it sends them all as one email and marks them sent, or, if the relay
- * fails, leaves them to retry with backoff until a day has passed and they are marked failed.
- * The claim holds the rows until the pass commits, so a restart, a database outage, or an SMTP
- * outage delays an email and never drops one; the only duplicate is a crash between the relay
- * taking it and the mark. The backend runs as one process (docs/adr/0001), so one sender runs,
- * as one sweep does; SKIP LOCKED would keep a second off the same rows all the same.
+ * outbox; this loop delivers them. Each pass claims the due rows and groups them by recipient list
+ * (their Campus's own, or NOTIFY_TO); once a list's oldest has waited the coalescing window it
+ * sends them all as one email to that list and marks them sent, or, if the relay fails, leaves
+ * them to retry with backoff until a day has passed and they are marked failed. Each list is
+ * claimed, sent, and marked in its own transaction, so one the relay refuses neither holds back nor
+ * resends another's. The claim holds the rows until it commits, so a restart, a database outage,
+ * or an SMTP outage delays an email and never drops one; the only duplicate is a crash between the
+ * relay taking it and the mark. The backend runs as one process (docs/adr/0001), so one sender
+ * runs, as one sweep does; SKIP LOCKED would keep a second off the same rows all the same.
  */
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
 import type { ConditionLevel, ConditionName } from './conditions';
+import { parseAddressList, type NotificationsConfig } from './config';
 import type { AppDeps } from './deps';
 import { dropStaleHolds, queuedHold } from './firmwareStore';
 import { holdEmail } from './holdEmail';
 import { serverTimeZone } from './localDay';
 import { MailerError, type Mailer } from './mailer';
 import { notificationEmail, type QueuedNotification } from './notificationEmail';
-import { DEFAULT_RETRY, givesUp, readyToSend, retryDelayMs, type NotificationKind, type RetryPolicy } from './outbox';
+import { byRecipients, DEFAULT_RETRY, givesUp, listKey, readyToSend, recipientsFor, retryDelayMs, type NotificationKind, type RetryPolicy } from './outbox';
 import { dropStaleReminders } from './outboxStore';
 
 /** How often a pass runs by default: well inside the coalescing window, and cheap when nothing is due. */
@@ -111,26 +114,51 @@ async function queuedNotifications(conn: PoolConnection, ids: number[]): Promise
   }));
 }
 
+interface CampusListRow extends RowDataPacket {
+  id: number;
+  notifyTo: string | null;
+}
+
+/**
+ * Who each claimed row goes to, by its Campus's list as it stands now (outbox.ts, recipientsFor).
+ * A plain read, so it locks no Device or Campus. A row with no Campus goes to NOTIFY_TO.
+ */
+async function recipientsOf(conn: PoolConnection, ids: number[], { to, toAll }: NotificationsConfig): Promise<Map<number, string[]>> {
+  if (ids.length === 0) return new Map();
+  const [rows] = await conn.query<CampusListRow[]>(
+    `SELECT n.id, c.notify_to AS notifyTo FROM notifications n
+     LEFT JOIN devices d ON d.id = n.device_id LEFT JOIN campuses c ON c.id = d.campus_id
+     WHERE n.id IN (?)`,
+    [ids],
+  );
+  return new Map(rows.map((r) => [r.id, recipientsFor(parseAddressList(r.notifyTo ?? '').addresses, to, toAll)]));
+}
+
 /** Push each row's next try back by the backoff, or mark it failed once it has been queued a day. */
-async function recordFailure(conn: PoolConnection, due: DueRow[], error: MailerError, at: Date, retry: RetryPolicy): Promise<void> {
+async function recordFailure(conn: PoolConnection, due: DueRow[], recipients: string, error: MailerError, at: Date, retry: RetryPolicy): Promise<void> {
   for (const row of due) {
     const attempts = row.attempts + 1;
     await conn.query(
-      'UPDATE notifications SET attempts = ?, last_attempt_at = ?, last_error = ?, next_attempt_at = ?, failed_at = ? WHERE id = ?',
-      [attempts, at, error.message.slice(0, 1000), new Date(at.getTime() + retryDelayMs(attempts, retry)), givesUp(row.createdAt, at, retry) ? at : null, row.id],
+      'UPDATE notifications SET attempts = ?, last_attempt_at = ?, last_error = ?, next_attempt_at = ?, failed_at = ?, recipients = ? WHERE id = ?',
+      [attempts, at, error.message.slice(0, 1000), new Date(at.getTime() + retryDelayMs(attempts, retry)), givesUp(row.createdAt, at, retry) ? at : null, recipients, row.id],
     );
   }
 }
 
+/** What one recipient list's turn came to: how many went, or the relay's refusal. Keyed by the list. */
+type ListOutcome = { list: string; sent: number } | { list: string; error: MailerError };
+
 /**
- * One pass: claim what is due and, once its window has passed, send it as one email. Returns how
- * many notifications went. A relay failure is recorded on the rows, which then wait their backoff,
- * and the pass rejects with the MailerError. Nothing happens while notifications are off.
+ * One list's turn: claim what is due, and send the first list whose window has passed and which has
+ * not had its turn this pass (`tried`) as one email. Returns what came of it, or undefined when no
+ * list is ready. A relay failure is recorded on that list's rows, which then wait their backoff.
  */
-export async function runNotifierPass({ pool, config, mailer, now = () => new Date() }: NotifierDeps, options: NotifierOptions = {}): Promise<number> {
-  const notifications = config.notifications;
-  if (notifications === undefined) return 0;
-  const { coalesceMs = notifications.coalesceSeconds * 1000, retry = DEFAULT_RETRY, timeZone = serverTimeZone() } = options;
+async function sendNextList(
+  { pool, mailer, now = () => new Date() }: NotifierDeps,
+  notifications: NotificationsConfig,
+  { coalesceMs = notifications.coalesceSeconds * 1000, retry = DEFAULT_RETRY, timeZone = serverTimeZone() }: NotifierOptions,
+  tried: ReadonlySet<string>,
+): Promise<ListOutcome | undefined> {
   const conn = await pool.getConnection();
   try {
     // Read committed: the claim locks only the rows it takes, never the gaps ingest inserts into,
@@ -146,44 +174,76 @@ export async function runNotifierPass({ pool, config, mailer, now = () => new Da
     );
     // A reminder whose incident was acknowledged or ended since it was queued has nothing left to say,
     // nor has a hold whose release was withdrawn or replaced.
-    const ids = due.map((r) => r.id);
-    const dropped = new Set([...(await dropStaleReminders(conn, ids)), ...(await dropStaleHolds(conn, ids))]);
+    const claimed = due.map((r) => r.id);
+    const dropped = new Set([...(await dropStaleReminders(conn, claimed)), ...(await dropStaleHolds(conn, claimed))]);
     const live = due.filter((r) => !dropped.has(r.id));
-    // A held release is its own email, ahead of any Incidents; they go in the next pass.
+    const recipients = await recipientsOf(conn, live.map((r) => r.id), notifications);
+    const listOf = (r: DueRow) => recipients.get(r.id) ?? recipientsFor([], notifications.to, notifications.toAll);
+    // A held release (it has no Campus, so the default list) is its own email, ahead of that list's
+    // Incidents, which go in its next turn. Each list coalesces on its own: a retry or a full window
+    // in one never hurries another.
     const holds = live.filter((r) => r.kind === 'hold');
-    const hold = readyToSend(holds, at, coalesceMs) ? await queuedHold(conn) : null;
-    const batch = hold !== null ? holds : live.filter((r) => r.kind !== 'hold');
-    if (!readyToSend(batch, at, coalesceMs)) {
+    const hold = holds.length > 0 ? await queuedHold(conn) : null;
+    const groups = [
+      ...(hold !== null ? byRecipients(holds, listOf).map((group) => ({ ...group, hold })) : []),
+      ...byRecipients(live.filter((r) => r.kind !== 'hold'), listOf).map((group) => ({ ...group, hold: null })),
+    ];
+    const batch = groups.find((group) => !tried.has(listKey(group.recipients)) && readyToSend(group.due, at, coalesceMs));
+    if (batch === undefined) {
       await conn.commit();
-      return 0;
+      return undefined;
     }
-    const batchIds = batch.map((r) => r.id);
+    const list = listKey(batch.recipients);
+    const ids = batch.due.map((r) => r.id);
     const settings = { publicUrl: notifications.publicUrl, timeZone };
-    const email = hold !== null ? holdEmail(hold, settings) : notificationEmail(await queuedNotifications(conn, batchIds), settings);
+    const email = batch.hold !== null ? holdEmail(batch.hold, settings) : notificationEmail(await queuedNotifications(conn, ids), settings);
     try {
-      await mailer.send(email);
+      await mailer.send({ ...email, to: batch.recipients });
     } catch (error) {
       if (!(error instanceof MailerError)) throw error;
-      await recordFailure(conn, batch, error, now(), retry);
+      await recordFailure(conn, batch.due, list, error, now(), retry);
       await conn.commit();
-      throw error;
+      return { list, error };
     }
     const sentAt = now();
-    await conn.query('UPDATE notifications SET sent_at = ?, subject = ?, attempts = attempts + 1, last_attempt_at = ? WHERE id IN (?)', [
+    await conn.query('UPDATE notifications SET sent_at = ?, subject = ?, attempts = attempts + 1, last_attempt_at = ?, recipients = ? WHERE id IN (?)', [
       sentAt,
       email.subject.slice(0, SUBJECT_MAX),
       sentAt,
-      batchIds,
+      list,
+      ids,
     ]);
     await conn.commit();
-    return batchIds.length;
+    return { list, sent: ids.length };
   } catch (error) {
-    // After a relay failure the rows are already committed; this rolls back nothing.
     await conn.rollback();
     throw error;
   } finally {
     conn.release();
   }
+}
+
+/**
+ * One pass: send each recipient list whose window has passed, one email and one turn each. Returns
+ * how many notifications went. A relay failure is recorded on that list's rows, which then wait
+ * their backoff; the other lists still go, and the pass then rejects with the MailerError.
+ * Nothing happens while notifications are off.
+ */
+export async function runNotifierPass(deps: NotifierDeps, options: NotifierOptions = {}): Promise<number> {
+  const notifications = deps.config.notifications;
+  if (notifications === undefined) return 0;
+  const tried = new Set<string>();
+  let sent = 0;
+  let failure: MailerError | undefined;
+  for (;;) {
+    const outcome = await sendNextList(deps, notifications, options, tried);
+    if (outcome === undefined) break;
+    tried.add(outcome.list);
+    if ('error' in outcome) failure ??= outcome.error;
+    else sent += outcome.sent;
+  }
+  if (failure !== undefined) throw failure;
+  return sent;
 }
 
 /**

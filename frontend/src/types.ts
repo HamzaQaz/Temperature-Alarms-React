@@ -347,13 +347,35 @@ export interface NotificationStatus {
   /** Null when notifications are off. */
   relay: { host: string; port: number; secure: 'starttls' | 'tls' | 'none' } | null;
   from: string | null;
+  /** NOTIFY_TO: the default recipients. */
   recipients: string[];
+  /** True when NOTIFY_TO receives every email, a Campus with its own list included (NOTIFY_TO_ALL). */
+  toAll: boolean;
+  /** Every list email can go to, NOTIFY_TO's first; empty while notifications are off. */
+  lists: RecipientList[];
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
   /** Notifications waiting to be sent, retries included. */
   pending: number;
   /** Notifications given up on after a day of retries, within the last week. */
   failed: number;
+}
+
+/** One recipient list as the notification status gives it: who is on it, which Campuses email it, and how its last try went. */
+export interface RecipientList {
+  recipients: string[];
+  /** Shortcodes of the Campuses whose email goes to it. */
+  campuses: string[];
+  /** NOTIFY_TO alone: Campuses without a list of their own, and the test email. */
+  isDefault: boolean;
+  /** The last try within the last week: the subject the relay took, or why it did not. */
+  lastResult: ({ at: string } & ({ sent: true; subject: string } | { sent: false; error: string })) | null;
+}
+
+/** GET /api/campuses/recipients (Admin token): a Campus's own recipients, empty when it emails NOTIFY_TO. */
+export interface CampusRecipients {
+  id: number;
+  notifyTo: string[];
 }
 
 /** POST /api/notifications/test: what the relay said when it took the test email. */

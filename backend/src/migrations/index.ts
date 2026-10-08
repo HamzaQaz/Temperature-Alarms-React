@@ -15,6 +15,7 @@ import { deviceReportsSchema } from './0010-device-reports';
 import { notificationsSchema } from './0011-notifications';
 import { incidentAcknowledgementSchema } from './0012-incident-acknowledgement';
 import { incidentRemindersSchema } from './0013-incident-reminders';
+import { campusRecipientsSchema } from './0014-campus-recipients';
 import { stagedRolloutSchema } from './0015-staged-rollout';
 import { deviceSensorSchema } from './0016-device-sensor';
 import { systemHealthSchema } from './0018-system-health';
@@ -49,6 +50,7 @@ export const migrations: Migration[] = [
   notificationsSchema,
   incidentAcknowledgementSchema,
   incidentRemindersSchema,
+  campusRecipientsSchema,
   stagedRolloutSchema,
   deviceSensorSchema,
   systemHealthSchema,

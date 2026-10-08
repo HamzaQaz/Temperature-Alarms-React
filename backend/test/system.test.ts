@@ -57,6 +57,7 @@ const notifications: NotificationsConfig = {
   smtp: { host: '127.0.0.1', port: 2525, secure: 'none', auth: undefined },
   from: 'alarms@district.example',
   to: ['techs@district.example'],
+  toAll: false,
   publicUrl: 'https://alarms.district.example',
   coalesceSeconds: 0,
   remindHours: 0,

@@ -20,7 +20,7 @@ $ExamplePath = Join-Path $RepoDir '.env.example'
 $BackupDir = Join-Path $RepoDir 'backups'
 $DbName = 'temperature_alarms'
 $Secrets = @('ADMIN_TOKEN', 'DEVICE_TOKEN', 'DB_PASSWORD', 'DB_ROOT_PASSWORD')
-$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS')
+$Tunables = @('REPORT_INTERVAL_SECONDS', 'RETENTION_DAYS', 'HOT_WARNING_F', 'HOT_CRITICAL_F', 'COLD_WARNING_F', 'DRY_WARNING_PERCENT', 'MISSED_REPORTS_BEFORE_OFFLINE', 'LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_TO_ALL')
 # Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
 # flags or the install prompts, never with --set; the password never comes from the command line.
 $NotifyKeys = @('SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_REMIND_HOURS')
@@ -358,6 +358,8 @@ function Test-Setting([string]$Key, [string]$Value) {
         # MySQL's size syntax: bytes, or a whole number of K, M, or G.
         'DB_BUFFER_POOL_SIZE' { return ($Value -eq '') -or ($Value -cmatch '^[1-9][0-9]*[KMG]?$') }
         'NOTIFY_COALESCE_SECONDS' { return ($Value -eq '') -or ($Value -match '^[0-9]+$') }
+        # Empty or false: a Campus with its own recipients emails only them; true copies NOTIFY_TO in.
+        'NOTIFY_TO_ALL' { return $Value -cin @('', 'true', 'false') }
         default { return $Value -match '^[0-9]+$' }
     }
 }
@@ -602,7 +604,7 @@ function Read-Tunables {
                 if (Test-Setting $k $value) { break }
                 Warn "'$value' is not valid for $k"
             }
-            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS') -and -not $value) { continue }
+            if ($k -in @('LEGACY_TIME_ZONE', 'DB_BUFFER_POOL_SIZE', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_TO_ALL') -and -not $value) { continue }
             Set-EnvValue $k $value
         }
     }
