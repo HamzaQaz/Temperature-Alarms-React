@@ -17,10 +17,6 @@ static const char READINGS_PATH[] = "/api/readings";
 static const size_t RESPONSE_LOG_MAX = 120;
 static const unsigned long RESPONSE_READ_MS = 2 * 1000UL;
 
-// SERVER_URL plus the readings path, built once in reporterBegin() so no String is
-// rebuilt on the heap every interval.
-static String readingsUrl;
-
 // Text for the JSON: printable ASCII only, without quotes or backslashes, so it never breaks the body.
 static String jsonText(const String& text) {
   String clean;
@@ -106,7 +102,7 @@ static int post(WiFiClient& client, const String& body, int accepted, String& re
   HTTPClient http;
   http.setTimeout(SERVER_TIMEOUT_MS);
   http.setReuse(false);
-  if (!http.begin(client, readingsUrl)) return HTTPC_ERROR_CONNECTION_FAILED;
+  if (!http.begin(client, serverUrl(READINGS_PATH))) return HTTPC_ERROR_CONNECTION_FAILED;
   http.addHeader(F("Content-Type"), F("application/json"));
   http.addHeader(F("Authorization"), F("Bearer " DEVICE_TOKEN));  // one string in flash, built at compile time
   // The server names a newer build waiting for this board in a header, so the board checks at once.
@@ -121,11 +117,17 @@ static int post(WiFiClient& client, const String& body, int accepted, String& re
 }
 
 void reporterBegin() {
-  readingsUrl = serverUrl(READINGS_PATH);
   Serial.print(F("report: every "));
   Serial.print(REPORT_INTERVAL_SECONDS);
   Serial.print(F(" s to "));
-  Serial.println(readingsUrl);
+  Serial.println(serverUrl(READINGS_PATH));
+}
+
+// Whether the server took the report, as far as moving to the other server goes: no answer, the token
+// refused, the Device unknown there, or a server error is not; a refusal of the values (422) or the
+// rate limit (429) is the server working.
+static bool taken(int status, int accepted) {
+  return status == accepted || (status > 0 && status != HTTP_CODE_UNAUTHORIZED && status != HTTP_CODE_NOT_FOUND && status < 500);
 }
 
 // POSTs the body once and logs the outcome: `success` when the server answers `accepted`.
@@ -138,8 +140,10 @@ static void send(const String& body, int accepted, const __FlashStringHelper* su
     Serial.print(F("report: failed, "));
     Serial.print(problem);
     Serial.println(F(", token not sent"));
+    serverReportTaken(false);
     return;
   }
+  serverReportTaken(taken(status, accepted));
 
   if (status == accepted) {
     Serial.println(success);
