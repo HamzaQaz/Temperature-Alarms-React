@@ -5,7 +5,7 @@ Warning-level emails held during quiet hours (nights and weekends) go out as one
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #14
 
@@ -21,3 +21,5 @@ Warning-level emails held during quiet hours (nights and weekends) go out as one
 - School holidays: out of scope, or a list of dates?
 
 ## Comments
+
+**2026-10-07 — owner decisions (triage).** During quiet hours every warning waits until morning, Humid included; critical always sends at once. School holidays are out of scope (a later ticket if wanted).

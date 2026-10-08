@@ -5,7 +5,7 @@ Each Campus can name its own recipients, so a campus's technicians get only thei
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #13
 
@@ -21,3 +21,5 @@ Each Campus can name its own recipients, so a campus's technicians get only thei
 - Should recipient lists live in the database (editable on Settings) or `.env` (set at deploy)? Database is friendlier; `.env` keeps addresses out of backups.
 
 ## Comments
+
+**2026-10-07 — owner decisions (triage).** Recipient lists live in the database, edited on Settings (not `.env`).

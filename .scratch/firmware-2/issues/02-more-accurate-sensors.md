@@ -5,7 +5,7 @@ The DHT11 reads ±2 °C and ±5 % humidity, coarse for a closet sitting near a H
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #17
 
@@ -21,3 +21,5 @@ The DHT11 reads ±2 °C and ±5 % humidity, coarse for a closet sitting near a H
 - Should the Dashboard show the sensor's accuracy beside a Reading near a threshold?
 
 ## Comments
+
+**2026-10-07 — owner decisions (triage).** Support both DHT22 and SHT31. The Dashboard does not show accuracy; the sensor type is recorded per Device and shown on its History page.

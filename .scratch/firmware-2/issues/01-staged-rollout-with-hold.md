@@ -5,7 +5,7 @@ Publishing to named Devices first already exists (`POST /api/firmware?only=ESP_A
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #16
 
@@ -21,3 +21,5 @@ Publishing to named Devices first already exists (`POST /api/firmware?only=ESP_A
 - Should a hold email (if notifications are on)?
 
 ## Comments
+
+**2026-10-07 — owner decisions (triage).** "Release to all" is offered after 10 clean Report intervals on the first boards. An automatic hold emails (when notifications are on).

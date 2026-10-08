@@ -5,7 +5,7 @@ A board that cannot join its network tries a second configured one before going 
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #18
 
@@ -20,3 +20,5 @@ A board that cannot join its network tries a second configured one before going 
 - Should a board on its fallback network count as a warning on the Dashboard?
 
 ## Comments
+
+**2026-10-07 — owner decisions (triage).** A board on its fallback network shows a note on its card, not a warning: no incident, no email.

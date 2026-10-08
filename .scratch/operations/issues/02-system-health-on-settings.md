@@ -5,7 +5,7 @@ One Settings tab that answers "is the system itself OK?": database size and free
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #19
 
@@ -19,3 +19,5 @@ One Settings tab that answers "is the system itself OK?": database size and free
 - Should a bad line email (if notifications are on), or stay on the page?
 
 ## Comments
+
+**2026-10-07 — owner decisions (triage).** A bad line shows on the page only; no email.

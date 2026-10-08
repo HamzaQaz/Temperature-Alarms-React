@@ -5,7 +5,7 @@ On the first of each month, one email per Campus (or one district-wide) summaris
 
 **Blocked by:** none (uses the mailer from notifications)
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #15
 
@@ -22,3 +22,5 @@ On the first of each month, one email per Campus (or one district-wide) summaris
 - Is "ran warm most of the month" a fixed threshold, or warm relative to the other closets?
 
 ## Comments
+
+**2026-10-07 — owner decisions (triage).** Sent to `NOTIFY_TO` (no separate list, not per Campus). "Ran warm most of the month" is a fixed threshold: most Readings within a few degrees of that closet's own Hot warning threshold, not relative to other closets.
