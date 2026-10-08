@@ -175,6 +175,13 @@ export const getHistory = (deviceId: number, date?: string): Promise<History> =>
   return request(`/api/devices/${deviceId}/history?${query}`);
 };
 
+/**
+ * Where a Device's Readings over a range of days (YYYY-MM-DD, both included, cut in this browser's
+ * zone) download as CSV. A plain link, not a request: the browser saves the file as it streams in.
+ */
+export const readingsCsvUrl = (deviceId: number, from: string, to: string): string =>
+  `${API_BASE_URL}/api/devices/${deviceId}/readings.csv?${new URLSearchParams({ from, to, tz: browserTimeZone() })}`;
+
 /** Delete every Reading the Device has. Needs the Admin token. */
 export const resetHistory = (deviceId: number): Promise<void> =>
   request(`/api/devices/${deviceId}/history`, { method: 'DELETE' });
@@ -185,6 +192,16 @@ export const resetHistory = (deviceId: number): Promise<void> =>
 export const getIncidents = (from: Date, to: Date): Promise<Incidents> => {
   const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString() });
   return request(`/api/incidents?${query}`);
+};
+
+/**
+ * Where the incidents overlapping the window download as CSV, only one Device's when `deviceId` is
+ * given, with local times in this browser's zone. A plain link, like the Readings download.
+ */
+export const incidentsCsvUrl = (from: Date, to: Date, deviceId?: number): string => {
+  const query = new URLSearchParams({ from: from.toISOString(), to: to.toISOString(), tz: browserTimeZone() });
+  if (deviceId !== undefined) query.set('device', String(deviceId));
+  return `${API_BASE_URL}/api/incidents.csv?${query}`;
 };
 
 /**

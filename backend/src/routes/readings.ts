@@ -437,6 +437,8 @@ export function historyRouter({ pool, config, now = () => new Date() }: RouteDep
         to: day.to.toISOString(),
         readings,
         truncated,
+        // How far back Readings go, so the CSV download offers no longer a range than it would take.
+        retentionDays: config.retentionDays,
         summary: {
           tempF: summarise(readings.map((r) => r.tempF)),
           humidity: summarise(readings.flatMap((r) => (r.humidity === null ? [] : [r.humidity]))),

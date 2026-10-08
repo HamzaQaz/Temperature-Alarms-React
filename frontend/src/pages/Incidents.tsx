@@ -1,8 +1,8 @@
 import { useCallback, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, History as HistoryIcon } from 'lucide-react';
-import { getIncidents } from '@/api';
+import { AlertCircle, CalendarDays, ChevronLeft, ChevronRight, Download, History as HistoryIcon } from 'lucide-react';
+import { getIncidents, incidentsCsvUrl } from '@/api';
 import { AcknowledgeLine } from '@/components/AcknowledgeLine';
 import { ConditionBadge } from '@/components/ConditionBadge';
 import { LiveStatus } from '@/components/LiveStatus';
@@ -149,6 +149,7 @@ export default function Incidents() {
 
   const names = STEP_NAMES[kind];
   const phrase = windowPhrase(kind, date, new Date(now));
+  const bounds = windowBounds(kind, date);
 
   return (
     <div className="flex-1 space-y-6">
@@ -190,6 +191,13 @@ export default function Incidents() {
               </Button>
             )}
           </nav>
+          {/* The window the controls name, as a file: a plain link, so the browser saves it as it streams in. */}
+          <Button asChild variant="outline">
+            <a href={incidentsCsvUrl(bounds.from, bounds.to)} download aria-label={`Download CSV of the incidents, ${windowLabel(kind, date)}`}>
+              <Download aria-hidden />
+              Download CSV
+            </a>
+          </Button>
         </div>
       </header>
 

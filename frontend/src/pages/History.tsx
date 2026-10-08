@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react';
 import { usePageTitle } from '@/hooks/use-page-title';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import NumberFlow from '@number-flow/react';
-import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Info, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronLeft, ChevronRight, Download, Info, Trash2 } from 'lucide-react';
 import { CartesianGrid, Line, LineChart, ReferenceDot, XAxis, YAxis } from 'recharts';
-import { getHistory, resetHistory } from '@/api';
+import { getHistory, incidentsCsvUrl, readingsCsvUrl, resetHistory } from '@/api';
 import { AdminTokenPanel } from '@/components/AdminTokenPanel';
 import { LiveStatus } from '@/components/LiveStatus';
 import { Placeholder } from '@/components/Placeholder';
@@ -24,6 +24,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAdminToken } from '@/hooks/use-admin-token';
@@ -36,6 +38,7 @@ import { useResource } from '@/hooks/use-resource';
 import { clearAdminToken, getAdminToken, setAdminToken } from '@/lib/adminToken';
 import { bucketReadings, extremes, type Extreme } from '@/lib/chartBuckets';
 import { describeDay } from '@/lib/chartSummary';
+import { daysSpanned, earliestDay, rangeBounds, rangeProblem } from '@/lib/csvRange';
 import { addDays, formatDayLong, formatDayShort, formatHour, formatTime, formatTimeSeconds, isDateString, today } from '@/lib/localDate';
 import { cn } from '@/lib/utils';
 import type { DaySummary, History as HistoryPayload, Reading } from '@/types';
@@ -284,9 +287,10 @@ function DayView({ deviceId, date, seed, back, followsToday, onShowDay, onDayRol
       tag={<ClosetTag type={loaded.device.closetType} />}
       readout={last && <LastReading tempF={last.tempF} />}
       actions={
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {/* A past day never changes, so only today says whether Readings are arriving. */}
           {isToday && <LiveStatus status={stream} />}
+          <DownloadCsv deviceId={deviceId} closet={loaded.device.closet} campus={loaded.device.campus.name} date={loaded.date} retentionDays={loaded.retentionDays} />
           {/* Not gated on the day shown: reset is the whole history, and a junk board's Readings may all be on other days. */}
           <ResetButton closet={loaded.device.closet} disabled={change.pending} pending={change.pending} onConfirm={() => void reset()} />
         </div>
@@ -300,7 +304,7 @@ function DayView({ deviceId, date, seed, back, followsToday, onShowDay, onDayRol
       subtitle={<DeviceSubtitle campus={seed.campusName} hostname={seed.hostname} />}
       tag={<ClosetTag type={seed.closetType} />}
       readout={seed.tempF !== null && <LastReading tempF={seed.tempF} />}
-      actions={<Skeleton className="h-8 w-32 rounded-md" />}
+      actions={<Skeleton className="h-8 w-64 rounded-md" />}
     />
   ) : (
     <HeadingSkeleton />
@@ -437,6 +441,116 @@ function ResetButton({ closet, disabled, pending, onConfirm }: ResetButtonProps)
   );
 }
 
+interface DownloadCsvProps {
+  deviceId: number;
+  closet: string;
+  campus: string;
+  /** The day on screen: the range starts as that day alone. */
+  date: string;
+  /** How long Readings are kept: the longest range the server takes. */
+  retentionDays: number;
+}
+
+/**
+ * The CSV download: a range of days, the day on screen until changed, and two files over it, the
+ * Device's Readings and its incidents. Each is a plain link, so the browser saves it as it streams in.
+ */
+function DownloadCsv({ deviceId, closet, campus, date, retentionDays }: DownloadCsvProps) {
+  const [range, setRange] = useState({ from: date, to: date });
+  const fromId = useId();
+  const toId = useId();
+  const last = today();
+  const problem = rangeProblem(range.from, range.to, retentionDays);
+  const bounds = problem === null ? rangeBounds(range.from, range.to) : null;
+  const days = problem === null ? daysSpanned(range.from, range.to) : 0;
+  return (
+    // Each opening starts again from the day on screen.
+    <Dialog onOpenChange={(open) => open && setRange({ from: date, to: date })}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          <Download aria-hidden />
+          Download CSV
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Download CSV</DialogTitle>
+          <DialogDescription>
+            {closet}, {campus}. The Readings, one row each with the local and UTC time, °F, °C, and humidity; and this Device's incidents over the same days. For
+            Excel or a work order.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-2">
+            <Label htmlFor={fromId}>First day</Label>
+            <input
+              id={fromId}
+              type="date"
+              value={range.from}
+              min={earliestDay(last, retentionDays)}
+              max={last}
+              onChange={(event) => setRange((r) => ({ ...r, from: event.target.value }))}
+              className={cn(DATE_FIELD, 'w-full')}
+            />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor={toId}>Last day</Label>
+            <input
+              id={toId}
+              type="date"
+              value={range.to}
+              min={earliestDay(last, retentionDays)}
+              max={last}
+              onChange={(event) => setRange((r) => ({ ...r, to: event.target.value }))}
+              className={cn(DATE_FIELD, 'w-full')}
+            />
+          </div>
+        </div>
+        <p aria-live="polite" className={cn('flex items-center gap-2 text-sm tabular-nums', problem === null ? 'text-muted-foreground' : 'text-destructive')}>
+          {problem === null ? (
+            `${days === 1 ? 'One day' : `${days} days`}, ${range.from === range.to ? formatDayShort(range.from) : `${formatDayShort(range.from)} to ${formatDayShort(range.to)}`}. Up to ${retentionDays} at a time.`
+          ) : (
+            <>
+              <AlertCircle className="size-4 shrink-0" aria-hidden />
+              {problem}
+            </>
+          )}
+        </p>
+        <DialogFooter>
+          <DownloadLink variant="outline" href={bounds && incidentsCsvUrl(bounds.from, bounds.to, deviceId)}>
+            Download incidents
+          </DownloadLink>
+          <DownloadLink href={bounds && readingsCsvUrl(deviceId, range.from, range.to)}>Download Readings</DownloadLink>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** A download as a button: a link while the range can be fetched, a disabled button while it cannot. */
+function DownloadLink({ href, variant = 'default', children }: { href: string | null; variant?: 'default' | 'outline'; children: React.ReactNode }) {
+  if (href === null) {
+    return (
+      <Button variant={variant} disabled>
+        <Download aria-hidden />
+        {children}
+      </Button>
+    );
+  }
+  return (
+    <Button asChild variant={variant}>
+      <a href={href} download>
+        <Download aria-hidden />
+        {children}
+      </a>
+    </Button>
+  );
+}
+
+/** A native date field drawn as an input, so it sits with the buttons beside it as one control group. */
+const DATE_FIELD =
+  'h-9 pointer-coarse:min-h-11 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring';
+
 interface DayPickerProps {
   date: string;
   onShowDay: (day: string) => void;
@@ -461,7 +575,7 @@ function DayPicker({ date, onShowDay }: DayPickerProps) {
           onChange={(event) => {
             if (isDateString(event.target.value)) onShowDay(event.target.value);
           }}
-          className="h-9 pointer-coarse:min-h-11 rounded-md border border-input bg-transparent px-3 text-sm tabular-nums shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring"
+          className={DATE_FIELD}
         />
       </label>
       <Button variant="outline" size="icon" onClick={() => onShowDay(addDays(date, 1))} disabled={isLatest} aria-label="Next day">
