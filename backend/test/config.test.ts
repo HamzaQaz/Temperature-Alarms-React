@@ -143,7 +143,7 @@ describe('loadConfig: email notifications', () => {
     assert.equal(loadConfig({ ...complete, SMTP_HOST: '  ' }).notifications, undefined);
   });
 
-  test('on with SMTP_HOST, applying defaults: port 587, STARTTLS, no login, a 60 s coalescing window, no reminders', () => {
+  test('on with SMTP_HOST, applying defaults: port 587, STARTTLS, no login, a 60 s coalescing window, no reminders, no monthly report', () => {
     assert.deepEqual(loadConfig(smtp).notifications, {
       smtp: { host: 'relay.example.test', port: 587, secure: 'starttls', auth: undefined },
       from: 'alarms@example.test',
@@ -152,6 +152,7 @@ describe('loadConfig: email notifications', () => {
       coalesceSeconds: 60,
       remindHours: 0,
       toAll: false,
+      monthlyReport: false,
     });
   });
 
@@ -167,6 +168,7 @@ describe('loadConfig: email notifications', () => {
       NOTIFY_COALESCE_SECONDS: '0',
       NOTIFY_REMIND_HOURS: '4',
       NOTIFY_TO_ALL: 'true',
+      NOTIFY_MONTHLY_REPORT: 'true',
     }).notifications;
     assert.deepEqual(notifications, {
       smtp: { host: 'relay.example.test', port: 2525, secure: 'none', auth: { user: 'svc-alarms', password: 'smtp-secret' } },
@@ -176,6 +178,7 @@ describe('loadConfig: email notifications', () => {
       coalesceSeconds: 0,
       remindHours: 4,
       toAll: true,
+      monthlyReport: true,
     });
   });
 
@@ -193,6 +196,13 @@ describe('loadConfig: email notifications', () => {
     assert.equal(loadConfig({ ...smtp, NOTIFY_TO_ALL: '' }).notifications?.toAll, false);
     // Like the window, it may sit in a template while email is off.
     assert.equal(loadConfig({ ...complete, NOTIFY_TO_ALL: 'true' }).notifications, undefined);
+  });
+
+  test('the monthly report is on with NOTIFY_MONTHLY_REPORT=true, off when empty or false, and ignored without SMTP_HOST', () => {
+    assert.equal(loadConfig({ ...smtp, NOTIFY_MONTHLY_REPORT: ' TRUE ' }).notifications?.monthlyReport, true);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_MONTHLY_REPORT: 'false' }).notifications?.monthlyReport, false);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_MONTHLY_REPORT: '' }).notifications?.monthlyReport, false);
+    assert.equal(loadConfig({ ...complete, NOTIFY_MONTHLY_REPORT: 'true' }).notifications, undefined);
   });
 
   test('implicit TLS defaults to port 465', () => {
@@ -236,6 +246,7 @@ describe('loadConfig: email notifications', () => {
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '1.5' }, /NOTIFY_REMIND_HOURS/);
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '169' }, /NOTIFY_REMIND_HOURS.*168/);
     refuses({ ...smtp, NOTIFY_TO_ALL: 'yes' }, /NOTIFY_TO_ALL.*true or false/);
+    refuses({ ...smtp, NOTIFY_MONTHLY_REPORT: 'yes' }, /NOTIFY_MONTHLY_REPORT must be true or false/);
   });
 
   test('never prints the SMTP password', () => {

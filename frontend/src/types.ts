@@ -353,6 +353,8 @@ export interface NotificationStatus {
   toAll: boolean;
   /** Every list email can go to, NOTIFY_TO's first; empty while notifications are off. */
   lists: RecipientList[];
+  /** Whether a report on last month goes out on the 1st of each month (NOTIFY_MONTHLY_REPORT). */
+  monthlyReport: boolean;
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
   /** Notifications waiting to be sent, retries included. */
@@ -366,7 +368,7 @@ export interface RecipientList {
   recipients: string[];
   /** Shortcodes of the Campuses whose email goes to it. */
   campuses: string[];
-  /** NOTIFY_TO alone: Campuses without a list of their own, and the test email. */
+  /** NOTIFY_TO alone: Campuses without a list of their own, the monthly report, and the test email. */
   isDefault: boolean;
   /** The last try within the last week: the subject the relay took, or why it did not. */
   lastResult: ({ at: string } & ({ sent: true; subject: string } | { sent: false; error: string })) | null;
@@ -376,6 +378,12 @@ export interface RecipientList {
 export interface CampusRecipients {
   id: number;
   notifyTo: string[];
+}
+
+/** POST /api/notifications/report: the month whose report was queued, YYYY-MM, and when. */
+export interface MonthlyReportQueued {
+  month: string;
+  queuedAt: string;
 }
 
 /** POST /api/notifications/test: what the relay said when it took the test email. */

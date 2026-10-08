@@ -61,6 +61,7 @@ const notifications: NotificationsConfig = {
   publicUrl: 'https://alarms.district.example',
   coalesceSeconds: 0,
   remindHours: 0,
+  monthlyReport: false,
 };
 
 describe('system health (GET /api/system)', () => {

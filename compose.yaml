@@ -79,7 +79,7 @@ services:
       LEGACY_TIME_ZONE: ${LEGACY_TIME_ZONE:-}
       # Email notifications (docs/adr/0008), off while SMTP_HOST is empty. Each is empty when unset,
       # which the backend reads as unset: the port, security, and window then take their defaults,
-      # and reminders stay off.
+      # and reminders and the monthly report stay off.
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-}
       SMTP_SECURE: ${SMTP_SECURE:-}
@@ -91,6 +91,7 @@ services:
       NOTIFY_COALESCE_SECONDS: ${NOTIFY_COALESCE_SECONDS:-}
       NOTIFY_REMIND_HOURS: ${NOTIFY_REMIND_HOURS:-}
       NOTIFY_TO_ALL: ${NOTIFY_TO_ALL:-}
+      NOTIFY_MONTHLY_REPORT: ${NOTIFY_MONTHLY_REPORT:-}
     depends_on:
       db:
         condition: service_healthy

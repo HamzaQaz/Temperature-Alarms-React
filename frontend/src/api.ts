@@ -1,4 +1,4 @@
-import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, CampusRecipients, Dashboard, DashboardOrder, History, Incident, Incidents, NotificationStatus, Overview, SystemHealth, TestEmailResult } from './types';
+import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, CampusRecipients, Dashboard, DashboardOrder, History, Incident, Incidents, MonthlyReportQueued, NotificationStatus, Overview, SystemHealth, TestEmailResult } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -153,6 +153,9 @@ export const getNotificationStatus = (): Promise<NotificationStatus> => request(
 
 /** Send a test email to the default recipients (NOTIFY_TO) now; at most one a minute. Needs the Admin token. */
 export const sendTestEmail = (): Promise<TestEmailResult> => request('/api/notifications/test', { method: 'POST' });
+
+/** Queue the report on last month for the default recipients (NOTIFY_TO); at most one a minute. Needs the Admin token. */
+export const sendMonthlyReport = (): Promise<MonthlyReportQueued> => request('/api/notifications/report', { method: 'POST' });
 
 // ==================== SYSTEM ====================
 

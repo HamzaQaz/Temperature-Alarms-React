@@ -59,6 +59,11 @@ export interface NotificationsConfig {
    * every as many hours after (docs/adr/0008). 0: no reminders.
    */
   remindHours: number;
+  /**
+   * True when a report on the month just ended goes to NOTIFY_TO on the 1st of each month
+   * (NOTIFY_MONTHLY_REPORT; docs/adr/0008). Off by default.
+   */
+  monthlyReport: boolean;
 }
 
 export class ConfigError extends Error {
@@ -199,6 +204,9 @@ function notifications(env: Env): NotificationsConfig | undefined {
   // Empty or false: a Campus with its own list emails only that list.
   const toAllRaw = present(env, 'NOTIFY_TO_ALL')?.trim().toLowerCase() ?? 'false';
   if (toAllRaw !== 'true' && toAllRaw !== 'false') problems.push(`NOTIFY_TO_ALL must be true or false, got "${toAllRaw}"`);
+  // Empty or false is off.
+  const monthlyRaw = present(env, 'NOTIFY_MONTHLY_REPORT')?.trim().toLowerCase() ?? 'false';
+  if (monthlyRaw !== 'true' && monthlyRaw !== 'false') problems.push(`NOTIFY_MONTHLY_REPORT must be true or false, got "${monthlyRaw}"`);
 
   if (problems.length > 0 || secure === undefined || from === undefined || publicUrl === undefined) {
     throw new ConfigError(`Email notifications are half-configured: ${problems.join('; ')}`);
@@ -211,6 +219,7 @@ function notifications(env: Env): NotificationsConfig | undefined {
     publicUrl,
     coalesceSeconds,
     remindHours,
+    monthlyReport: monthlyRaw === 'true',
   };
 }
 

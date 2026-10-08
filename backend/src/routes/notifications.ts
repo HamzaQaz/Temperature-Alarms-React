@@ -1,11 +1,13 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import type { RowDataPacket } from 'mysql2/promise';
 import { requireAdminToken } from '../auth';
 import { parseAddressList, type NotificationsConfig } from '../config';
 import type { RouteDeps } from '../deps';
 import { MailerError, type Email } from '../mailer';
+import { monthBefore, serverTimeZone } from '../localDay';
 import { MonotonicStore } from '../monotonicStore';
+import { queueMonthlyReport } from '../monthlyReport';
 import { listKey, recipientLists } from '../outbox';
 import { outboxStatus, type ListResult } from '../outboxStore';
 
@@ -39,11 +41,13 @@ interface CampusListRow extends RowDataPacket {
 }
 
 /**
- * Email notifications (docs/adr/0008), both behind the Admin token. GET /api/notifications/status
- * says whether they are on, through which relay, to whom, how the last send went, and how many
- * wait in the outbox or were given up on; and for each recipient list (NOTIFY_TO, and each
- * Campus's own), which Campuses email it and how its last try went.
+ * Email notifications (docs/adr/0008), all behind the Admin token. GET /api/notifications/status
+ * says whether they are on, through which relay, to whom, whether the monthly report is, how the
+ * last send went, and how many wait in the outbox or were given up on; and for each recipient list
+ * (NOTIFY_TO, and each Campus's own), which Campuses email it and how its last try went.
  * POST /api/notifications/test sends a test email now, at most one a minute, and returns the relay's reply.
+ * POST /api/notifications/report queues the report on last month in the outbox, at most one a
+ * minute, and answers 202 with the month; the sender emails it to NOTIFY_TO within seconds.
  */
 export function notificationsRouter({ config, pool, mailer, now = () => new Date() }: RouteDeps): Router {
   const router = Router();
@@ -80,6 +84,7 @@ export function notificationsRouter({ config, pool, mailer, now = () => new Date
         recipients: notifications?.to ?? [],
         toAll: notifications?.toAll ?? false,
         lists,
+        monthlyReport: notifications?.monthlyReport ?? false,
         lastSent: serialised(latest(outbox.lastSent, testSent)),
         lastFailure: serialised(latest(outbox.lastFailure, testFailure)),
         pending: outbox.pending,
@@ -103,10 +108,24 @@ export function notificationsRouter({ config, pool, mailer, now = () => new Date
     validate: false,
   });
 
+  // The same allowance for the report: every press emails NOTIFY_TO a month's worth.
+  const reportLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 1,
+    store: new MonotonicStore(),
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: () => 'report-email',
+    message: { error: 'Only one report a minute: wait a minute and try again.' },
+    validate: false,
+  });
+
   if (notifications === undefined || mailer === undefined) {
-    router.post('/test', adminOnly, (_req, res) => {
+    const off = (_req: Request, res: Response) => {
       res.status(409).json({ error: 'Email notifications are off: set SMTP_HOST, NOTIFY_FROM, NOTIFY_TO, and PUBLIC_URL in .env and restart the server.' });
-    });
+    };
+    router.post('/test', adminOnly, off);
+    router.post('/report', adminOnly, off);
     return router;
   }
 
@@ -125,6 +144,19 @@ export function notificationsRouter({ config, pool, mailer, now = () => new Date
         res.status(502).json({ error: `The relay did not take the test email: ${error.message}` });
         return;
       }
+      next(error);
+    }
+  });
+
+  // Queued, not sent here: it goes the way of the scheduled one, retried and shown in the status
+  // above, and building a month of Readings is no work for a request.
+  router.post('/report', adminOnly, reportLimiter, async (_req, res, next) => {
+    const queuedAt = now();
+    const { month } = monthBefore(queuedAt, serverTimeZone());
+    try {
+      await queueMonthlyReport(pool, month, queuedAt);
+      res.status(202).json({ month, queuedAt: queuedAt.toISOString() });
+    } catch (error) {
       next(error);
     }
   });

@@ -132,6 +132,7 @@ export async function startTestRelay({ login, port: wanted = 0 }: { login?: { us
       publicUrl: 'https://alarms.district.example',
       coalesceSeconds: 60,
       remindHours: 0,
+      monthlyReport: false,
     }),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

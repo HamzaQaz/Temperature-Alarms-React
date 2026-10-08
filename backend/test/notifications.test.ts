@@ -15,6 +15,7 @@ interface NotificationStatus {
   recipients: string[];
   toAll: boolean;
   lists: { recipients: string[]; campuses: string[]; isDefault: boolean; lastResult: unknown }[];
+  monthlyReport: boolean;
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
   pending: number;
@@ -70,6 +71,7 @@ describe('email notifications: the test email and the status (/api/notifications
       recipients: [],
       toAll: false,
       lists: [],
+      monthlyReport: false,
       lastSent: null,
       lastFailure: null,
       pending: 0,
