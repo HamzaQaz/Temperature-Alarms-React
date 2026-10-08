@@ -9,10 +9,11 @@ import { FirmwareSection } from '@/components/settings/FirmwareSection';
 import { NewDevicesSection } from '@/components/settings/NewDevicesSection';
 import { NotificationsSection } from '@/components/settings/NotificationsSection';
 import { RotationLine } from '@/components/settings/RotationLine';
+import { SystemSection } from '@/components/settings/SystemSection';
 import { useAdminToken } from '@/hooks/use-admin-token';
 import { clearAdminToken, setAdminToken } from '@/lib/adminToken';
 
-const TABS = ['campuses', 'devices', 'new', 'firmware', 'notifications'] as const;
+const TABS = ['campuses', 'devices', 'new', 'firmware', 'notifications', 'system'] as const;
 type Tab = (typeof TABS)[number];
 
 function isTab(value: string | null): value is Tab {
@@ -20,7 +21,7 @@ function isTab(value: string | null): value is Tab {
 }
 
 /**
- * Settings: Campuses, Devices, firmware, notifications, and the Admin token that authorises changes to them.
+ * Settings: Campuses, Devices, firmware, notifications, the system's own health, and the Admin token that authorises changes to them.
  * Anyone can read the lists; the token is asked for once and kept in this browser.
  */
 export default function Settings() {
@@ -64,6 +65,7 @@ export default function Settings() {
           <TabsTrigger value="new">New devices</TabsTrigger>
           <TabsTrigger value="firmware">Firmware</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
+          <TabsTrigger value="system">System</TabsTrigger>
         </TabsList>
         <TabsContent value="campuses" tabIndex={-1} className="pt-4">
           <CampusesSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
@@ -79,6 +81,9 @@ export default function Settings() {
         </TabsContent>
         <TabsContent value="notifications" tabIndex={-1} className="pt-4">
           <NotificationsSection canEdit={token !== null} onUnauthorised={onUnauthorised} />
+        </TabsContent>
+        <TabsContent value="system" tabIndex={-1} className="pt-4">
+          <SystemSection canEdit={token !== null} />
         </TabsContent>
       </Tabs>
     </div>

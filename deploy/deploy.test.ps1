@@ -55,7 +55,7 @@ finally { Remove-Item -LiteralPath $EnvPath -ErrorAction SilentlyContinue }
 # and answers what the action asks. Nothing reaches a real daemon.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) "deploy-test-$PID"
 New-Item -ItemType Directory -Path $work -Force | Out-Null
-$fake = @{ Log = @(); DbStdin = @(); FwStdin = @(); FwRc = 0; RotationOut = @(); RotationRc = 0; DbRc = 0; Volume = $false }
+$fake = @{ Log = @(); DbStdin = @(); FwStdin = @(); FwRc = 0; RotationOut = @(); RotationRc = 0; DbRc = 0; Volume = $false; RealBackup = $false; Built = @() }
 $run = {
     param([string[]]$Arguments)
     $script:ast = $ast
@@ -69,6 +69,11 @@ $run = {
     function Invoke-Dc {
         $line = "$args"; $fake.Log += $line
         $global:LASTEXITCODE = 0
+        # What a build would bake into api's image (backend/Dockerfile).
+        if ($line -like 'build*' -or $line -like 'up*--build*') { $fake.Built += @("APP_VERSION=$env:APP_VERSION") }
+        # The dump is made in db and copied out: the copy lands as a small file.
+        if ($line -like 'exec -T db sh -c*mysqldump*') { return }
+        if ($line -like 'cp db:*') { Set-Content -LiteralPath $args[2] -Value '-- Dump completed'; return }
         if ($line -like 'exec -T api node dist/firmwareCli.js*') { $fake.FwStdin += @($input | ForEach-Object { "$_" }); $global:LASTEXITCODE = $fake.FwRc; return }
         if ($line -like 'exec -T api node -e*') { $fake.RotationOut; $global:LASTEXITCODE = $fake.RotationRc; return }
         if ($line -like 'exec -T db sh -c*') { $fake.DbStdin += @($input | ForEach-Object { "$_" }); $global:LASTEXITCODE = $fake.DbRc; return }
@@ -80,7 +85,7 @@ $run = {
     function Test-DbVolume { return $fake.Volume }
     function Invoke-Preflight { return $true }
     function Invoke-MaybePull { }
-    function Invoke-Backup { $fake.Log += 'backup'; $script:LastBackup = 'backups\ta-test.sql.gz' }
+    if (-not $fake.RealBackup) { function Invoke-Backup { $fake.Log += 'backup'; $script:LastBackup = 'backups\ta-test.sql.gz' } }
     function Write-Host { $fake.Out += @("$args") }
     # Stdin is [Console]::In, which Invoke-FakeStdin points at a string; never the test's own console.
     function Test-StdinRedirected { return $true }
@@ -121,9 +126,33 @@ try {
     Expect ((& $said) -match 'DB root') $true 'info: no DB root line'
 
     # Email notifications (docs/adr/0008); deploy.test.sh says why each case matters.
-    $notifyNames = 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_REMIND_HOURS'
+    $notifyNames = 'SMTP_HOST', 'SMTP_PORT', 'SMTP_SECURE', 'SMTP_USER', 'SMTP_PASSWORD', 'NOTIFY_FROM', 'NOTIFY_TO', 'PUBLIC_URL', 'NOTIFY_COALESCE_SECONDS', 'NOTIFY_REMIND_HOURS', 'NOTIFY_TO_ALL', 'NOTIFY_MONTHLY_REPORT', 'NOTIFY_QUIET_HOURS', 'NOTIFY_QUIET_WEEKENDS'
     foreach ($k in $notifyNames) { Expect ((EnvOf $k) -eq '') $true "install: $k has a value without --smtp-host" }
     Expect ((& $said) -match 'Email +off') $true 'info: notifications not shown as off'
+
+    # NOTIFY_TO_ALL (recipients per Campus) is a tunable: --set takes true, false, or empty, and nothing else.
+    $before = Get-EnvText
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'NOTIFY_TO_ALL=yes')) $false '--set NOTIFY_TO_ALL=yes: succeeded'
+    Expect ((Get-EnvText) -eq $before) $true '--set NOTIFY_TO_ALL=yes: .env changed'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'NOTIFY_TO_ALL=true')) $true "--set NOTIFY_TO_ALL=true failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_TO_ALL') -eq 'true') $true '--set NOTIFY_TO_ALL=true: not written'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'NOTIFY_TO_ALL=')) $true "--set NOTIFY_TO_ALL= failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_TO_ALL') -eq '') $true '--set NOTIFY_TO_ALL=: not emptied'
+
+    # TZ, the api's zone (quiet hours, email times, the monthly report's months): a tunable, UTC unless set.
+    Expect (Invoke-Fake @('info')) $true 'info without TZ failed'
+    Expect ((& $said) -match 'Time zone +UTC \(TZ not set\)') $true 'info: TZ not shown as unset'
+    $before = Get-EnvText
+    foreach ($bad in @('America/Chicago;id', '../etc/passwd', 'Central Time')) {
+        Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', "TZ=$bad")) $false "--set TZ=${bad}: succeeded"
+    }
+    Expect ((Get-EnvText) -eq $before) $true '--set TZ refused: .env changed'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'TZ=America/Chicago')) $true "--set TZ=America/Chicago failed: $(& $said)"
+    Expect ((EnvOf 'TZ') -ceq 'America/Chicago') $true '--set TZ=America/Chicago: not written'
+    Expect (Invoke-Fake @('info')) $true 'info with TZ failed'
+    Expect ((& $said) -match 'Time zone +America/Chicago') $true 'info: TZ not shown'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--set', 'TZ=')) $true "--set TZ= failed: $(& $said)"
+    Expect ((EnvOf 'TZ') -eq '') $true '--set TZ=: not emptied'
 
     $before = Get-EnvText
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'relay.example.org', '--smtp-password', 'hunter2')) $false '--smtp-password: succeeded'
@@ -131,7 +160,7 @@ try {
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'relay.example.org', '--notify-from', 'alarms@example.org', '--notify-to', 'techs@example.org')) $false 'no --public-url: succeeded'
     Expect ((& $said) -match '--public-url is required') $true 'no --public-url: no explanation'
     $okFlags = @('--smtp-host', 'relay.example.org', '--notify-from', 'alarms@example.org', '--notify-to', 'techs@example.org', '--public-url', 'https://alarms.example.org')
-    foreach ($bad in @(@('--smtp-port', '70000'), @('--smtp-secure', 'ssl'), @('--notify-to', 'not-an-address'), @('--notify-from', 'a@b.c,d@e.f'), @('--public-url', 'ftp://alarms.example.org'), @('--smtp-host', 'relay.example.org;id'), @('--notify-to', "a@example.org`nADMIN_TOKEN=x"), @('--notify-remind-hours', '169'), @('--notify-remind-hours', '1.5'), @('--notify-remind-hours', '-4'))) {
+    foreach ($bad in @(@('--smtp-port', '70000'), @('--smtp-secure', 'ssl'), @('--notify-to', 'not-an-address'), @('--notify-from', 'a@b.c,d@e.f'), @('--public-url', 'ftp://alarms.example.org'), @('--smtp-host', 'relay.example.org;id'), @('--notify-to', "a@example.org`nADMIN_TOKEN=x"), @('--notify-remind-hours', '169'), @('--notify-remind-hours', '1.5'), @('--notify-remind-hours', '-4'), @('--notify-monthly-report', 'yes'), @('--notify-monthly-report', 'true'), @('--notify-quiet-hours', '18:00'), @('--notify-quiet-hours', '18:00-18:00'), @('--notify-quiet-hours', '6pm-7am'), @('--notify-quiet-hours', '24:00-07:00'), @('--notify-quiet-weekends', 'yes'), @('--notify-quiet-weekends', 'true'))) {
         Expect (Invoke-FakeStdin '' (@('install', '--reconfigure') + $okFlags + $bad)) $false "$($bad -join ' '): succeeded"
         Expect ((& $said).Contains($bad[0])) $true "$($bad -join ' '): the flag is not named"
     }
@@ -140,7 +169,7 @@ try {
 
     # On, with a login: the password is the first line of stdin, written single-quoted, never printed.
     $pw = 'p@ss $HOME #1 \t\\x "q"'
-    Expect (Invoke-FakeStdin "$pw`r`n" (@('install', '--reconfigure') + $okFlags + @('--smtp-port', '465', '--smtp-secure', 'tls', '--smtp-user', 'DISTRICT\svc-alarms', '--notify-to', 'techs@example.org, noc@example.org', '--notify-remind-hours', '4'))) $true "notify on failed: $(& $said)"
+    Expect (Invoke-FakeStdin "$pw`r`n" (@('install', '--reconfigure') + $okFlags + @('--smtp-port', '465', '--smtp-secure', 'tls', '--smtp-user', 'DISTRICT\svc-alarms', '--notify-to', 'techs@example.org, noc@example.org', '--notify-remind-hours', '4', '--notify-monthly-report', 'on', '--notify-quiet-hours', '18:00-07:00', '--notify-quiet-weekends', 'on'))) $true "notify on failed: $(& $said)"
     Expect ((EnvOf 'SMTP_HOST') -eq 'relay.example.org') $true 'notify on: SMTP_HOST'
     Expect ((EnvOf 'SMTP_PORT') -eq '465' -and (EnvOf 'SMTP_SECURE') -eq 'tls') $true 'notify on: port or security not written'
     Expect ((EnvOf 'SMTP_USER') -eq 'DISTRICT\svc-alarms') $true 'notify on: SMTP_USER'
@@ -148,11 +177,15 @@ try {
     Expect ((EnvOf 'NOTIFY_TO') -eq 'techs@example.org,noc@example.org') $true 'notify on: NOTIFY_TO'
     Expect ((EnvOf 'PUBLIC_URL') -eq 'https://alarms.example.org') $true 'notify on: PUBLIC_URL'
     Expect ((EnvOf 'NOTIFY_REMIND_HOURS') -eq '4') $true 'notify on: NOTIFY_REMIND_HOURS'
+    Expect ((EnvOf 'NOTIFY_MONTHLY_REPORT') -ceq 'true') $true "notify on: NOTIFY_MONTHLY_REPORT is '$(EnvOf 'NOTIFY_MONTHLY_REPORT')'"
+    Expect ((EnvOf 'NOTIFY_QUIET_HOURS') -ceq '18:00-07:00' -and (EnvOf 'NOTIFY_QUIET_WEEKENDS') -ceq 'true') $true "notify on: quiet hours are '$(EnvOf 'NOTIFY_QUIET_HOURS')', weekends '$(EnvOf 'NOTIFY_QUIET_WEEKENDS')'"
     Expect ((& $said).Contains('p@ss')) $false 'notify on: the password is in the output'
     Expect (($fake.Log -join "`n").Contains('p@ss')) $false 'notify on: the password is on a docker command line'
     Expect (Invoke-Fake @('info')) $true 'info with notify failed'
     Expect ((& $said).Contains('relay.example.org:465 (tls)')) $true 'info: no relay line'
     Expect ((& $said).Contains('reminders every 4 h')) $true 'info: reminders not shown'
+    Expect ((& $said).Contains('monthly report on')) $true 'info: the monthly report not shown'
+    Expect ((& $said).Contains('quiet hours 18:00-07:00 and weekends')) $true 'info: quiet hours not shown'
     Expect ((& $said).Contains('DISTRICT\svc-alarms / ********')) $true 'info: no masked login line'
     Expect ((& $said).Contains('p@ss')) $false 'info: the SMTP password (or its start) printed without --reveal'
     Expect (Invoke-Fake @('info', '--reveal')) $true 'info --reveal failed'
@@ -164,6 +197,18 @@ try {
     Expect ((EnvOf 'NOTIFY_REMIND_HOURS') -eq '0' -and (EnvOf 'NOTIFY_TO') -eq 'oncall@example.org') $true 'notify-remind-hours alone: not applied on its own'
     Expect (Invoke-Fake @('info')) $true 'info with reminders off failed'
     Expect ((& $said).Contains('reminders off')) $true 'info: reminders not shown as off'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-monthly-report', 'off')) $true "notify-monthly-report alone failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_MONTHLY_REPORT') -ceq 'false' -and (EnvOf 'NOTIFY_REMIND_HOURS') -eq '0') $true 'notify-monthly-report alone: not applied on its own'
+    Expect (Invoke-Fake @('info')) $true 'info with the monthly report off failed'
+    Expect ((& $said).Contains('monthly report off')) $true 'info: the monthly report not shown as off'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-quiet-weekends', 'off')) $true "notify-quiet-weekends alone failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_QUIET_WEEKENDS') -ceq 'false' -and (EnvOf 'NOTIFY_QUIET_HOURS') -ceq '18:00-07:00') $true 'notify-quiet-weekends alone: not applied on its own'
+    Expect (Invoke-Fake @('info')) $true 'info with quiet weekends off failed'
+    Expect ((& $said) -match 'quiet hours 18:00-07:00(\r?\n|$)') $true 'info: quiet hours without weekends not shown'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-quiet-hours', 'off')) $true "notify-quiet-hours off failed: $(& $said)"
+    Expect ((EnvOf 'NOTIFY_QUIET_HOURS') -eq '' -and (EnvOf 'NOTIFY_QUIET_WEEKENDS') -ceq 'false') $true 'notify-quiet-hours off: not applied on its own'
+    Expect (Invoke-Fake @('info')) $true 'info with quiet hours off failed'
+    Expect ((& $said).Contains('quiet hours off')) $true 'info: quiet hours not shown as off'
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-user', 'other-svc')) $true "smtp-user, empty stdin failed: $(& $said)"
     Expect ((EnvOf 'SMTP_USER') -eq 'other-svc' -and (EnvOf 'SMTP_PASSWORD') -ceq "'$pw'") $true 'smtp-user, empty stdin: password not kept'
     Expect (Invoke-FakeStdin '' @('install', '--smtp-host', 'off')) $true 'off without --reconfigure failed'
@@ -193,6 +238,12 @@ try {
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'off', '--notify-remind-hours', '4')) $false 'off with --notify-remind-hours: succeeded'
     Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-remind-hours', '4')) $false '--notify-remind-hours with email off: succeeded'
     Expect ((& $said) -match 'email notifications are off here') $true '--notify-remind-hours with email off: no explanation'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'off', '--notify-monthly-report', 'on')) $false 'off with --notify-monthly-report: succeeded'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-monthly-report', 'on')) $false '--notify-monthly-report with email off: succeeded'
+    Expect ((& $said) -match 'email notifications are off here') $true '--notify-monthly-report with email off: no explanation'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--smtp-host', 'off', '--notify-quiet-hours', '18:00-07:00')) $false 'off with --notify-quiet-hours: succeeded'
+    Expect (Invoke-FakeStdin '' @('install', '--reconfigure', '--notify-quiet-weekends', 'on')) $false '--notify-quiet-weekends with email off: succeeded'
+    Expect ((& $said) -match 'email notifications are off here') $true '--notify-quiet-weekends with email off: no explanation'
 
     # rotate-device-token
     $old = EnvOf 'DEVICE_TOKEN'
@@ -260,6 +311,55 @@ try {
     Expect ($fake.DbStdin.Count -eq 0) $true 'deploy after the move: ran SQL again'
     Expect ((EnvOf 'DB_ROOT_PASSWORD') -eq $root) $true 'deploy after the move: DB_ROOT_PASSWORD changed'
 
+    # backup: once the dump is copied out, its time, name and size go to api's database for Settings,
+    # System (last_backup), as root inside db with the SQL on stdin. A refusal (an api without the
+    # table yet) warns and keeps the backup.
+    $fake.RealBackup = $true
+    $backups = Join-Path $work 'backups'
+    Remove-Item -LiteralPath $backups -Recurse -Force -ErrorAction SilentlyContinue
+    Expect (Invoke-Fake @('backup')) $true "backup failed: $(& $said)"
+    $file = @(Get-ChildItem -LiteralPath $backups -Filter '*.sql.gz')[0]
+    $mark = @($fake.DbStdin | Where-Object { $_ -like 'REPLACE INTO last_backup*' })
+    Expect ($mark.Count -eq 1 -and $mark[0] -cmatch "\AREPLACE INTO last_backup \(id, finished_at, file, size_bytes\) VALUES \(1, '\d{4}-\d\d-\d\d \d\d:\d\d:\d\d', '$([regex]::Escape($file.Name))', $($file.Length)\);\z") $true "backup: not recorded for Settings, System: $mark"
+    Expect (@($fake.Log | Where-Object { $_ -like 'exec -T db sh -c*mysql -uroot temperature_alarms' }).Count -eq 1) $true 'backup: the record did not go to mysql as root in db'
+    Expect ((& $said) -match 'recorded as the last backup') $true 'backup: the record not reported'
+    Remove-Item -LiteralPath $backups -Recurse -Force
+    $fake.DbRc = 1
+    Expect (Invoke-Fake @('backup')) $true "backup with the record refused failed: $(& $said)"
+    Expect ((& $said) -match 'the backup is kept, but Settings, System could not be told') $true 'backup with the record refused: no warning'
+    Expect (@(Get-ChildItem -LiteralPath $backups -Filter '*.sql.gz').Count -eq 1) $true 'backup with the record refused: the backup was not kept'
+    $fake.DbRc = 0
+
+    # restore: the restored database holds only the records from before its dump, so once api is back
+    # (its migrations run), the backup made just before the restore is recorded again.
+    Remove-Item -LiteralPath $backups -Recurse -Force
+    $older = Join-Path $work 'older.sql.gz'
+    Set-Content -LiteralPath $older -Value 'an older dump'
+    Expect (Invoke-Fake @('restore', '--file', $older, '--confirm', 'ta-test')) $true "restore failed: $(& $said)"
+    $saved = @(Get-ChildItem -LiteralPath $backups -Filter '*.sql.gz')[0].Name
+    Expect (@($fake.DbStdin | Where-Object { $_ -like "REPLACE INTO last_backup*'$saved'*" }).Count -eq 2) $true 'restore: the backup before it is not recorded again'
+    Expect (@($fake.DbStdin | Where-Object { $_ -like 'REPLACE INTO last_backup*older*' }).Count -eq 0) $true 'restore: the restored file recorded as a backup'
+    $up = [array]::LastIndexOf([string[]]$fake.Log, 'up -d --wait api')
+    $recorded = -1
+    for ($i = 0; $i -lt $fake.Log.Count; $i++) { if ($fake.Log[$i] -like 'exec -T db sh -c tr -d*mysql -uroot temperature_alarms') { $recorded = $i } }
+    Expect ($up -ge 0 -and $recorded -gt $up) $true 'restore: recorded before api came back'
+    $fake.RealBackup = $false
+
+    # deploy: api's image is built with the checkout's commit and date as APP_VERSION, passed by
+    # compose.yaml as a build argument; outside a git checkout it is empty.
+    $compose = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\compose.yaml')
+    Expect (@($compose | Where-Object { $_ -ceq '        APP_VERSION: ${APP_VERSION:-}' }).Count -eq 1) $true "compose.yaml: api's build does not get APP_VERSION"
+    $fake.Built = @()
+    Expect (Invoke-Fake @('deploy', '--no-pull')) $true "deploy outside git failed: $(& $said)"
+    Expect ((@($fake.Built | Sort-Object -Unique) -join ',') -eq 'APP_VERSION=') $true "deploy outside git: built with $($fake.Built -join ',')"
+    & git -C $work init -q
+    & git -C $work -c user.name=t -c user.email=t@example.org commit -q --allow-empty -m 'a commit'
+    $version = & git -C $work log -1 '--format=%h %cd' --date=short
+    $fake.Built = @()
+    Expect (Invoke-Fake @('deploy', '--no-pull')) $true "deploy failed: $(& $said)"
+    Expect ((@($fake.Built | Sort-Object -Unique) -join ',') -eq "APP_VERSION=$version") $true "deploy: built with $($fake.Built -join ','), not APP_VERSION=$version"
+    Remove-Item -LiteralPath (Join-Path $work '.git') -Recurse -Force
+
     # publish-firmware: the image reaches api as base64 on stdin; --only is passed through and checked.
     $bin = Join-Path $work 'fw.bin.signed'
     $bytes = New-Object byte[] 4096; (New-Object Random 7).NextBytes($bytes); [IO.File]::WriteAllBytes($bin, $bytes)
@@ -281,6 +381,7 @@ try {
 finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:DB_ROOT_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:APP_VERSION -ErrorAction SilentlyContinue
 }
 
 if ($fails -eq 0) { Write-Output 'deploy.test.ps1: all passed' } else { Write-Output "deploy.test.ps1: $fails failed"; exit 1 }

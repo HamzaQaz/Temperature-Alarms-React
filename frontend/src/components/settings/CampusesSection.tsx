@@ -1,6 +1,6 @@
-import { useRef, useState } from 'react';
-import { Plus } from 'lucide-react';
-import { addCampus, deleteCampus, getCampuses } from '@/api';
+import { useEffect, useRef, useState } from 'react';
+import { Pencil, Plus } from 'lucide-react';
+import { addCampus, deleteCampus, getCampuses, getCampusRecipients, UnauthorisedError } from '@/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,6 +8,9 @@ import { AnimatePresence } from 'framer-motion';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useChange } from '@/hooks/use-change';
 import { useResource } from '@/hooks/use-resource';
+import { recipientsProblem } from '@/lib/recipients';
+import type { Campus } from '@/types';
+import { EditCampusRecipientsForm } from './EditCampusRecipientsForm';
 import { AnimatedRow, DeleteButton, EmptyRow, ErrorRow, FieldHint, InlineError, InlineForm, SectionHeader, SkeletonRows, StatusLine, WrappingCell } from './section';
 
 interface CampusesSectionProps {
@@ -16,28 +19,70 @@ interface CampusesSectionProps {
   onUnauthorised: () => void;
 }
 
-const COLUMNS = 3;
+/** A Campus as this section lists it: with its own recipients when the Admin token could read them. */
+type CampusRow = Campus & { notifyTo?: string[] };
+
+/**
+ * The Campuses with their own recipients (docs/adr/0008), which only the Admin token may read. A
+ * token the server refuses leaves the list without them; the token panel asks again on a change.
+ */
+async function getCampusesWithRecipients(): Promise<CampusRow[]> {
+  const [campuses, recipients] = await Promise.all([
+    getCampuses(),
+    getCampusRecipients().catch((error: unknown) => {
+      if (error instanceof UnauthorisedError) return null;
+      throw error;
+    }),
+  ]);
+  if (recipients === null) return campuses;
+  const byId = new Map(recipients.map(({ id, notifyTo }) => [id, notifyTo]));
+  return campuses.map((campus) => ({ ...campus, notifyTo: byId.get(campus.id) ?? [] }));
+}
+
 const NAME_MAX = 100;
 const SHORTCODE_MAX = 20;
 
+/** Who a Campus's email goes to, said once it changed. */
+const emailsTo = (name: string, notifyTo: string[]): string =>
+  notifyTo.length === 0 ? `${name} emails the default recipients.` : `${name} emails ${notifyTo.join(', ')}.`;
+
 export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProps) {
-  const { state, reload } = useResource(getCampuses);
+  const { state, reload } = useResource<CampusRow[]>(canEdit ? getCampusesWithRecipients : getCampuses);
   const add = useChange(onUnauthorised);
   const remove = useChange(onUnauthorised);
   const [formOpen, setFormOpen] = useState(false);
   const [name, setName] = useState('');
   const [shortcode, setShortcode] = useState('');
+  const [recipients, setRecipients] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
+  /** The Campus whose row is the recipients form, if any. */
+  const [editing, setEditing] = useState<CampusRow | null>(null);
+  /** The Campus whose edit button should take focus once its row is back on screen. */
+  const [returnFocusTo, setReturnFocusTo] = useState<number | null>(null);
   const addButton = useRef<HTMLButtonElement>(null);
+  const editButtons = useRef(new Map<number, HTMLButtonElement>());
+
+  // The edit form replaces the row, so its button is only mounted again after the next render.
+  useEffect(() => {
+    if (returnFocusTo === null) return;
+    editButtons.current.get(returnFocusTo)?.focus();
+    setReturnFocusTo(null);
+  }, [returnFocusTo]);
+
+  // Addresses are shown only to the Admin token, which the server asks for to read them.
+  const showRecipients = canEdit;
+  const columns = showRecipients ? 4 : 3;
 
   const nameMissing = name.trim() === '';
   const shortcodeMissing = shortcode.trim() === '';
+  const recipientsError = recipientsProblem(recipients);
 
   const closeForm = () => {
     setFormOpen(false);
     setName('');
     setShortcode('');
+    setRecipients('');
     setSubmitted(false);
     add.clearError();
   };
@@ -52,14 +97,32 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setSubmitted(true);
-    if (nameMissing || shortcodeMissing) return;
+    if (nameMissing || shortcodeMissing || recipientsError !== null) return;
     const campusName = name.trim();
-    const result = await add.run(() => addCampus(campusName, shortcode.trim()));
+    const result = await add.run(() => addCampus(campusName, shortcode.trim(), recipients));
     if (!result.ok) return;
     closeForm();
     setStatus(`${campusName} added.`);
     await reload();
     addButton.current?.focus();
+  };
+
+  const startEdit = (campus: CampusRow) => {
+    setStatus(null);
+    setEditing(campus);
+  };
+
+  const finishEdit = (id: number) => {
+    setEditing(null);
+    setReturnFocusTo(id);
+  };
+
+  // Only one form at a time, so there is one primary button on the page (DESIGN.md).
+  const saveEdit = async (campus: CampusRow, notifyTo: string[]) => {
+    const changed = notifyTo.join(', ') !== (campus.notifyTo ?? []).join(', ');
+    setStatus(changed ? emailsTo(campus.name, notifyTo) : `${campus.name} unchanged.`);
+    finishEdit(campus.id);
+    if (changed) await reload();
   };
 
   const removeCampus = async (id: number, campusName: string) => {
@@ -78,9 +141,9 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
       <SectionHeader
         id="campuses-heading"
         title="Campuses"
-        description="Every Device belongs to one Campus. The shortcode is what the dashboard filters by."
+        description="Every Device belongs to one Campus. The shortcode is what the dashboard filters by. A Campus may name its own email recipients; without them its email goes to the default ones."
         action={
-          <Button ref={addButton} size="sm" variant="outline" onClick={openForm} disabled={!canEdit || formOpen}>
+          <Button ref={addButton} size="sm" variant="outline" onClick={openForm} disabled={!canEdit || formOpen || editing !== null}>
             <Plus aria-hidden />
             Add campus
           </Button>
@@ -120,6 +183,23 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
             </div>
           </div>
           <FieldHint id="campus-shortcode-hint">Shortcodes are stored in upper case and must be unique.</FieldHint>
+          <div className="space-y-2">
+            <Label htmlFor="campus-recipients">Recipients (optional)</Label>
+            <Input
+              id="campus-recipients"
+              type="text"
+              inputMode="email"
+              value={recipients}
+              onChange={(event) => setRecipients(event.target.value)}
+              placeholder="Default recipients"
+              aria-invalid={(submitted && recipientsError !== null) || undefined}
+              aria-describedby={submitted && recipientsError !== null ? 'campus-recipients-error campus-recipients-hint' : 'campus-recipients-hint'}
+            />
+            {submitted && recipientsError !== null && <InlineError id="campus-recipients-error" message={recipientsError} />}
+          </div>
+          <FieldHint id="campus-recipients-hint">
+            Comma-separated addresses that get this Campus's email, a distribution list ideally. Empty sends it to the default recipients (NOTIFY_TO in the server's .env).
+          </FieldHint>
           <InlineError message={add.error} />
           <div className="flex flex-wrap gap-2">
             <Button type="submit" size="sm" disabled={add.pending || !canEdit}>
@@ -140,28 +220,69 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead className="w-32">Shortcode</TableHead>
-              <TableHead className="w-14">
+              {showRecipients && <TableHead>Recipients</TableHead>}
+              <TableHead className="w-24">
                 <span className="sr-only">Actions</span>
               </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {state.status === 'loading' && <SkeletonRows columns={COLUMNS} />}
-            {state.status === 'error' && <ErrorRow colSpan={COLUMNS} message={`Could not load campuses. ${state.message}`} onRetry={reload} />}
+            {state.status === 'loading' && <SkeletonRows columns={columns} />}
+            {state.status === 'error' && <ErrorRow colSpan={columns} message={`Could not load campuses. ${state.message}`} onRetry={reload} />}
             {state.status === 'ready' && state.data.length === 0 && (
               <EmptyRow
-                colSpan={COLUMNS}
+                colSpan={columns}
                 title="No campuses yet"
                 hint="Add the first campus, then Devices can be assigned to it."
               />
             )}
             <AnimatePresence initial={false}>
               {state.status === 'ready' &&
-                state.data.map((campus) => (
+                state.data.map((campus) =>
+                  editing?.id === campus.id ? (
+                  <AnimatedRow key={campus.id} className="hover:bg-transparent">
+                    <TableCell colSpan={columns} className="whitespace-normal p-2">
+                      <EditCampusRecipientsForm
+                        campus={editing}
+                        notifyTo={editing.notifyTo ?? []}
+                        canEdit={canEdit}
+                        onSaved={(notifyTo) => saveEdit(editing, notifyTo)}
+                        onCancel={() => finishEdit(campus.id)}
+                        onUnauthorised={onUnauthorised}
+                      />
+                    </TableCell>
+                  </AnimatedRow>
+                ) : (
                   <AnimatedRow key={campus.id}>
                   <WrappingCell className="font-medium">{campus.name}</WrappingCell>
                   <TableCell className="text-muted-foreground">{campus.shortcode}</TableCell>
-                  <TableCell className="text-right">
+                  {showRecipients && (
+                    <WrappingCell>
+                      {campus.notifyTo === undefined ? null : campus.notifyTo.length === 0 ? (
+                        <span className="text-muted-foreground">Default recipients</span>
+                      ) : (
+                        campus.notifyTo.join(', ')
+                      )}
+                    </WrappingCell>
+                  )}
+                  <TableCell className="whitespace-nowrap text-right">
+                    {showRecipients && campus.notifyTo !== undefined && (
+                      <Button
+                        ref={(element) => {
+                          if (element) editButtons.current.set(campus.id, element);
+                          else editButtons.current.delete(campus.id);
+                        }}
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={editing !== null || formOpen}
+                        aria-label={`Edit the recipients for ${campus.name}`}
+                        title={`Edit the recipients for ${campus.name}`}
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={() => startEdit(campus)}
+                      >
+                        <Pencil aria-hidden />
+                      </Button>
+                    )}
                     <DeleteButton
                       label={`Delete ${campus.name}`}
                       title={`Delete ${campus.name}?`}
@@ -173,7 +294,8 @@ export function CampusesSection({ canEdit, onUnauthorised }: CampusesSectionProp
                     />
                   </TableCell>
                   </AnimatedRow>
-                ))}
+                ),
+              )}
             </AnimatePresence>
           </TableBody>
         </Table>

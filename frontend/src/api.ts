@@ -1,4 +1,4 @@
-import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incident, Incidents, NotificationStatus, Overview, TestEmailResult } from './types';
+import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, CampusRecipients, Dashboard, DashboardOrder, History, Incident, Incidents, MonthlyReportQueued, NotificationStatus, Overview, SystemHealth, TestEmailResult } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -82,8 +82,16 @@ async function request<T>(path: string, { method = 'GET', body, admin = false, r
 
 export const getCampuses = (): Promise<Campus[]> => request('/api/campuses');
 
-export const addCampus = (name: string, shortcode: string): Promise<Campus> =>
-  request('/api/campuses', { method: 'POST', body: { name, shortcode } });
+/** Add a Campus, with its own recipients (comma-separated) or none to email NOTIFY_TO. Needs the Admin token. */
+export const addCampus = (name: string, shortcode: string, notifyTo = ''): Promise<Campus> =>
+  request('/api/campuses', { method: 'POST', body: { name, shortcode, notifyTo } });
+
+/** Every Campus's own recipients, empty for one that emails NOTIFY_TO. Needs the Admin token. */
+export const getCampusRecipients = (): Promise<CampusRecipients[]> => request('/api/campuses/recipients', { admin: true });
+
+/** Replace a Campus's own recipients (comma-separated); empty sends its email to NOTIFY_TO. Needs the Admin token. */
+export const setCampusRecipients = (id: number, notifyTo: string): Promise<Campus & CampusRecipients> =>
+  request(`/api/campuses/${id}`, { method: 'PATCH', body: { notifyTo } });
 
 export const deleteCampus = (id: number): Promise<void> =>
   request(`/api/campuses/${id}`, { method: 'DELETE' });
@@ -129,6 +137,9 @@ export const getFirmwareStatus = (): Promise<FirmwareStatus> => request('/api/fi
 export const publishFirmware = (image: Blob, only: string[] = []): Promise<FirmwareRelease> =>
   request(`/api/firmware${only.length > 0 ? `?${new URLSearchParams({ only: only.join(',') })}` : ''}`, { method: 'POST', raw: image });
 
+/** "Release to all": offer a staged build to every Device. Refused (409) while it is held. Needs the Admin token. */
+export const widenFirmware = (): Promise<FirmwareRelease> => request('/api/firmware/widen', { method: 'POST' });
+
 /** Stop offering the published build; boards keep what they run. Needs the Admin token. */
 export const withdrawFirmware = (): Promise<void> => request('/api/firmware', { method: 'DELETE' });
 
@@ -140,8 +151,16 @@ export const getDeviceRotation = (): Promise<DeviceRotation> => request('/api/de
 /** Whether Incidents are emailed, to whom, and how the last send went. Needs the Admin token. */
 export const getNotificationStatus = (): Promise<NotificationStatus> => request('/api/notifications/status', { admin: true });
 
-/** Send a test email to every recipient now; at most one a minute. Needs the Admin token. */
+/** Send a test email to the default recipients (NOTIFY_TO) now; at most one a minute. Needs the Admin token. */
 export const sendTestEmail = (): Promise<TestEmailResult> => request('/api/notifications/test', { method: 'POST' });
+
+/** Queue the report on last month for the default recipients (NOTIFY_TO); at most one a minute. Needs the Admin token. */
+export const sendMonthlyReport = (): Promise<MonthlyReportQueued> => request('/api/notifications/report', { method: 'POST' });
+
+// ==================== SYSTEM ====================
+
+/** Whether the system itself is OK, line by line (Settings, System). Needs the Admin token. */
+export const getSystemHealth = (): Promise<SystemHealth> => request('/api/system', { admin: true });
 
 // ==================== DASHBOARD ====================
 

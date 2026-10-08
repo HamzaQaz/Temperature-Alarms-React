@@ -13,11 +13,13 @@ export interface DeviceRow extends RowDataPacket {
   campusId: number;
   campusName: string;
   campusShortcode: string;
+  /** The sensor its board last said it carries (deviceInfo.ts); History shows it, the other routes leave it out. */
+  sensor: string | null;
 }
 
 /** A Device with its Campus, as every route lists it. Append a WHERE or ORDER BY. */
 export const SELECT_DEVICES = `
-  SELECT d.id, d.hostname, d.closet,
+  SELECT d.id, d.hostname, d.closet, d.sensor,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode
   FROM devices d
   JOIN campuses c ON c.id = d.campus_id`;

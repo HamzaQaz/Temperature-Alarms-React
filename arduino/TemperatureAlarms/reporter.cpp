@@ -6,6 +6,8 @@
 #include <WiFiClientSecure.h>
 
 #include "config.h"
+#include "network.h"
+#include "sensor.h"
 #include "server.h"
 #include "updater.h"
 #include "version.h"
@@ -34,7 +36,8 @@ static String jsonText(const String& text) {
 
 // What the board says about itself for the Firmware tab (backend deviceInfo.ts), after the opening
 // fields of a Reading or a fault report: version, WiFi signal, uptime, free memory, why it last
-// restarted, and its last update check. Closes the JSON object.
+// restarted, its last update check, which sensor it carries, and which WiFi network it is on (its
+// SSID, and 1 or 2: the second is its fallback network, a note on its card). Closes the JSON object.
 static void appendSelfReport(String& json) {
   json += F(",\"fw\":");
   json += FIRMWARE_VERSION;
@@ -48,12 +51,18 @@ static void appendSelfReport(String& json) {
   json += jsonText(ESP.getResetReason());
   json += F("\",\"update\":\"");
   json += jsonText(updaterLastResult());
-  json += F("\"}");
+  json += F("\",\"sensor\":\"");
+  json += sensorType();
+  json += F("\",\"ssid\":\"");
+  json += jsonText(networkSsid());
+  json += F("\",\"network\":");
+  json += networkNumber();
+  json += '}';
 }
 
 static String readingJson(const char* hostname, const Sample& sample) {
   String json;
-  json.reserve(224);
+  json.reserve(304);
   json += F("{\"device\":\"");
   json += hostname;
   json += F("\",\"temp\":");
@@ -67,7 +76,7 @@ static String readingJson(const char* hostname, const Sample& sample) {
 // A fault report: the sensor did not answer, so there are no values to send.
 static String faultJson(const char* hostname) {
   String json;
-  json.reserve(208);
+  json.reserve(288);
   json += F("{\"device\":\"");
   json += hostname;
   json += F("\",\"fault\":\"sensor\"");

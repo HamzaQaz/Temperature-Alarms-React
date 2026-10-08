@@ -1,11 +1,13 @@
 import { createTransport } from 'nodemailer';
 import type { NotificationsConfig } from './config';
 
-/** One email to every recipient in NOTIFY_TO: plain text, with an optional simple HTML part. */
+/** One email: plain text, with an optional simple HTML part. */
 export interface Email {
   subject: string;
   text: string;
   html?: string;
+  /** Who it goes to: NOTIFY_TO when unset, or one recipient list (docs/adr/0008). */
+  to?: string[];
 }
 
 /** What the relay said when it took an email. */
@@ -30,7 +32,7 @@ export class MailerError extends Error {
  * tests may pass their own.
  */
 export interface Mailer {
-  /** Hand one email to the relay, for every recipient in NOTIFY_TO. Rejects with a MailerError. */
+  /** Hand one email to the relay, for its recipients (NOTIFY_TO unless it names its own). Rejects with a MailerError. */
   send(email: Email): Promise<SentEmail>;
 }
 
@@ -68,9 +70,9 @@ export function createMailer({ smtp, from, to }: NotificationsConfig): Mailer {
     socketTimeout: SOCKET_TIMEOUT_MS,
   });
   return {
-    async send({ subject, text, html }) {
+    async send({ subject, text, html, to: recipients = to }) {
       try {
-        const info = await transport.sendMail({ from, to, subject, text, html });
+        const info = await transport.sendMail({ from, to: recipients, subject, text, html });
         return { messageId: info.messageId, response: info.response, accepted: info.accepted, rejected: info.rejected };
       } catch (error) {
         // Only the message crosses: nodemailer's error object also carries the command it sent.

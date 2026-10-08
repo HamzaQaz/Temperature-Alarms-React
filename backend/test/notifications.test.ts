@@ -13,9 +13,15 @@ interface NotificationStatus {
   relay: { host: string; port: number; secure: string } | null;
   from: string | null;
   recipients: string[];
+  toAll: boolean;
+  lists: { recipients: string[]; campuses: string[]; isDefault: boolean; lastResult: unknown }[];
+  monthlyReport: boolean;
+  quietHours: { hours: string | null; weekends: boolean } | null;
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
   pending: number;
+  held: number;
+  heldUntil: string | null;
   failed: number;
 }
 
@@ -66,9 +72,15 @@ describe('email notifications: the test email and the status (/api/notifications
       relay: null,
       from: null,
       recipients: [],
+      toAll: false,
+      lists: [],
+      monthlyReport: false,
+      quietHours: null,
       lastSent: null,
       lastFailure: null,
       pending: 0,
+      held: 0,
+      heldUntil: null,
       failed: 0,
     });
     const refused = await client.sendTest();
@@ -114,6 +126,15 @@ describe('email notifications: the test email and the status (/api/notifications
     assert.deepEqual(status.lastSent, { at: result.sentAt, subject: '[Temperature Alarms] Test email' });
     assert.equal(status.lastFailure, null);
     assert.equal(status.pending, 0);
+    assert.equal(status.toAll, false);
+    assert.deepEqual(status.lists, [
+      {
+        recipients: ['techs@district.example', 'oncall@district.example'],
+        campuses: [],
+        isDefault: true,
+        lastResult: { at: result.sentAt, sent: true, subject: '[Temperature Alarms] Test email' },
+      },
+    ], 'the test email went to NOTIFY_TO, so it is the last result of that list');
   });
 
   test('a relay that wants a login gets it', async () => {

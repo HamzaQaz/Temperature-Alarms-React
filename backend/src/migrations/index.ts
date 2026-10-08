@@ -15,6 +15,13 @@ import { deviceReportsSchema } from './0010-device-reports';
 import { notificationsSchema } from './0011-notifications';
 import { incidentAcknowledgementSchema } from './0012-incident-acknowledgement';
 import { incidentRemindersSchema } from './0013-incident-reminders';
+import { campusRecipientsSchema } from './0014-campus-recipients';
+import { stagedRolloutSchema } from './0015-staged-rollout';
+import { deviceSensorSchema } from './0016-device-sensor';
+import { monthlyReportSchema } from './0017-monthly-report';
+import { systemHealthSchema } from './0018-system-health';
+import { quietHoursSchema } from './0019-quiet-hours';
+import { deviceNetworkSchema } from './0020-device-network';
 
 /** What a migration may consult and report to while it runs. */
 export interface MigrationContext {
@@ -46,6 +53,13 @@ export const migrations: Migration[] = [
   notificationsSchema,
   incidentAcknowledgementSchema,
   incidentRemindersSchema,
+  campusRecipientsSchema,
+  stagedRolloutSchema,
+  deviceSensorSchema,
+  monthlyReportSchema,
+  systemHealthSchema,
+  quietHoursSchema,
+  deviceNetworkSchema,
 ];
 
 /** The context the running backend hands its migrations: the configured legacy zone, logging to stdout. */

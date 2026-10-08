@@ -46,6 +46,8 @@ export interface DashboardDevice {
   conditions: Condition[];
   /** Its incidents still open, oldest first, each with who acknowledged it. */
   openIncidents: OpenIncident[];
+  /** The board said it is on its fallback network (firmware 7 and later): a note on its card, never a Condition. */
+  onFallbackNetwork: boolean;
 }
 
 /** Who said they are on an incident, and when (POST /api/incidents/:id/acknowledge). */
@@ -78,6 +80,8 @@ export interface History {
     closet: string;
     closetType: 'IDF' | 'MDF' | null;
     campus: Campus;
+    /** The sensor its board last said it carries (firmware 6 and later); null until one has. */
+    sensor: 'DHT11' | 'DHT22' | 'SHT31' | null;
   };
   /** The day asked for, YYYY-MM-DD. */
   date: string;

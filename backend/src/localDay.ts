@@ -64,7 +64,7 @@ export interface WallClock {
 }
 
 /** What a clock on the wall in the zone reads at the instant. */
-function wallClock(at: Date, timeZone: string): WallClock {
+export function wallClock(at: Date, timeZone: string): WallClock {
   const read: Partial<WallClock> = {};
   for (const { type, value } of partsFormatter(timeZone).formatToParts(at)) {
     if (type === 'year' || type === 'month' || type === 'day' || type === 'hour' || type === 'minute' || type === 'second') {
@@ -102,6 +102,22 @@ export function instantIn({ year, month, day, hour, minute, second }: WallClock,
   return new Date(guess);
 }
 
+/**
+ * The first instant after `after` at which the zone's clocks read the wall-clock time: instantIn,
+ * or its second reading when the clocks went back over that time and `after` falls between the
+ * two. Returns instantIn's answer, not after `after`, when the time has already passed.
+ */
+export function instantAfter(wall: WallClock, after: Date, timeZone: string): Date {
+  const first = instantIn(wall, timeZone);
+  if (first.getTime() > after.getTime()) return first;
+  // The same wall-clock time at the offset in force at `after`: once the clocks went back, its second reading.
+  const second = new Date(Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute, wall.second) - offsetMs(after, timeZone));
+  return second.getTime() > after.getTime() ? second : first;
+}
+
+/** The day of the week the calendar date falls on: 0 for Sunday to 6 for Saturday, as Date.getDay. */
+export const weekdayOf = ({ year, month, day }: Pick<WallClock, 'year' | 'month' | 'day'>): number => new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+
 const midnightIn = (year: number, month: number, day: number, timeZone: string): Date =>
   instantIn({ year, month, day, hour: 0, minute: 0, second: 0 }, timeZone);
 
@@ -124,6 +140,36 @@ export function localDay(date: string, timeZone: string): LocalDay | undefined {
     from: midnightIn(year, month, day, timeZone),
     to: midnightIn(year, month, day + 1, timeZone),
   };
+}
+
+/** One calendar month in a zone, as the pair of UTC instants that bound it. */
+export interface LocalMonth {
+  /** YYYY-MM. */
+  month: string;
+  timeZone: string;
+  /** Midnight starting its first day, inclusive. */
+  from: Date;
+  /** Midnight starting the next month's first day, exclusive. */
+  to: Date;
+}
+
+const MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
+
+/** The calendar month, or undefined when `month` is not a real YYYY-MM month. */
+export function localMonth(month: string, timeZone: string): LocalMonth | undefined {
+  const match = MONTH_PATTERN.exec(month);
+  if (match === null) return undefined;
+  const [year, number] = [Number(match[1]), Number(match[2])];
+  if (number < 1 || number > 12) return undefined;
+  // Month 13 rolls into January of the next year.
+  return { month, timeZone, from: midnightIn(year, number, 1, timeZone), to: midnightIn(year, number + 1, 1, timeZone) };
+}
+
+/** The calendar month before the one the instant falls in, in the zone: the month just ended. */
+export function monthBefore(at: Date, timeZone: string): LocalMonth {
+  const { year, month } = wallClock(at, timeZone);
+  const [y, m] = month === 1 ? [year - 1, 12] : [year, month - 1];
+  return { month: `${pad(y, 4)}-${pad(m)}`, timeZone, from: midnightIn(y, m, 1, timeZone), to: midnightIn(y, m + 1, 1, timeZone) };
 }
 
 /** The calendar date, YYYY-MM-DD, that the instant falls on in the zone. */

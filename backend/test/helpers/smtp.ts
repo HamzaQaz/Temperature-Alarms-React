@@ -20,6 +20,8 @@ export interface TestRelay {
   port: number;
   /** Every email the relay took, in order. */
   received: ReceivedEmail[];
+  /** Addresses the relay refuses at RCPT TO, as a relay does a mailbox it does not know; an email to none other fails. */
+  refuse: Set<string>;
   /** Notifications config pointing at this relay, plain SMTP, with any override. */
   config(overrides?: Partial<NotificationsConfig['smtp']>): NotificationsConfig;
   close(): Promise<void>;
@@ -76,6 +78,7 @@ const bodiesOf = (raw: string): { text: string; html: string } => {
  */
 export async function startTestRelay({ login, port: wanted = 0 }: { login?: { user: string; password: string }; port?: number } = {}): Promise<TestRelay> {
   const received: ReceivedEmail[] = [];
+  const refuse = new Set<string>();
   const server = new SMTPServer({
     disabledCommands: login === undefined ? ['STARTTLS', 'AUTH'] : ['STARTTLS'],
     allowInsecureAuth: true,
@@ -87,6 +90,9 @@ export async function startTestRelay({ login, port: wanted = 0 }: { login?: { us
         return;
       }
       callback(new Error(`Invalid login for ${auth.username} with password ${auth.password}`));
+    },
+    onRcptTo(address, _session, callback) {
+      callback(refuse.has(address.address) ? Object.assign(new Error(`5.1.1 <${address.address}>: mailbox unavailable`), { responseCode: 550 }) : undefined);
     },
     onData(stream, session, callback) {
       const chunks: Buffer[] = [];
@@ -117,13 +123,17 @@ export async function startTestRelay({ login, port: wanted = 0 }: { login?: { us
   return {
     port,
     received,
+    refuse,
     config: (overrides = {}) => ({
       smtp: { host: '127.0.0.1', port, secure: 'none', auth: login, ...overrides },
       from: 'alarms@district.example',
       to: ['techs@district.example', 'oncall@district.example'],
+      toAll: false,
       publicUrl: 'https://alarms.district.example',
       coalesceSeconds: 60,
       remindHours: 0,
+      monthlyReport: false,
+      quietHours: { daily: null, weekends: false },
     }),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

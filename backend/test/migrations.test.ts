@@ -43,7 +43,7 @@ describe('migration runner', () => {
   beforeEach(() => resetDatabase(pool));
 
   test('creates the schema tables and records the applied migrations', async () => {
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'last_backup', 'monthly_reports', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT id FROM schema_migrations ORDER BY id');
     assert.deepEqual(rows.map((r) => r.id), [
       '0000-legacy-tables-aside',
@@ -60,6 +60,13 @@ describe('migration runner', () => {
       '0011-notifications',
       '0012-incident-acknowledgement',
       '0013-incident-reminders',
+      '0014-campus-recipients',
+      '0015-staged-rollout',
+      '0016-device-sensor',
+      '0017-monthly-report',
+      '0018-system-health',
+      '0019-quiet-hours',
+      '0020-device-network',
     ]);
   });
 
@@ -67,7 +74,7 @@ describe('migration runner', () => {
     const applied = await runMigrations(pool);
     assert.deepEqual(applied, []);
     const [rows] = await pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM schema_migrations');
-    assert.equal(rows[0].n, 14);
+    assert.equal(rows[0].n, 21);
   });
 
   test('applies only migrations that have not run yet, in order', async () => {
@@ -88,11 +95,11 @@ describe('migration runner', () => {
   // MySQL commits DDL as it goes, so a run can die after a schema change and before recording it.
   test('a migration whose change landed but was never recorded runs again cleanly', async () => {
     await pool.query(
-      "DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders')",
+      "DELETE FROM schema_migrations WHERE id IN ('0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders', '0014-campus-recipients', '0015-staged-rollout', '0016-device-sensor', '0017-monthly-report', '0018-system-health', '0019-quiet-hours', '0020-device-network')",
     );
     const applied = await runMigrations(pool);
-    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders']);
-    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
+    assert.deepEqual(applied, ['0001-initial-schema', '0004-readings-recorded-at-index', '0005-incidents', '0006-readings-covering-index', '0011-notifications', '0012-incident-acknowledgement', '0013-incident-reminders', '0014-campus-recipients', '0015-staged-rollout', '0016-device-sensor', '0017-monthly-report', '0018-system-health', '0019-quiet-hours', '0020-device-network']);
+    assert.deepEqual(await tableNames(pool), ['campuses', 'devices', 'firmware_release', 'incident_segments', 'incidents', 'last_backup', 'monthly_reports', 'notifications', 'pending_devices', 'readings', 'schema_migrations']);
     assert.deepEqual((await readingsIndexes()).get('ix_readings_recorded'), ['recorded_at']);
   });
 });
@@ -137,6 +144,33 @@ describe('0010-device-reports', () => {
     const [rows] = await pool.query<RowDataPacket[]>('SELECT last_report_at AS lastReportAt, sensor_faults AS sensorFaults FROM devices');
     assert.equal((rows[0].lastReportAt as Date).toISOString(), '2026-10-05T10:05:00.000Z');
     assert.equal(rows[0].sensorFaults, 2);
+  });
+});
+
+describe('0017-monthly-report', () => {
+  beforeEach(() => resetDatabase(pool));
+
+  const kindType = async (): Promise<string> => {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      "SELECT column_type AS type FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'notifications' AND column_name = 'kind'",
+    );
+    return rows[0].type as string;
+  };
+
+  test('adds the report kind beside every kind the outbox has, keeping a queued hold, and repeats harmlessly', async () => {
+    // As a database migrated to 0016 had it: no report kind, and a hold waiting to be sent.
+    await pool.query("ALTER TABLE notifications MODIFY COLUMN kind ENUM('opened', 'worse', 'closed', 'reminder', 'hold') NOT NULL");
+    await pool.query("DELETE FROM schema_migrations WHERE id = '0017-monthly-report'");
+    const device = await insertDevice(await insertCampus());
+    await pool.query("INSERT INTO notifications (incident_id, device_id, kind, level, created_at, next_attempt_at) VALUES (NULL, ?, 'hold', 'warning', NOW(3), NOW(3))", [device]);
+
+    assert.deepEqual(await runMigrations(pool), ['0017-monthly-report']);
+    assert.equal(await kindType(), "enum('opened','worse','closed','reminder','hold','report')");
+    await pool.query("DELETE FROM schema_migrations WHERE id = '0017-monthly-report'");
+    assert.deepEqual(await runMigrations(pool), ['0017-monthly-report']);
+    assert.equal(await kindType(), "enum('opened','worse','closed','reminder','hold','report')");
+    const [rows] = await pool.query<RowDataPacket[]>('SELECT kind, device_id AS deviceId FROM notifications');
+    assert.deepEqual(rows.map((r) => [r.kind, r.deviceId]), [['hold', device]]);
   });
 });
 

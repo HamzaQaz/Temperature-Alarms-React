@@ -5,7 +5,7 @@ import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, json, type RecordedReading } from './helpers/api';
 import { subscribe, type SseClient } from './helpers/sse';
-import { createBroadcaster, type ReadingEvent } from '../src/sse';
+import { createBroadcaster, type FaultEvent, type ReadingEvent } from '../src/sse';
 
 describe('GET /api/dashboard/stream', () => {
   let pool: Pool;
@@ -97,6 +97,7 @@ describe('GET /api/dashboard/stream', () => {
       online: true,
       conditions: [],
       lastReportAt: posted.reading.recordedAt,
+      onFallbackNetwork: false,
     });
 
     // A Reading in a Condition carries it, so the card can update its badges without a fetch.
@@ -104,6 +105,28 @@ describe('GET /api/dashboard/stream', () => {
     const hot = await stream.nextMessage<ReadingEvent>();
     assert.equal(hot.reading.tempF, 91);
     assert.deepEqual(hot.conditions, [{ name: 'Hot', level: 'critical' }]);
+  });
+
+  test('a Reading or fault report says whether the board is on its fallback network, so its card notes it at once', async () => {
+    await registerDevice('ESP_A1B2C3');
+    const stream = await listen();
+    await stream.next();
+    const add = async (body: Record<string, unknown>) => (await client.readings.add({ device: 'ESP_A1B2C3', ...body })).arrayBuffer();
+
+    await add({ temp: 72, humidity: 40, fw: 7, ssid: 'CISD-MAC', network: 2 });
+    const reading = await stream.nextMessage<ReadingEvent>();
+    assert.equal(reading.onFallbackNetwork, true);
+    assert.ok(!JSON.stringify(reading).includes('CISD-MAC'), 'the name stays behind the Admin token');
+
+    await add({ fault: 'sensor', fw: 7, ssid: 'CISD-MAC', network: 2 });
+    assert.equal((await stream.nextMessage<FaultEvent>()).onFallbackNetwork, true);
+
+    // A board that says nothing about itself (firmware 1 or 2) leaves what the server knows as it was.
+    await add({ temp: 72, humidity: 40 });
+    assert.equal((await stream.nextMessage<ReadingEvent>()).onFallbackNetwork, true);
+
+    await add({ temp: 72, humidity: 40, fw: 7, ssid: 'closet-net', network: 1 });
+    assert.equal((await stream.nextMessage<ReadingEvent>()).onFallbackNetwork, false);
   });
 
   test('every subscriber receives the same Reading from the one client set', async () => {

@@ -58,7 +58,7 @@ interface Entry {
   device: QueuedNotification['device'];
 }
 
-const SUBJECT_PREFIX = '[Temperature Alarms]';
+export const SUBJECT_PREFIX = '[Temperature Alarms]';
 
 /** Offline and Sensor fault have one level each, so it goes unsaid. */
 const SINGLE_LEVEL: ReadonlySet<ConditionName> = new Set(['Offline', 'Sensor fault']);
@@ -78,10 +78,10 @@ const PEAK_LABEL: Partial<Record<ConditionName, string>> = {
 const label = ({ condition, level }: Entry['incident']): string => (SINGLE_LEVEL.has(condition) ? condition : `${condition} ${level}`);
 
 /** °F to one decimal, a whole number without its `.0`. */
-const degrees = (tempF: number): string => `${Number.isInteger(Math.round(tempF * 10) / 10) ? Math.round(tempF) : tempF.toFixed(1)} °F`;
+export const degrees = (tempF: number): string => `${Number.isInteger(Math.round(tempF * 10) / 10) ? Math.round(tempF) : tempF.toFixed(1)} °F`;
 
 /** Humidity as a whole percent. */
-const percent = (humidity: number): string => `${Math.round(humidity)}%`;
+export const percent = (humidity: number): string => `${Math.round(humidity)}%`;
 
 /** The peak in the unit its Condition is judged by, for the subject; null for Offline and Sensor fault. */
 function peakFigure({ condition, peak }: Entry['incident']): string | null {
@@ -95,7 +95,7 @@ const readingText = ({ tempF, humidity }: TimedReading): string => (humidity ===
 const formatters = new Map<string, Intl.DateTimeFormat>();
 
 /** "Tue, Oct 6, 2:05 PM CDT" in the zone. */
-function when(at: Date, timeZone: string): string {
+export function when(at: Date, timeZone: string): string {
   let formatter = formatters.get(timeZone);
   if (formatter === undefined) {
     formatter = new Intl.DateTimeFormat('en-US', { timeZone, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
@@ -213,7 +213,7 @@ function linesOf(entry: Entry, { publicUrl, timeZone }: EmailSettings): EntryLin
   };
 }
 
-const escapeHtml = (text: string): string =>
+export const escapeHtml = (text: string): string =>
   text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /**

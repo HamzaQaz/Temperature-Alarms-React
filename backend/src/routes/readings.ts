@@ -12,8 +12,9 @@ import type { ReadingPayload } from '../sse';
 import { MonotonicStore } from '../monotonicStore';
 import { LATEST_READING_ID, lastReportAt, latestAllowed } from '../latestReading';
 import { notePending } from '../pendingDevices';
-import { parseDeviceInfo } from '../deviceInfo';
-import { cachedRelease, offers } from '../firmwareStore';
+import { onFallbackNetwork, parseDeviceInfo } from '../deviceInfo';
+import { cachedRelease, holdOnReport, offers } from '../firmwareStore';
+import { cleanReportsAfter } from '../rollout';
 import type { DeviceSightings } from '../deviceSightings';
 import type { TimedReading } from '../incidents';
 import {
@@ -27,12 +28,17 @@ import {
   type OpenIncidentPayload,
 } from '../incidentStore';
 import { enqueueNotifications } from '../outboxStore';
+import { WEAK_SIGNAL_DBM } from '../systemHealth';
 
 interface DeviceIdRow extends RowDataPacket {
   id: number;
   hostname: string;
   lastReportAt: Date | null;
   sensorFaults: number;
+  firmwareVersion: number | null;
+  cleanReports: number;
+  sentAt: Date | null;
+  wifiNetwork: number | null;
 }
 
 interface ReadingInput {
@@ -139,6 +145,8 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
     // Null for a fault report: the sensor did not answer, so there is nothing to record.
     const values = 'fault' in parsed ? null : { tempF: parsed.tempF, humidity: parsed.humidity };
     const info = parseDeviceInfo(req.body);
+    // To the millisecond, unlike the Reading's own time: a staged release tells a report from the download just after it.
+    const arrivedAt = new Date();
     try {
       // The report and what it does to the Device's incidents commit together, under the Device's
       // row lock, so two reports of one Device are never judged at once (docs/adr/0006, 0009).
@@ -151,7 +159,9 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       try {
         await conn.beginTransaction();
         const [devices] = await conn.query<DeviceIdRow[]>(
-          'SELECT id, hostname, last_report_at AS lastReportAt, sensor_faults AS sensorFaults FROM devices WHERE hostname = ? FOR UPDATE',
+          `SELECT id, hostname, last_report_at AS lastReportAt, sensor_faults AS sensorFaults, firmware_version AS firmwareVersion,
+                  firmware_clean_reports AS cleanReports, firmware_sent_at AS sentAt, wifi_network AS wifiNetwork
+           FROM devices WHERE hostname = ? FOR UPDATE`,
           [hostname],
         );
         device = devices[0];
@@ -178,13 +188,30 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         }
         // Either is a report, so the Device is heard from now. A Reading clears the fault count; a fault report adds one.
         sensorFaults = values === null ? device.sensorFaults + 1 : 0;
-        await conn.query('UPDATE devices SET last_report_at = ?, sensor_faults = ? WHERE id = ?', [recordedAt, sensorFaults, device.id]);
-        // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware tab.
+        // And a good Reading on the version of the one before counts toward a staged release's "Release to all" (rollout.ts).
+        const cleanReports = cleanReportsAfter(
+          { version: device.firmwareVersion, cleanReports: device.cleanReports, lastReportAt: device.lastReportAt },
+          { version: info?.firmwareVersion ?? null, reading: values !== null, at: recordedAt },
+          config.reportIntervalSeconds,
+        );
+        await conn.query('UPDATE devices SET last_report_at = ?, sensor_faults = ?, firmware_clean_reports = ? WHERE id = ?', [
+          recordedAt,
+          sensorFaults,
+          cleanReports,
+          device.id,
+        ]);
+        // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware
+        // tab, its sensor (firmware 6) for History too, and its network (firmware 7) for the card's note.
+        // A signal under WEAK_SIGNAL_DBM keeps when it fell there, for Settings, System; a better one, or none, clears it.
         if (info !== null) {
           await conn.query(
             `UPDATE devices SET firmware_version = COALESCE(?, firmware_version), rssi = ?, uptime_s = ?, free_heap = ?,
-               reset_reason = ?, update_result = ?, info_at = ? WHERE id = ?`,
-            [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, recordedAt, device.id],
+               reset_reason = ?, update_result = ?, sensor = ?, wifi_ssid = ?, wifi_network = ?, info_at = ?,
+               weak_signal_since = IF(? < ?, COALESCE(weak_signal_since, ?), NULL) WHERE id = ?`,
+            [
+              info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, info.sensor,
+              info.ssid, info.network, recordedAt, info.rssi, WEAK_SIGNAL_DBM, recordedAt, device.id,
+            ],
           );
         }
         changed =
@@ -205,26 +232,63 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
       // Only for a registered Device, so neither the log nor the list can be filled with made-up hostnames.
       rotation.heard(device.hostname, deviceTokenOf(res));
       sightings.accepted(device.hostname);
+      const release = await cachedRelease(pool).catch(() => null);
+      // One of a staged release's named Devices failing it holds the release, before this answer could
+      // nudge anyone toward it. Its own failure never costs the board its report.
+      const held = await holdOnReport(
+        pool,
+        release,
+        {
+          hostname: device.hostname,
+          sentAt: device.sentAt,
+          version: info?.firmwareVersion ?? device.firmwareVersion,
+          updateResult: info?.updateResult ?? null,
+          arrivedAt,
+          incidentsChanged: changed.length > 0,
+        },
+        recordedAt,
+        config.notifications !== undefined,
+      ).catch((error: unknown) => {
+        console.error('firmware: could not check the staged release:', error instanceof Error ? error.message : error);
+        return null;
+      });
       // A newer build waiting for this board: said in a header, so the board checks for it now instead
       // of at its hourly check. Only for a board that says its version, the firmware that can act on it.
       // A board with a dead sensor gets it too: it can still be updated.
-      if (info?.firmwareVersion != null) {
-        const release = await cachedRelease(pool).catch(() => null);
-        if (release !== null && offers(release, device.hostname, info.firmwareVersion)) res.set('X-Firmware-Available', String(release.version));
+      if (info?.firmwareVersion != null && held === null && release !== null && offers(release, device.hostname, info.firmwareVersion)) {
+        res.set('X-Firmware-Available', String(release.version));
       }
       const reportedAt = recordedAt.toISOString();
+      // The network as the server now holds it: this report's, or the last one a board said (older firmware says none).
+      const fallback = onFallbackNetwork(info === null ? device.wifiNetwork : info.network);
       if (values === null) {
         // 202: heard, and nothing created.
         res.status(202).json({ device: device.hostname, fault: 'sensor' });
         // Heard from just now; the last good Reading is judged only until the count reaches a Sensor fault.
         const conditions = conditionsFor({ reading: lastReading, secondsSinceReport: 0, sensorFaults, ...rules });
-        sse.broadcast({ type: 'fault', device: device.hostname, fault: 'sensor', online: !isOffline(conditions), conditions, lastReportAt: reportedAt });
+        sse.broadcast({
+          type: 'fault',
+          device: device.hostname,
+          fault: 'sensor',
+          online: !isOffline(conditions),
+          conditions,
+          lastReportAt: reportedAt,
+          onFallbackNetwork: fallback,
+        });
       } else {
         const reading: ReadingPayload = { ...values, recordedAt: reportedAt };
         res.status(201).json({ device: device.hostname, reading });
         // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
         const conditions = conditionsFor({ reading: values, secondsSinceReport: 0, ...rules });
-        sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions, lastReportAt: reportedAt });
+        sse.broadcast({
+          type: 'reading',
+          device: device.hostname,
+          reading,
+          online: !isOffline(conditions),
+          conditions,
+          lastReportAt: reportedAt,
+          onFallbackNetwork: fallback,
+        });
       }
       await broadcastIncidentChanges(pool, sse, changed);
     } catch (error) {
@@ -252,6 +316,7 @@ interface DashboardRow extends RowDataPacket {
   recordedAt: Date | null;
   lastReportAt: Date | null;
   sensorFaults: number;
+  wifiNetwork: number | null;
 }
 
 /** Every Device with its latest Reading, in one statement: one step back along the index per Device (latestReading.ts). */
@@ -259,7 +324,7 @@ const SELECT_DASHBOARD = `
   SELECT d.id, d.hostname, d.closet,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode,
          r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt,
-         d.last_report_at AS lastReportAt, d.sensor_faults AS sensorFaults
+         d.last_report_at AS lastReportAt, d.sensor_faults AS sensorFaults, d.wifi_network AS wifiNetwork
   FROM devices d
   JOIN campuses c ON c.id = d.campus_id
   LEFT JOIN readings r ON r.id = (${LATEST_READING_ID})`;
@@ -295,6 +360,8 @@ function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, 
     tokenMismatchAt: sightings.mismatchedAt(hostname)?.toISOString() ?? null,
     /** Its incidents still open, oldest first, each with who acknowledged it: the card says who is on them. */
     openIncidents,
+    /** The board said it is on its fallback network (firmware 7): a note on its card, never a Condition. Not its name: that is for the Admin. */
+    onFallbackNetwork: onFallbackNetwork(row.wifiNetwork),
   };
 }
 
@@ -430,7 +497,8 @@ export function historyRouter({ pool, config, now = () => new Date() }: RouteDep
       const truncated = rows.length > HISTORY_ROW_LIMIT;
       const readings: ReadingPayload[] = rows.slice(0, HISTORY_ROW_LIMIT).map(({ tempF, humidity, recordedAt }) => ({ tempF, humidity, recordedAt: recordedAt.toISOString() }));
       res.json({
-        device: { ...toDevice(device), closetType: closetType(device.closet) },
+        // The sensor its board last named (firmware 6), so the day's Readings are read with its accuracy in mind.
+        device: { ...toDevice(device), closetType: closetType(device.closet), sensor: device.sensor },
         date: day.date,
         timeZone: day.timeZone,
         from: day.from.toISOString(),

@@ -1,6 +1,7 @@
 import type { DatabaseConfig } from './db';
 import { DEFAULT_THRESHOLDS, type Thresholds } from './conditions';
 import { isTimeZone, serverTimeZone } from './localDay';
+import { parseDailyWindow, type QuietHours } from './quietHours';
 
 /** Everything the backend reads from the environment, read once at startup. */
 export interface Config {
@@ -43,8 +44,13 @@ export interface NotificationsConfig {
   };
   /** The sender the relay allows, a bare address. */
   from: string;
-  /** At least one bare address; a distribution list keeps who receives alerts out of `.env`. */
+  /**
+   * At least one bare address; a distribution list keeps who receives alerts out of `.env`. The
+   * default recipients: a Campus without its own list emails these.
+   */
   to: string[];
+  /** True when `to` receives every email, a Campus with its own list included (NOTIFY_TO_ALL). */
+  toAll: boolean;
   /** The address technicians open the dashboard at, without a trailing slash, for links in emails. */
   publicUrl: string;
   /** How long the sender waits after the first pending notification before sending one email for all of them. */
@@ -54,6 +60,17 @@ export interface NotificationsConfig {
    * every as many hours after (docs/adr/0008). 0: no reminders.
    */
   remindHours: number;
+  /**
+   * True when a report on the month just ended goes to NOTIFY_TO on the 1st of each month
+   * (NOTIFY_MONTHLY_REPORT; docs/adr/0008). Off by default.
+   */
+  monthlyReport: boolean;
+  /**
+   * When warning emails wait, on the server's clock (NOTIFY_QUIET_HOURS, NOTIFY_QUIET_WEEKENDS;
+   * docs/adr/0008): held until the quiet ends, then sent together. No window and no weekends by
+   * default: nothing waits.
+   */
+  quietHours: QuietHours;
 }
 
 export class ConfigError extends Error {
@@ -122,6 +139,18 @@ function timeZone(env: Env, name: string): string {
 const EMAIL = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
 
 /**
+ * A comma-separated recipient list, as NOTIFY_TO and a Campus's own list are written: its
+ * addresses trimmed, empty entries dropped, and any entry that is not a bare address.
+ */
+export function parseAddressList(raw: string): { addresses: string[]; bad: string[] } {
+  const addresses = raw
+    .split(',')
+    .map((address) => address.trim())
+    .filter((address) => address !== '');
+  return { addresses, bad: addresses.filter((address) => !EMAIL.test(address)) };
+}
+
+/**
  * Settings that only mean something with SMTP_HOST and have no default, so one set without it is a
  * mistake, not "off". The port, security mode, and window may sit at their defaults in a template.
  */
@@ -162,11 +191,7 @@ function notifications(env: Env): NotificationsConfig | undefined {
   if (from === undefined) problems.push('NOTIFY_FROM is required with SMTP_HOST: the sender address the relay allows');
   else if (!EMAIL.test(from)) problems.push(`NOTIFY_FROM must be a bare address like alarms@district.example, got "${from}"`);
 
-  const to = (present(env, 'NOTIFY_TO') ?? '')
-    .split(',')
-    .map((address) => address.trim())
-    .filter((address) => address !== '');
-  const badTo = to.filter((address) => !EMAIL.test(address));
+  const { addresses: to, bad: badTo } = parseAddressList(present(env, 'NOTIFY_TO') ?? '');
   if (to.length === 0) problems.push('NOTIFY_TO is required with SMTP_HOST: at least one recipient address, comma-separated');
   else if (badTo.length > 0) problems.push(`NOTIFY_TO must be comma-separated addresses; not an address: ${badTo.map((a) => `"${a}"`).join(', ')}`);
 
@@ -183,17 +208,33 @@ function notifications(env: Env): NotificationsConfig | undefined {
   // Empty or 0 is off. A week at most: a longer period would hardly remind anyone of anything.
   const remindHours = integer(env, 'NOTIFY_REMIND_HOURS', 0, { min: 0 });
   if (remindHours > MAX_REMIND_HOURS) problems.push(`NOTIFY_REMIND_HOURS must be 0 (off) to ${MAX_REMIND_HOURS} hours, got "${remindHours}"`);
+  // Empty or false: a Campus with its own list emails only that list.
+  const toAllRaw = present(env, 'NOTIFY_TO_ALL')?.trim().toLowerCase() ?? 'false';
+  if (toAllRaw !== 'true' && toAllRaw !== 'false') problems.push(`NOTIFY_TO_ALL must be true or false, got "${toAllRaw}"`);
+  // Empty or false is off.
+  const monthlyRaw = present(env, 'NOTIFY_MONTHLY_REPORT')?.trim().toLowerCase() ?? 'false';
+  if (monthlyRaw !== 'true' && monthlyRaw !== 'false') problems.push(`NOTIFY_MONTHLY_REPORT must be true or false, got "${monthlyRaw}"`);
+  // Empty: no daily window. Two 24-hour times on the server's clock; the end may come before the start, past midnight.
+  const quietRaw = present(env, 'NOTIFY_QUIET_HOURS')?.trim();
+  const daily = quietRaw === undefined ? null : parseDailyWindow(quietRaw);
+  if (daily === undefined) problems.push(`NOTIFY_QUIET_HOURS must be two different 24-hour times like 18:00-07:00, got "${quietRaw}"`);
+  // Empty or false: weekends are like any other day.
+  const weekendsRaw = present(env, 'NOTIFY_QUIET_WEEKENDS')?.trim().toLowerCase() ?? 'false';
+  if (weekendsRaw !== 'true' && weekendsRaw !== 'false') problems.push(`NOTIFY_QUIET_WEEKENDS must be true or false, got "${weekendsRaw}"`);
 
-  if (problems.length > 0 || secure === undefined || from === undefined || publicUrl === undefined) {
+  if (problems.length > 0 || secure === undefined || from === undefined || publicUrl === undefined || daily === undefined) {
     throw new ConfigError(`Email notifications are half-configured: ${problems.join('; ')}`);
   }
   return {
     smtp: { host: host.trim(), port, secure, auth: user !== undefined && password !== undefined ? { user, password } : undefined },
     from,
     to,
+    toAll: toAllRaw === 'true',
     publicUrl,
     coalesceSeconds,
     remindHours,
+    monthlyReport: monthlyRaw === 'true',
+    quietHours: { daily, weekends: weekendsRaw === 'true' },
   };
 }
 
@@ -215,6 +256,10 @@ export function loadConfig(env: Env = process.env): Config {
   if (missing.length > 0) {
     throw new ConfigError(`Missing required environment variable${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`);
   }
+  // The server's zone (localDay.ts): quiet hours, email times, and the monthly report's months. A
+  // zone Node does not know would silently be UTC.
+  const tz = present(env, 'TZ');
+  if (tz !== undefined && !isTimeZone(tz)) throw new ConfigError(`TZ must be an IANA time zone like America/Chicago, got "${tz}"`);
   if (required(env, 'ADMIN_TOKEN') === required(env, 'DEVICE_TOKEN')) {
     // Every board's flash holds the Device token, so it must not also open Settings.
     throw new ConfigError('ADMIN_TOKEN and DEVICE_TOKEN must differ: every Device carries the Device token');

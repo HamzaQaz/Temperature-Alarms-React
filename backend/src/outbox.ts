@@ -1,11 +1,11 @@
 /**
- * The notifications outbox (docs/adr/0008): which Incident changes are emailed, when a waiting
- * batch is ready to send, and how long a failed one waits before the next try.
+ * The notifications outbox (docs/adr/0008): which Incident changes are emailed, to whom, when a
+ * waiting batch is ready to send, and how long a failed one waits before the next try.
  *
  * Pure functions only: no I/O, no clock. outboxStore.ts writes and reads the rows, notifier.ts
  * runs the sender, and notificationEmail.ts says what the email reads.
  */
-import { LEVELS_WORST_FIRST, type ConditionLevel } from './conditions';
+import { LEVELS_WORST_FIRST, type ConditionLevel, type ConditionName } from './conditions';
 import type { IncidentChange } from './incidents';
 
 /**
@@ -64,6 +64,29 @@ export function reminderDue(start: Date, lastRemindedAt: Date | null, now: Date,
   return new Date(start.getTime() + periods * periodMs);
 }
 
+/** A due notification, as the sender decides whether quiet hours hold it. */
+export interface QuietCandidate {
+  /** `hold` (a held firmware release) and `report` (a monthly report) are about no Incident. */
+  kind: NotificationKind | 'hold' | 'report';
+  /** The level its incident had reached when it was queued; null for a row about no Incident. */
+  level: ConditionLevel | null;
+  /** Its incident's Condition; null for a row about no Incident. */
+  condition: ConditionName | null;
+}
+
+/**
+ * True when quiet hours hold the notification until they end (docs/adr/0008): every warning,
+ * Mold risk's high and reminders and closes included, at the level their incident had reached.
+ * Critical never waits, so a warning that rises to critical sends at once as `worse`; nor do
+ * Offline and Sensor fault (owner decision); nor a held release or a monthly report, which are
+ * not about an Incident.
+ */
+export function heldByQuietHours({ kind, level, condition }: QuietCandidate): boolean {
+  if (kind === 'hold' || kind === 'report' || level === null || condition === null) return false;
+  if (condition === 'Offline' || condition === 'Sensor fault') return false;
+  return level !== 'critical';
+}
+
 /** Retry timing for a batch the relay did not take. */
 export interface RetryPolicy {
   /** The wait after the first failure; each later one doubles it. */
@@ -83,27 +106,104 @@ export function retryDelayMs(attempts: number, { firstMs, maxMs }: RetryPolicy):
   return Math.min(firstMs * 2 ** Math.min(Math.max(attempts - 1, 0), 30), maxMs);
 }
 
-/** True when a notification queued at `createdAt` that just failed again should be given up on. */
-export const givesUp = (createdAt: Date, now: Date, { giveUpMs }: RetryPolicy): boolean => now.getTime() - createdAt.getTime() >= giveUpMs;
+/**
+ * True when a notification that just failed again should be given up on: a day after it was
+ * queued (`createdAt`), or, for one quiet hours held, a day after they first let it go
+ * (`notBefore`), so a night spent waiting is not counted as a day of retries.
+ */
+export const givesUp = (createdAt: Date, now: Date, { giveUpMs }: RetryPolicy, notBefore: Date | null = null): boolean =>
+  now.getTime() - Math.max(createdAt.getTime(), notBefore?.getTime() ?? 0) >= giveUpMs;
 
 /** A due notification, as the sender decides whether to send its batch. */
 export interface DueNotification {
   createdAt: Date;
   /** Tries already made; more than zero means its batch waited its window before. */
   attempts: number;
+  /** When quiet hours first let it go, if they held it; set means it waited the night already. */
+  notBefore?: Date | null;
 }
 
 /**
  * True when the due notifications should go now, as one email: once the oldest has waited the
- * coalescing window, so a campus losing power is one email, or at once when any is a retry,
- * whose batch already waited. Everything due goes together, so a burst that keeps arriving still
- * sends within one window of its first row, and a row that missed it within the next.
+ * coalescing window, so a campus losing power is one email, or at once when any is a retry, or
+ * was held by quiet hours, whose batch already waited. Everything due goes together, so a burst
+ * that keeps arriving still sends within one window of its first row, a row that missed it
+ * within the next, and the warnings held overnight in the first pass after the quiet ends.
  */
 export function readyToSend(due: DueNotification[], now: Date, windowMs: number): boolean {
   if (due.length === 0) return false;
-  if (due.some((n) => n.attempts > 0)) return true;
+  if (due.some((n) => n.attempts > 0 || (n.notBefore ?? null) !== null)) return true;
   const oldest = Math.min(...due.map((n) => n.createdAt.getTime()));
   return now.getTime() - oldest >= windowMs;
+}
+
+/**
+ * Who a notification goes to: its Campus's own list, or NOTIFY_TO (`defaults`) for a Campus without
+ * one and for a row with no Campus; with NOTIFY_TO_ALL (`toAll`), NOTIFY_TO after a Campus's own.
+ * Each address once, whatever its case, in the order named.
+ */
+export function recipientsFor(campusList: string[], defaults: string[], toAll: boolean): string[] {
+  const named = campusList.length === 0 ? defaults : toAll ? [...campusList, ...defaults] : campusList;
+  const once = new Map<string, string>();
+  for (const address of named) if (!once.has(address.toLowerCase())) once.set(address.toLowerCase(), address);
+  return [...once.values()];
+}
+
+/**
+ * What identifies a recipient list whatever the order and case its addresses are written in, so
+ * Campuses naming the same people share one email: one email per key per pass, and the key a row
+ * records once tried (`notifications.recipients`).
+ */
+export const listKey = (recipients: string[]): string =>
+  recipients
+    .map((address) => address.toLowerCase())
+    .sort()
+    .join(', ');
+
+/** One recipient list as Settings shows it: who is on it, and which Campuses email it. */
+export interface RecipientList {
+  recipients: string[];
+  /** The shortcodes of the Campuses whose notifications go to it, in the order given. */
+  campuses: string[];
+  /** True for NOTIFY_TO alone: Campuses without a list of their own, and anything with no Campus. */
+  isDefault: boolean;
+}
+
+/**
+ * Every list notifications can go to now, NOTIFY_TO's first, each once with the Campuses that email
+ * it. The Bench never emails, so it is on none.
+ */
+export function recipientLists(campuses: { shortcode: string; notifyTo: string[] }[], defaults: string[], toAll: boolean): RecipientList[] {
+  const fallback = recipientsFor([], defaults, toAll);
+  const lists = new Map<string, RecipientList>([[listKey(fallback), { recipients: fallback, campuses: [], isDefault: true }]]);
+  for (const { shortcode, notifyTo } of campuses) {
+    if (isBench(shortcode)) continue;
+    const recipients = recipientsFor(notifyTo, defaults, toAll);
+    const key = listKey(recipients);
+    const list = lists.get(key) ?? { recipients, campuses: [], isDefault: false };
+    list.campuses.push(shortcode);
+    lists.set(key, list);
+  }
+  return [...lists.values()];
+}
+
+/** The due notifications of one recipient list: one email's worth. */
+export interface RecipientGroup<T> {
+  recipients: string[];
+  due: T[];
+}
+
+/** Due notifications grouped by who they go to, one group per list, in the order each list first appears. */
+export function byRecipients<T>(due: T[], recipientsOf: (notification: T) => string[]): RecipientGroup<T>[] {
+  const groups = new Map<string, RecipientGroup<T>>();
+  for (const notification of due) {
+    const recipients = recipientsOf(notification);
+    const key = listKey(recipients);
+    const group = groups.get(key) ?? { recipients, due: [] };
+    group.due.push(notification);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
 }
 
 const rank = (level: ConditionLevel): number => LEVELS_WORST_FIRST.indexOf(level);

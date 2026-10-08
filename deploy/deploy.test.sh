@@ -65,6 +65,8 @@ cp "$here/../compose.yaml" "$here/../.env.example" "$repo/"
 cat > "$bin/docker" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_DIR:?}/docker.log"
+# What a build would bake into api's image (backend/Dockerfile).
+case "$*" in *" build "*|*" up "*--build*) printf 'APP_VERSION=%s\n' "${APP_VERSION:-}" >> "$FAKE_DIR/build.env" ;; esac
 case "$*" in
   "compose version --short") echo "2.30.0"; exit 0 ;;
   "info --format {{.OSType}}") echo "linux"; exit 0 ;;
@@ -88,7 +90,7 @@ run_fake() { (cd "$repo" && PATH="$bin:$PATH" bash deploy/deploy.sh "$@" --yes 2
 renv() { grep -E "^$1=" "$repo/.env" | tail -n 1 | cut -d= -f2-; }
 set_env() { sed -i "s/^$1=.*/$1=$2/" "$repo/.env"; }
 hex64() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'; }
-reset_fake() { rm -f "$work/docker.log" "$work/db.stdin" "$work/rotation.out" "$work/rotation.rc" "$work/db.rc" "$work/volumes"; }
+reset_fake() { rm -f "$work/docker.log" "$work/db.stdin" "$work/rotation.out" "$work/rotation.rc" "$work/db.rc" "$work/volumes" "$work/build.env"; }
 
 # install: four secrets from the CSPRNG, all different; info masks every one of them.
 reset_fake
@@ -103,12 +105,36 @@ printf '%s' "$out" | grep -q 'DB root' || fail "info: no DB root line: $out"
 
 # Email notifications (docs/adr/0008). Off after a plain install: no SMTP setting has a value, since
 # one set without SMTP_HOST stops api from starting. Compose passes every one to api, empty when unset.
-for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS NOTIFY_REMIND_HOURS; do
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS NOTIFY_REMIND_HOURS NOTIFY_TO_ALL NOTIFY_MONTHLY_REPORT NOTIFY_QUIET_HOURS NOTIFY_QUIET_WEEKENDS; do
   [ -z "$(renv $k)" ] || fail "install: $k has a value without --smtp-host"
   grep -qE "^      $k: \\\$\{$k:-\}\$" "$repo/compose.yaml" || fail "compose.yaml: api does not get $k (empty when unset)"
   grep -qE "^# $k=" "$repo/.env.example" || fail ".env.example: $k is not listed, commented"
 done
 printf '%s' "$out" | grep -q 'Email *off' || fail "info: notifications not shown as off: $out"
+
+# NOTIFY_TO_ALL (recipients per Campus) is a tunable: --set takes true, false, or empty, and nothing else.
+cp "$repo/.env" "$work/env.before"
+out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL=yes < /dev/null) && fail "--set NOTIFY_TO_ALL=yes: exit 0"
+cmp -s "$repo/.env" "$work/env.before" || fail "--set NOTIFY_TO_ALL=yes: .env changed"
+out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL=true < /dev/null) || fail "--set NOTIFY_TO_ALL=true: exit $?: $out"
+[ "$(renv NOTIFY_TO_ALL)" = true ] || fail "--set NOTIFY_TO_ALL=true: not written"
+out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL= < /dev/null) || fail "--set NOTIFY_TO_ALL=: exit $?: $out"
+[ -z "$(renv NOTIFY_TO_ALL)" ] || fail "--set NOTIFY_TO_ALL=: not emptied"
+
+# TZ, the api's zone (quiet hours, email times, the monthly report's months): a tunable, UTC unless set.
+grep -qE '^      TZ: \$\{TZ:-UTC\}$' "$repo/compose.yaml" || fail "compose.yaml: api does not get TZ (UTC when unset)"
+grep -qE '^# TZ=' "$repo/.env.example" || fail ".env.example: TZ is not listed, commented"
+printf '%s' "$(run_fake info)" | grep -q 'Time zone *UTC (TZ not set)' || fail "info: TZ not shown as unset"
+cp "$repo/.env" "$work/env.before"
+for bad in 'America/Chicago;id' '../etc/passwd' 'Central Time'; do
+  out=$(run_fake install --reconfigure --set "TZ=$bad" < /dev/null) && fail "--set TZ=$bad: exit 0"
+done
+cmp -s "$repo/.env" "$work/env.before" || fail "--set TZ refused: .env changed"
+out=$(run_fake install --reconfigure --set TZ=America/Chicago < /dev/null) || fail "--set TZ=America/Chicago: exit $?: $out"
+[ "$(renv TZ)" = America/Chicago ] || fail "--set TZ=America/Chicago: not written"
+printf '%s' "$(run_fake info)" | grep -q 'Time zone *America/Chicago' || fail "info: TZ not shown"
+out=$(run_fake install --reconfigure --set TZ= < /dev/null) || fail "--set TZ=: exit $?: $out"
+[ -z "$(renv TZ)" ] || fail "--set TZ=: not emptied"
 
 # The password is never an argument: --smtp-password is refused before anything is written.
 cp "$repo/.env" "$work/env.before"
@@ -120,7 +146,7 @@ cmp -s "$repo/.env" "$work/env.before" || fail "--smtp-password: .env changed"
 out=$(run_fake install --reconfigure --smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org < /dev/null) && fail "no --public-url: exit 0"
 printf '%s' "$out" | grep -q -- '--public-url is required' || fail "no --public-url: no explanation: $out"
 ok_flags=(--smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org --public-url https://alarms.example.org)
-for bad in "--smtp-port 70000" "--smtp-secure ssl" "--notify-to not-an-address" "--notify-from a@b.c,d@e.f" "--public-url ftp://alarms.example.org" "--smtp-host relay.example.org;id"   "--notify-remind-hours 169" "--notify-remind-hours 1.5" "--notify-remind-hours -4"; do
+for bad in "--smtp-port 70000" "--smtp-secure ssl" "--notify-to not-an-address" "--notify-from a@b.c,d@e.f" "--public-url ftp://alarms.example.org" "--smtp-host relay.example.org;id"   "--notify-remind-hours 169" "--notify-remind-hours 1.5" "--notify-remind-hours -4" "--notify-monthly-report yes" "--notify-monthly-report true" "--notify-quiet-hours 18:00" "--notify-quiet-hours 18:00-18:00" "--notify-quiet-hours 6pm-7am" "--notify-quiet-hours 24:00-07:00" "--notify-quiet-weekends yes" "--notify-quiet-weekends true"; do
   # shellcheck disable=SC2086 # one flag and its value
   out=$(run_fake install --reconfigure "${ok_flags[@]}" $bad < /dev/null) && fail "$bad: exit 0"
   printf '%s' "$out" | grep -q -- "${bad%% *}" || fail "$bad: the flag is not named: $out"
@@ -133,7 +159,7 @@ cmp -s "$repo/.env" "$work/env.before" || fail "refused settings: .env changed"
 # takes it literally, $ and # included), and is on no docker command line and in no output.
 # shellcheck disable=SC2016 # a literal $, which Compose must not expand either
 pw='p@ss $HOME #1 \t\\x "q"'
-out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-port 465 --smtp-secure tls --smtp-user 'DISTRICT\svc-alarms' --notify-to 'techs@example.org, noc@example.org' --notify-remind-hours 4) || fail "notify on: exit $?: $out"
+out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-port 465 --smtp-secure tls --smtp-user 'DISTRICT\svc-alarms' --notify-to 'techs@example.org, noc@example.org' --notify-remind-hours 4 --notify-monthly-report on --notify-quiet-hours 18:00-07:00 --notify-quiet-weekends on) || fail "notify on: exit $?: $out"
 [ "$(renv SMTP_HOST)" = relay.example.org ] || fail "notify on: SMTP_HOST is '$(renv SMTP_HOST)'"
 [ "$(renv SMTP_PORT)" = 465 ] && [ "$(renv SMTP_SECURE)" = tls ] || fail "notify on: port or security not written"
 [ "$(renv SMTP_USER)" = 'DISTRICT\svc-alarms' ] || fail "notify on: SMTP_USER is '$(renv SMTP_USER)'"
@@ -141,6 +167,8 @@ out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --
 [ "$(renv NOTIFY_TO)" = techs@example.org,noc@example.org ] || fail "notify on: NOTIFY_TO is '$(renv NOTIFY_TO)'"
 [ "$(renv PUBLIC_URL)" = https://alarms.example.org ] || fail "notify on: PUBLIC_URL is '$(renv PUBLIC_URL)'"
 [ "$(renv NOTIFY_REMIND_HOURS)" = 4 ] || fail "notify on: NOTIFY_REMIND_HOURS is '$(renv NOTIFY_REMIND_HOURS)'"
+[ "$(renv NOTIFY_MONTHLY_REPORT)" = true ] || fail "notify on: NOTIFY_MONTHLY_REPORT is '$(renv NOTIFY_MONTHLY_REPORT)'"
+[ "$(renv NOTIFY_QUIET_HOURS)" = 18:00-07:00 ] && [ "$(renv NOTIFY_QUIET_WEEKENDS)" = true ] || fail "notify on: quiet hours are '$(renv NOTIFY_QUIET_HOURS)', weekends '$(renv NOTIFY_QUIET_WEEKENDS)'"
 for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do
   [ "$(renv $k)" = "$(grep -E "^$k=" "$work/env.before" | cut -d= -f2-)" ] || fail "notify on: $k changed"
 done
@@ -150,6 +178,8 @@ grep -qF 'p@ss' "$work/docker.log" 2>/dev/null && fail "notify on: the password 
 out=$(run_fake info)
 printf '%s' "$out" | grep -q 'relay.example.org:465 (tls)' || fail "info: no relay line: $out"
 printf '%s' "$out" | grep -q 'reminders every 4 h' || fail "info: reminders not shown: $out"
+printf '%s' "$out" | grep -q 'monthly report on' || fail "info: the monthly report not shown: $out"
+printf '%s' "$out" | grep -q 'quiet hours 18:00-07:00 and weekends' || fail "info: quiet hours not shown: $out"
 printf '%s' "$out" | grep -qF 'DISTRICT\svc-alarms / ********' || fail "info: no masked login line: $out"
 printf '%s' "$out" | grep -qF 'p@ss' && fail "info: the SMTP password (or its start) printed without --reveal"
 out=$(run_fake info --reveal)
@@ -161,6 +191,15 @@ out=$(run_fake install --reconfigure --notify-to oncall@example.org < /dev/null)
 out=$(run_fake install --reconfigure --notify-remind-hours 0 < /dev/null) || fail "notify-remind-hours alone: exit $?: $out"
 [ "$(renv NOTIFY_REMIND_HOURS)" = 0 ] && [ "$(renv NOTIFY_TO)" = oncall@example.org ] || fail "notify-remind-hours alone: not applied on its own"
 printf '%s' "$(run_fake info)" | grep -q 'reminders off' || fail "info: reminders not shown as off"
+out=$(run_fake install --reconfigure --notify-monthly-report off < /dev/null) || fail "notify-monthly-report alone: exit $?: $out"
+[ "$(renv NOTIFY_MONTHLY_REPORT)" = false ] && [ "$(renv NOTIFY_REMIND_HOURS)" = 0 ] || fail "notify-monthly-report alone: not applied on its own"
+printf '%s' "$(run_fake info)" | grep -q 'monthly report off' || fail "info: the monthly report not shown as off"
+out=$(run_fake install --reconfigure --notify-quiet-weekends off < /dev/null) || fail "notify-quiet-weekends alone: exit $?: $out"
+[ "$(renv NOTIFY_QUIET_WEEKENDS)" = false ] && [ "$(renv NOTIFY_QUIET_HOURS)" = 18:00-07:00 ] || fail "notify-quiet-weekends alone: not applied on its own"
+printf '%s' "$(run_fake info)" | grep -q 'quiet hours 18:00-07:00$' || fail "info: quiet hours without weekends not shown"
+out=$(run_fake install --reconfigure --notify-quiet-hours off < /dev/null) || fail "notify-quiet-hours off: exit $?: $out"
+[ -z "$(renv NOTIFY_QUIET_HOURS)" ] && [ "$(renv NOTIFY_QUIET_WEEKENDS)" = false ] || fail "notify-quiet-hours off: not applied on its own"
+printf '%s' "$(run_fake info)" | grep -q 'quiet hours off' || fail "info: quiet hours not shown as off"
 out=$(run_fake install --reconfigure --smtp-user other-svc < /dev/null) || fail "smtp-user, empty stdin: exit $?: $out"
 [ "$(renv SMTP_USER)" = other-svc ] && [ "$(renv SMTP_PASSWORD)" = "'$pw'" ] || fail "smtp-user, empty stdin: password not kept"
 # Without --reconfigure an existing .env is left alone, as for --set.
@@ -169,13 +208,19 @@ out=$(run_fake install --smtp-host off < /dev/null) || fail "off without --recon
 
 # Off: every setting of the group is emptied, so none is left set without SMTP_HOST.
 out=$(run_fake install --reconfigure --smtp-host off < /dev/null) || fail "off: exit $?: $out"
-for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS; do
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS NOTIFY_MONTHLY_REPORT NOTIFY_QUIET_HOURS NOTIFY_QUIET_WEEKENDS; do
   [ -z "$(renv $k)" ] || fail "off: $k still set"
 done
 out=$(run_fake install --reconfigure --smtp-host off --notify-to a@example.org < /dev/null) && fail "off with another flag: exit 0"
 out=$(run_fake install --reconfigure --smtp-host off --notify-remind-hours 4 < /dev/null) && fail "off with --notify-remind-hours: exit 0"
 out=$(run_fake install --reconfigure --notify-remind-hours 4 < /dev/null) && fail "--notify-remind-hours with email off: exit 0"
 printf '%s' "$out" | grep -q 'email notifications are off here' || fail "--notify-remind-hours with email off: no explanation: $out"
+out=$(run_fake install --reconfigure --smtp-host off --notify-monthly-report on < /dev/null) && fail "off with --notify-monthly-report: exit 0"
+out=$(run_fake install --reconfigure --notify-monthly-report on < /dev/null) && fail "--notify-monthly-report with email off: exit 0"
+printf '%s' "$out" | grep -q 'email notifications are off here' || fail "--notify-monthly-report with email off: no explanation: $out"
+out=$(run_fake install --reconfigure --smtp-host off --notify-quiet-hours 18:00-07:00 < /dev/null) && fail "off with --notify-quiet-hours: exit 0"
+out=$(run_fake install --reconfigure --notify-quiet-weekends on < /dev/null) && fail "--notify-quiet-weekends with email off: exit 0"
+printf '%s' "$out" | grep -q 'email notifications are off here' || fail "--notify-quiet-weekends with email off: no explanation: $out"
 # A relay that needs no login, on a fresh .env: no user, no password.
 mv "$repo/.env" "$work/env.kept"
 out=$(run_fake install "${ok_flags[@]}" < /dev/null) || fail "fresh install with notify: exit $?: $out"
@@ -254,7 +299,7 @@ out=$(run_fake install) || fail "legacy install: exit $?: $out"
 [ -z "$(renv DB_ROOT_PASSWORD)" ] || fail "legacy install: generated a DB_ROOT_PASSWORD the volume does not have"
 out=$(run_fake backup) || fail "legacy backup: exit $?: $out"
 printf '%s' "$out" | grep -q 'still shares DB_PASSWORD' || fail "legacy backup: no warning: $out"
-rm -rf "$repo/backups"
+rm -rf "$repo/backups" "$work/db.stdin"
 out=$(run_fake deploy --no-pull) && fail "legacy deploy without --confirm: exit 0"
 printf '%s' "$out" | grep -qF "DROP USER IF EXISTS 'root'@'%'" || fail "legacy deploy: no explanation: $out"
 [ -z "$(renv DB_ROOT_PASSWORD)" ] || fail "legacy deploy without --confirm: .env changed"
@@ -276,6 +321,55 @@ reset_fake; echo ta-test_db-data > "$work/volumes"
 out=$(run_fake deploy --no-pull) || fail "deploy after the move: exit $?: $out"
 [ -e "$work/db.stdin" ] && fail "deploy after the move: ran SQL again"
 [ "$(renv DB_ROOT_PASSWORD)" = "$root" ] || fail "deploy after the move: DB_ROOT_PASSWORD changed"
+
+# backup: once the dump is complete, its time, name and size go to api's database for Settings,
+# System (last_backup), as root inside db with the SQL on stdin. A refusal (an api without the
+# table yet) warns and keeps the backup.
+reset_fake; rm -rf "$repo/backups"
+out=$(run_fake backup) || fail "backup: exit $?: $out"
+file=
+for f in "$repo"/backups/*.sql.gz; do [ -e "$f" ] && { file=$f; break; }; done
+[ -n "$file" ] || fail "backup: no file"
+# Everything mysql was given: one statement, on one line.
+mark=$(grep -v '^--- ' "$work/db.stdin" 2>/dev/null)
+[ "$(printf '%s\n' "$mark" | grep -c .)" = 1 ] || fail "backup: more than the one statement sent: $mark"
+printf '%s' "$mark" | grep -Eq "^REPLACE INTO last_backup \(id, finished_at, file, size_bytes\) VALUES \(1, '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}', '$(basename "$file")', $(wc -c < "$file" | tr -cd '0-9')\);$" \
+  || fail "backup: not recorded for Settings, System: ${mark:-nothing reached db}"
+# shellcheck disable=SC2016 # the literal command line the fake logged
+grep -qF -- '--- compose exec -T db sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms' "$work/db.stdin" || fail "backup: the record did not go to mysql as root in db"
+printf '%s' "$out" | grep -q 'recorded as the last backup' || fail "backup: the record not reported: $out"
+reset_fake; rm -rf "$repo/backups"; echo 1 > "$work/db.rc"
+out=$(run_fake backup) || fail "backup with the record refused: exit $?: $out"
+printf '%s' "$out" | grep -q 'the backup is kept, but Settings, System could not be told' || fail "backup with the record refused: no warning: $out"
+[ "$(find "$repo/backups" -name '*.sql.gz' | wc -l)" -eq 1 ] || fail "backup with the record refused: the backup was not kept"
+
+# restore: the restored database holds only the records from before its dump, so once api is back
+# (its migrations run), the backup made just before the restore is recorded again.
+reset_fake; rm -rf "$repo/backups"
+printf -- '-- an older dump\n-- Dump completed\n' | gzip > "$work/older.sql.gz"
+out=$(run_fake restore --file "$work/older.sql.gz" --confirm ta-test < /dev/null) || fail "restore: exit $?: $out"
+saved=$(basename "$(find "$repo/backups" -name '*.sql.gz' | head -n 1)")
+[ "$(grep -c "^REPLACE INTO last_backup .*'$saved'" "$work/db.stdin")" = 2 ] && [ "$(grep -c '^REPLACE' "$work/db.stdin")" = 2 ] || fail "restore: the backup before it is not recorded again: $(grep -c REPLACE "$work/db.stdin") records"
+grep '^REPLACE INTO last_backup' "$work/db.stdin" | grep -q older && fail "restore: the restored file recorded as a backup"
+# shellcheck disable=SC2016 # the literal command line the fake logged
+mysql_line='exec -T db sh -c MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot temperature_alarms$'
+[ "$(grep -n 'up -d --wait api' "$work/docker.log" | tail -n 1 | cut -d: -f1)" -lt "$(grep -n -- "$mysql_line" "$work/docker.log" | tail -n 1 | cut -d: -f1)" ] \
+  || fail "restore: recorded before api came back"
+
+# deploy: api's image is built with the checkout's commit and date as APP_VERSION, passed by
+# compose.yaml as a build argument; outside a git checkout it is empty.
+grep -qE '^        APP_VERSION: \$\{APP_VERSION:-\}$' "$repo/compose.yaml" || fail "compose.yaml: api's build does not get APP_VERSION"
+# shellcheck disable=SC2016 # the $ is the literal text in the Dockerfile
+{ grep -qE '^ARG APP_VERSION=$' "$here/../backend/Dockerfile" && grep -qE '^ENV APP_VERSION=\$APP_VERSION$' "$here/../backend/Dockerfile"; } || fail "backend/Dockerfile: APP_VERSION is not baked in"
+reset_fake
+run_fake deploy --no-pull > /dev/null || fail "deploy outside git: exit $?"
+[ "$(sort -u "$work/build.env")" = "APP_VERSION=" ] || fail "deploy outside git: built with $(sort -u "$work/build.env")"
+git -C "$repo" init -q && git -C "$repo" add deploy compose.yaml && git -C "$repo" -c user.name=t -c user.email=t@example.org commit -qm 'a commit'
+version=$(git -C "$repo" log -1 --format='%h %cd' --date=short)
+reset_fake
+run_fake deploy --no-pull > /dev/null || fail "deploy: exit $?"
+[ "$(sort -u "$work/build.env")" = "APP_VERSION=$version" ] || fail "deploy: built with $(sort -u "$work/build.env"), not APP_VERSION=$version"
+rm -rf "$repo/.git"
 
 # publish-firmware: the image reaches api as base64 on stdin, never as a file path or an argument;
 # --only is passed through and checked; status and withdraw call the same tool.

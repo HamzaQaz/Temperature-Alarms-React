@@ -43,7 +43,8 @@ async function main(): Promise<void> {
   const mailer = config.notifications === undefined ? undefined : createMailer(config.notifications);
   // Set by the first SIGTERM or SIGINT: health answers 503 from then on, so a proxy stops sending.
   let stopping = false;
-  const app = createApp({ config, pool, sse, listening, mailer, stopping: () => stopping });
+  // APP_VERSION is the commit deploy built the image from (backend/Dockerfile); unset when built by hand.
+  const app = createApp({ config, pool, sse, listening, mailer, stopping: () => stopping, version: process.env.APP_VERSION });
   const server = app.listen(config.port, () => {
     console.log(`Server is running on port ${config.port}`);
   });
@@ -53,6 +54,7 @@ async function main(): Promise<void> {
   if (mailer !== undefined) {
     jobs.push(startNotifier({ config, pool, mailer }));
     console.log(`Email notifications on: Incidents are sent to ${config.notifications?.to.join(', ')}`);
+    if (config.notifications?.monthlyReport === true) console.log("Monthly report on: last month's goes out on the 1st of each month");
   }
   exitOnSignals(async () => {
     stopping = true;

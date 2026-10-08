@@ -40,6 +40,15 @@ export interface PendingDevice {
   ignored: boolean;
 }
 
+/** A staged release stopped by itself: one of its named Devices failed it (docs/adr/0007). */
+export interface FirmwareHold {
+  at: string;
+  hostname: string;
+  reason: 'Offline' | 'Sensor fault' | 'update failed';
+  /** What the board said, for a failed update; null otherwise. */
+  detail: string | null;
+}
+
 /** The firmware build on offer to Devices over the air (docs/adr/0007). */
 export interface FirmwareRelease {
   version: number;
@@ -48,13 +57,41 @@ export interface FirmwareRelease {
   publishedAt: string;
   /** The Devices it is offered to, or null for every Device. */
   only: string[] | null;
+  /** The named Devices it went to first, kept once it is widened; null when it went to every Device at once. */
+  staged: string[] | null;
+  /** Offered to named Devices only, or to every Device. */
+  stage: 'named' | 'all';
+  /** When a staged release was opened to every Device; null until then. */
+  widenedAt: string | null;
+  /** Held releases are offered to no one, until withdrawn or replaced by a higher version. */
+  hold: FirmwareHold | null;
 }
 
-/** GET /api/firmware/status (Admin token): the release and the version each Device last reported. */
+/** One named Device of a staged release, as "Release to all" waits on it. */
+export interface StagedDevice {
+  hostname: string;
+  /** Null when no Device is registered with this hostname. */
+  id: number | null;
+  firmwareVersion: number | null;
+  lastReportAt: string | null;
+  /** Offline and Sensor fault, as the server judges them from its reports; none is Online. Null when not registered. */
+  conditions: Condition[] | null;
+  /** Good Readings in a row on the version it runs. */
+  cleanReports: number;
+  /** It runs the release's version and has sent cleanReportsToWiden clean Readings on it. */
+  ready: boolean;
+}
+
+/** GET /api/firmware/status (Admin token): the release, the version each Device last reported, and a staged release's named Devices. */
 export interface FirmwareStatus {
   release: FirmwareRelease | null;
+  /** Null unless the release is staged. */
+  rollout: { cleanReportsToWiden: number; devices: StagedDevice[]; ready: boolean } | null;
   devices: Array<Device & { firmwareVersion: number | null; checkedAt: string | null; info: DeviceInfo | null }>;
 }
+
+/** The sensor a board carries, as its firmware names it (config.h, `SENSOR_TYPE`). */
+export type SensorType = 'DHT11' | 'DHT22' | 'SHT31';
 
 /** What a board said about itself with its latest Reading (firmware 3 and later); null for older firmware. */
 export interface DeviceInfo {
@@ -63,6 +100,11 @@ export interface DeviceInfo {
   freeHeap: number | null;
   resetReason: string | null;
   updateResult: string | null;
+  /** Firmware 6 and later; null before. */
+  sensor: SensorType | null;
+  /** The WiFi network it is on, and whether that is its fallback network (the second its config.h names). Firmware 7 and later; null before. */
+  ssid: string | null;
+  fallback: boolean | null;
   /** When it said so. */
   at: string;
 }
@@ -109,6 +151,8 @@ export interface DashboardDevice {
   tokenMismatchAt: string | null;
   /** Its incidents still open, oldest first, each with who acknowledged it: the card says who is on them. */
   openIncidents: OpenIncident[];
+  /** The board said it is on its fallback network (firmware 7 and later): a note on the card, never a Condition. */
+  onFallbackNetwork: boolean;
 }
 
 /** Who said they are on an incident, and when (CONTEXT.md, Acknowledgement). Free text: there are no user accounts. */
@@ -138,6 +182,8 @@ export interface ReadingEvent {
   conditions: Condition[];
   /** The Reading's own time: it is the Device's last report. */
   lastReportAt: string;
+  /** The board is on its fallback network, as the dashboard payload says. */
+  onFallbackNetwork: boolean;
 }
 
 /**
@@ -152,6 +198,8 @@ export interface FaultEvent {
   conditions: Condition[];
   /** When the fault report arrived: the Device's last report. */
   lastReportAt: string;
+  /** The board is on its fallback network, as the dashboard payload says. */
+  onFallbackNetwork: boolean;
 }
 
 /** How the dashboard lists its Devices; the server sorts, the browser shows the order it gets. */
@@ -180,6 +228,8 @@ export interface History {
     closet: string;
     closetType: ClosetType | null;
     campus: Campus;
+    /** The sensor its board last said it carries (firmware 6 and later); null until one has. */
+    sensor: SensorType | null;
   };
   /** The day shown, YYYY-MM-DD in `timeZone`. */
   date: string;
@@ -306,13 +356,53 @@ export interface NotificationStatus {
   /** Null when notifications are off. */
   relay: { host: string; port: number; secure: 'starttls' | 'tls' | 'none' } | null;
   from: string | null;
+  /** NOTIFY_TO: the default recipients. */
   recipients: string[];
+  /** True when NOTIFY_TO receives every email, a Campus with its own list included (NOTIFY_TO_ALL). */
+  toAll: boolean;
+  /** Every list email can go to, NOTIFY_TO's first; empty while notifications are off. */
+  lists: RecipientList[];
+  /** Whether a report on last month goes out on the 1st of each month (NOTIFY_MONTHLY_REPORT). */
+  monthlyReport: boolean;
+  /**
+   * When warning emails wait, on the server's clock: the daily window as `18:00-07:00`
+   * (NOTIFY_QUIET_HOURS, null for none) and whether weekends are quiet (NOTIFY_QUIET_WEEKENDS).
+   * Null while notifications are off.
+   */
+  quietHours: { hours: string | null; weekends: boolean } | null;
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
-  /** Notifications waiting to be sent, retries included. */
+  /** Notifications waiting to be sent, retries and those quiet hours hold included. */
   pending: number;
+  /** Of `pending`, the warnings quiet hours hold. */
+  held: number;
+  /** When the last of those held goes; null when none are held. */
+  heldUntil: string | null;
   /** Notifications given up on after a day of retries, within the last week. */
   failed: number;
+}
+
+/** One recipient list as the notification status gives it: who is on it, which Campuses email it, and how its last try went. */
+export interface RecipientList {
+  recipients: string[];
+  /** Shortcodes of the Campuses whose email goes to it. */
+  campuses: string[];
+  /** NOTIFY_TO alone: Campuses without a list of their own, the monthly report, and the test email. */
+  isDefault: boolean;
+  /** The last try within the last week: the subject the relay took, or why it did not. */
+  lastResult: ({ at: string } & ({ sent: true; subject: string } | { sent: false; error: string })) | null;
+}
+
+/** GET /api/campuses/recipients (Admin token): a Campus's own recipients, empty when it emails NOTIFY_TO. */
+export interface CampusRecipients {
+  id: number;
+  notifyTo: string[];
+}
+
+/** POST /api/notifications/report: the month whose report was queued, YYYY-MM, and when. */
+export interface MonthlyReportQueued {
+  month: string;
+  queuedAt: string;
 }
 
 /** POST /api/notifications/test: what the relay said when it took the test email. */
@@ -322,4 +412,40 @@ export interface TestEmailResult {
   rejected: string[];
   /** The relay's final reply, e.g. `250 2.0.0 OK`. */
   response: string;
+}
+
+/** A line of Settings, System, as the server decided it: fine, a feature not set up, or something to act on. */
+export type CheckStatus = 'ok' | 'off' | 'attention';
+
+/** A Device as a System line names it. */
+interface SystemDevice {
+  id: number;
+  hostname: string;
+  closet: string;
+  campus: Campus;
+}
+
+/** GET /api/system (Admin token): whether the system itself is OK, line by line, with the thresholds it was judged against. */
+export interface SystemHealth {
+  /** The server's clock when it looked: ages on the page are counted from it. */
+  checkedAt: string;
+  /** `storing` is false while the latest Reading could not be written. */
+  database: { status: CheckStatus; sizeBytes: number; storing: boolean };
+  /** Null figures, and why, when the disk could not be measured. */
+  disk: { status: CheckStatus; freeBytes: number | null; totalBytes: number | null; minFreePercent: number; error: string | null };
+  /** From the marker `deploy backup` writes; all null when none is recorded. */
+  backup: { status: CheckStatus; at: string | null; file: string | null; sizeBytes: number | null; maxAgeDays: number };
+  notifications: Pick<NotificationStatus, 'enabled' | 'lastSent' | 'lastFailure' | 'pending' | 'failed'> & { status: CheckStatus };
+  /** How many installed Devices the release is offered to, how many of them run it, and those that checked and still run an older build. */
+  firmware: {
+    status: CheckStatus;
+    release: Pick<FirmwareRelease, 'version' | 'publishedAt' | 'only'> | null;
+    offered: number;
+    current: number;
+    behind: Array<SystemDevice & { firmwareVersion: number | null }>;
+  };
+  /** Installed Devices whose signal has been under `belowDbm` for `forHours` or more. */
+  wifi: { status: CheckStatus; belowDbm: number; forHours: number; weak: Array<SystemDevice & { rssi: number; since: string }> };
+  /** `version` is the commit the server was built from, null when it was built by hand. */
+  server: { status: CheckStatus; version: string | null; startedAt: string; uptimeSeconds: number };
 }

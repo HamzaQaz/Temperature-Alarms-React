@@ -32,6 +32,8 @@ export interface ReadingEvent {
   conditions: Condition[];
   /** ISO instant in UTC: this Reading is the Device's last report. */
   lastReportAt: string;
+  /** The board is on its fallback network (firmware 7), as the dashboard payload says. */
+  onFallbackNetwork: boolean;
 }
 
 /**
@@ -48,6 +50,8 @@ export interface FaultEvent {
   conditions: Condition[];
   /** ISO instant in UTC: when the fault report arrived. */
   lastReportAt: string;
+  /** The board is on its fallback network (firmware 7), as the dashboard payload says. */
+  onFallbackNetwork: boolean;
 }
 
 /** An incident as the API sends it: GET /api/incidents and the stream's `incident` message both use this shape. */

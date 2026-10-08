@@ -64,6 +64,14 @@ describe('loadConfig', () => {
     assert.throws(() => loadConfig({ ...complete, LEGACY_TIME_ZONE: 'Chicago' }), /LEGACY_TIME_ZONE/);
   });
 
+  test('TZ, the server\'s zone, may be any zone the runtime knows, and is refused otherwise rather than silently UTC', () => {
+    for (const tz of ['America/Chicago', 'UTC', 'Etc/UTC']) assert.doesNotThrow(() => loadConfig({ ...complete, TZ: tz }), tz);
+    assert.doesNotThrow(() => loadConfig({ ...complete, TZ: '' }), 'empty is unset');
+    for (const tz of ['America/Chicgo', 'Central', ':/etc/localtime']) {
+      assert.throws(() => loadConfig({ ...complete, TZ: tz }), (err: unknown) => err instanceof ConfigError && /TZ must be an IANA time zone/.test(err.message), tz);
+    }
+  });
+
   test('rejects thresholds that are not integers or are out of order', () => {
     assert.throws(() => loadConfig({ ...complete, HOT_WARNING_F: 'warm' }), /HOT_WARNING_F/);
     assert.throws(() => loadConfig({ ...complete, MISSED_REPORTS_BEFORE_OFFLINE: '0' }), /MISSED_REPORTS_BEFORE_OFFLINE/);
@@ -143,7 +151,7 @@ describe('loadConfig: email notifications', () => {
     assert.equal(loadConfig({ ...complete, SMTP_HOST: '  ' }).notifications, undefined);
   });
 
-  test('on with SMTP_HOST, applying defaults: port 587, STARTTLS, no login, a 60 s coalescing window, no reminders', () => {
+  test('on with SMTP_HOST, applying defaults: port 587, STARTTLS, no login, a 60 s coalescing window, no reminders, no monthly report, no quiet hours', () => {
     assert.deepEqual(loadConfig(smtp).notifications, {
       smtp: { host: 'relay.example.test', port: 587, secure: 'starttls', auth: undefined },
       from: 'alarms@example.test',
@@ -151,6 +159,9 @@ describe('loadConfig: email notifications', () => {
       publicUrl: 'https://alarms.example.test',
       coalesceSeconds: 60,
       remindHours: 0,
+      toAll: false,
+      monthlyReport: false,
+      quietHours: { daily: null, weekends: false },
     });
   });
 
@@ -165,6 +176,10 @@ describe('loadConfig: email notifications', () => {
       PUBLIC_URL: 'http://10.0.0.5:8080/',
       NOTIFY_COALESCE_SECONDS: '0',
       NOTIFY_REMIND_HOURS: '4',
+      NOTIFY_TO_ALL: 'true',
+      NOTIFY_MONTHLY_REPORT: 'true',
+      NOTIFY_QUIET_HOURS: ' 18:00-07:00 ',
+      NOTIFY_QUIET_WEEKENDS: 'true',
     }).notifications;
     assert.deepEqual(notifications, {
       smtp: { host: 'relay.example.test', port: 2525, secure: 'none', auth: { user: 'svc-alarms', password: 'smtp-secret' } },
@@ -173,6 +188,9 @@ describe('loadConfig: email notifications', () => {
       publicUrl: 'http://10.0.0.5:8080',
       coalesceSeconds: 0,
       remindHours: 4,
+      toAll: true,
+      monthlyReport: true,
+      quietHours: { daily: { start: 18 * 60, end: 7 * 60 }, weekends: true },
     });
   });
 
@@ -182,6 +200,30 @@ describe('loadConfig: email notifications', () => {
     assert.equal(loadConfig({ ...smtp, NOTIFY_REMIND_HOURS: '168' }).notifications?.remindHours, 168);
     // Like the window, it may sit in a template while email is off: only SMTP_HOST turns anything on.
     assert.equal(loadConfig({ ...complete, NOTIFY_REMIND_HOURS: '4' }).notifications, undefined);
+  });
+
+  test('NOTIFY_TO_ALL keeps NOTIFY_TO on every email when true, in any case; empty or false is off', () => {
+    assert.equal(loadConfig({ ...smtp, NOTIFY_TO_ALL: 'TRUE' }).notifications?.toAll, true);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_TO_ALL: 'false' }).notifications?.toAll, false);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_TO_ALL: '' }).notifications?.toAll, false);
+    // Like the window, it may sit in a template while email is off.
+    assert.equal(loadConfig({ ...complete, NOTIFY_TO_ALL: 'true' }).notifications, undefined);
+  });
+
+  test('the monthly report is on with NOTIFY_MONTHLY_REPORT=true, off when empty or false, and ignored without SMTP_HOST', () => {
+    assert.equal(loadConfig({ ...smtp, NOTIFY_MONTHLY_REPORT: ' TRUE ' }).notifications?.monthlyReport, true);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_MONTHLY_REPORT: 'false' }).notifications?.monthlyReport, false);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_MONTHLY_REPORT: '' }).notifications?.monthlyReport, false);
+    assert.equal(loadConfig({ ...complete, NOTIFY_MONTHLY_REPORT: 'true' }).notifications, undefined);
+  });
+
+  test('quiet hours: a daily window of two 24-hour times, weekends with NOTIFY_QUIET_WEEKENDS=true, each off when empty, and ignored without SMTP_HOST', () => {
+    assert.deepEqual(loadConfig({ ...smtp, NOTIFY_QUIET_HOURS: '22:30-06:15' }).notifications?.quietHours, { daily: { start: 22 * 60 + 30, end: 6 * 60 + 15 }, weekends: false });
+    assert.deepEqual(loadConfig({ ...smtp, NOTIFY_QUIET_HOURS: '12:00-13:00' }).notifications?.quietHours.daily, { start: 12 * 60, end: 13 * 60 });
+    assert.deepEqual(loadConfig({ ...smtp, NOTIFY_QUIET_HOURS: '', NOTIFY_QUIET_WEEKENDS: 'TRUE' }).notifications?.quietHours, { daily: null, weekends: true });
+    assert.equal(loadConfig({ ...smtp, NOTIFY_QUIET_WEEKENDS: 'false' }).notifications?.quietHours.weekends, false);
+    // Like the window, they may sit in a template while email is off.
+    assert.equal(loadConfig({ ...complete, NOTIFY_QUIET_HOURS: '18:00-07:00', NOTIFY_QUIET_WEEKENDS: 'true' }).notifications, undefined);
   });
 
   test('implicit TLS defaults to port 465', () => {
@@ -224,6 +266,12 @@ describe('loadConfig: email notifications', () => {
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '-1' }, /NOTIFY_REMIND_HOURS/);
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '1.5' }, /NOTIFY_REMIND_HOURS/);
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '169' }, /NOTIFY_REMIND_HOURS.*168/);
+    refuses({ ...smtp, NOTIFY_TO_ALL: 'yes' }, /NOTIFY_TO_ALL.*true or false/);
+    refuses({ ...smtp, NOTIFY_MONTHLY_REPORT: 'yes' }, /NOTIFY_MONTHLY_REPORT must be true or false/);
+    for (const hours of ['18:00', '18:00-18:00', '6pm-7am', '24:00-07:00', '18:00 - 07:00', 'off']) {
+      refuses({ ...smtp, NOTIFY_QUIET_HOURS: hours }, /NOTIFY_QUIET_HOURS must be two different 24-hour times like 18:00-07:00/);
+    }
+    refuses({ ...smtp, NOTIFY_QUIET_WEEKENDS: 'yes' }, /NOTIFY_QUIET_WEEKENDS must be true or false/);
   });
 
   test('never prints the SMTP password', () => {

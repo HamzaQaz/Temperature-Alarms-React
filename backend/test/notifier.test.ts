@@ -14,7 +14,7 @@ import { runNotifierPass, startNotifier, type NotifierOptions } from '../src/not
 import { runOfflineSweep } from '../src/offlineSweep';
 import { deleteReadingsPastWindow } from '../src/retention';
 import { createBroadcaster } from '../src/sse';
-import { DEFAULT_RETRY, givesUp, notificationKinds, readyToSend, reminderDue, retryDelayMs, type ChangeFacts } from '../src/outbox';
+import { byRecipients, DEFAULT_RETRY, givesUp, heldByQuietHours, listKey, notificationKinds, readyToSend, recipientLists, recipientsFor, reminderDue, retryDelayMs, type ChangeFacts, type QuietCandidate } from '../src/outbox';
 
 const SECOND = 1000;
 const MINUTE = 60_000;
@@ -34,6 +34,7 @@ interface OutboxRow {
   failedAt: Date | null;
   lastError: string | null;
   subject: string | null;
+  notBefore: Date | null;
 }
 
 interface NotificationStatus {
@@ -41,7 +42,16 @@ interface NotificationStatus {
   lastSent: { at: string; subject: string } | null;
   lastFailure: { at: string; error: string } | null;
   pending: number;
+  held: number;
+  heldUntil: string | null;
+  quietHours: { hours: string | null; weekends: boolean } | null;
   failed: number;
+  lists: {
+    recipients: string[];
+    campuses: string[];
+    isDefault: boolean;
+    lastResult: ({ at: string } & ({ sent: true; subject: string } | { sent: false; error: string })) | null;
+  }[];
 }
 
 const whole = (ms: number) => new Date(Math.floor(ms / 1000) * 1000);
@@ -116,7 +126,7 @@ describe('email notifications: the outbox and the sender (docs/adr/0008)', () =>
   const outbox = async (): Promise<OutboxRow[]> => {
     const [rows] = await pool.query<(OutboxRow & RowDataPacket)[]>(
       `SELECT incident_id AS incidentId, kind, level, attempts, created_at AS createdAt, next_attempt_at AS nextAttemptAt,
-              sent_at AS sentAt, failed_at AS failedAt, last_error AS lastError, subject
+              sent_at AS sentAt, failed_at AS failedAt, last_error AS lastError, subject, not_before AS notBefore
        FROM notifications ORDER BY id`,
     );
     return rows;
@@ -520,6 +530,140 @@ describe('email notifications: the outbox and the sender (docs/adr/0008)', () =>
     });
   });
 
+  describe('recipients per Campus', () => {
+    const CHS_TO = 'chs-techs@district.example';
+    const MHS_TO = 'mhs-techs@district.example';
+    const NOTIFY_TO = 'techs@district.example, oncall@district.example';
+    const campusWith = async (name: string, shortcode: string, notifyTo?: string): Promise<Campus> => {
+      const response = await client.campuses.add({ name, shortcode, notifyTo });
+      assert.equal(response.status, 201, await response.clone().text());
+      return json<Campus>(response);
+    };
+    /** Two Campuses with their own lists, each with a Device in a Hot incident, Central's queued first. */
+    const twoOutages = async () => {
+      const chs = await campusWith('Central High School', 'CHS', CHS_TO);
+      const mhs = await campusWith('Maple High School', 'MHS', MHS_TO);
+      await registerDevice('ESP_A1B2C3', chs, 'IDF 2');
+      await registerDevice('ESP_D4E5F6', mhs, 'MDF');
+      await postReading(85, 40, 'ESP_A1B2C3');
+      await postReading(91, 40, 'ESP_D4E5F6');
+      return { chs, mhs };
+    };
+    const delivered = () => relay.received.map((e) => `${e.to.join(', ')}: ${e.subject}`);
+    const lastResultOf = (shown: NotificationStatus, recipients: string) => shown.lists.find((l) => l.recipients.join(', ') === recipients)?.lastResult;
+
+    test('two Campuses, two lists, one outage each: two emails, each to its own list only', async () => {
+      await twoOutages();
+      assert.equal(await pass(), 2);
+      assert.deepEqual(delivered().sort(), [
+        `${CHS_TO}: [Temperature Alarms] CHS IDF 2: Hot warning (85 °F)`,
+        `${MHS_TO}: [Temperature Alarms] MHS MDF: Hot critical (91 °F)`,
+      ]);
+      assert.equal(await pass(), 0);
+      assert.equal(relay.received.length, 2, 'each sent once');
+    });
+
+    test('Campuses without a list of their own share one email to NOTIFY_TO, apart from one with its own; Settings shows who is on which', async () => {
+      const chs = await campusWith('Central High School', 'CHS');
+      const mhs = await campusWith('Maple High School', 'MHS');
+      const nhs = await campusWith('North High School', 'NHS', 'nhs-techs@district.example');
+      await registerDevice('ESP_A1B2C3', chs);
+      await registerDevice('ESP_D4E5F6', mhs);
+      await registerDevice('ESP_0A0B0C', nhs);
+      for (const device of ['ESP_A1B2C3', 'ESP_D4E5F6', 'ESP_0A0B0C']) await postReading(85, 40, device);
+      assert.equal(await pass(), 3);
+      assert.deepEqual(delivered().sort(), [
+        'nhs-techs@district.example: [Temperature Alarms] NHS IDF 2: Hot warning (85 °F)',
+        `${NOTIFY_TO}: [Temperature Alarms] 2 incidents: 2 Hot`,
+      ]);
+      const shown = await status();
+      assert.deepEqual(
+        shown.lists.map(({ recipients, campuses, isDefault }) => ({ recipients, campuses, isDefault })),
+        [
+          { recipients: ['techs@district.example', 'oncall@district.example'], campuses: ['CHS', 'MHS'], isDefault: true },
+          { recipients: ['nhs-techs@district.example'], campuses: ['NHS'], isDefault: false },
+        ],
+      );
+      assert.equal(lastResultOf(shown, NOTIFY_TO)?.sent, true);
+      const nhsResult = lastResultOf(shown, 'nhs-techs@district.example');
+      assert.ok(nhsResult !== undefined && nhsResult !== null);
+      assert.deepEqual(nhsResult, { at: nhsResult.at, sent: true, subject: '[Temperature Alarms] NHS IDF 2: Hot warning (85 °F)' });
+    });
+
+    test('a failing list retries without resending the other, and Settings gives the last result of each', async () => {
+      await twoOutages();
+      relay.refuse.add(CHS_TO);
+      const failedAt = new Date();
+      await assert.rejects(pass(failedAt), MailerError);
+      assert.deepEqual(delivered(), [`${MHS_TO}: [Temperature Alarms] MHS MDF: Hot critical (91 °F)`], 'the other list still went');
+      let [chsRow, mhsRow] = await outbox();
+      assert.equal(chsRow.sentAt, null);
+      assert.equal(chsRow.attempts, 1);
+      assert.equal(chsRow.nextAttemptAt.getTime() - failedAt.getTime(), 30 * SECOND, 'its own backoff');
+      assert.notEqual(mhsRow.sentAt, null);
+      let shown = await status();
+      const failure = lastResultOf(shown, CHS_TO);
+      assert.ok(failure !== undefined && failure !== null && !failure.sent);
+      assert.match(failure.error, /mailbox unavailable/);
+      assert.equal(lastResultOf(shown, MHS_TO)?.sent, true);
+      assert.equal(lastResultOf(shown, NOTIFY_TO), null, 'NOTIFY_TO, on no Campus here, has sent nothing');
+      assert.equal(shown.pending, 1);
+
+      relay.refuse.clear();
+      assert.equal(await pass(new Date(failedAt.getTime() + 10 * SECOND)), 0, 'not due yet');
+      assert.equal(await pass(new Date(failedAt.getTime() + 30 * SECOND)), 1);
+      assert.deepEqual(
+        delivered(),
+        [`${MHS_TO}: [Temperature Alarms] MHS MDF: Hot critical (91 °F)`, `${CHS_TO}: [Temperature Alarms] CHS IDF 2: Hot warning (85 °F)`],
+        'the retry sent only the list that failed',
+      );
+      [chsRow, mhsRow] = await outbox();
+      assert.notEqual(chsRow.sentAt, null);
+      assert.equal(mhsRow.attempts, 1, 'the other was not tried again');
+      shown = await status();
+      assert.equal(lastResultOf(shown, CHS_TO)?.sent, true);
+    });
+
+    test('each list waits its own window: a retry in one does not hurry another', async () => {
+      await serve(notifyingConfig(relay, { coalesceSeconds: 60 }));
+      await twoOutages();
+      const [{ createdAt: t0 }, mhsRow] = await outbox();
+      const at = (seconds: number) => new Date(t0.getTime() + seconds * SECOND);
+      // The Maple row arrives 40 s after the Central one.
+      await pool.query('UPDATE notifications SET created_at = ?, next_attempt_at = ? WHERE incident_id = ?', [at(40), at(40), mhsRow.incidentId]);
+      relay.refuse.add(CHS_TO);
+      await assert.rejects(pass(at(60)), MailerError);
+      relay.refuse.clear();
+      assert.equal(await pass(at(90)), 1, 'the retry goes at once; Maple has waited only 50 s');
+      assert.deepEqual(delivered(), [`${CHS_TO}: [Temperature Alarms] CHS IDF 2: Hot warning (85 °F)`]);
+      assert.equal(await pass(at(99)), 0);
+      assert.equal(await pass(at(100)), 1);
+      assert.equal(delivered()[1], `${MHS_TO}: [Temperature Alarms] MHS MDF: Hot critical (91 °F)`);
+    });
+
+    test('NOTIFY_TO_ALL keeps NOTIFY_TO on every email', async () => {
+      await serve(notifyingConfig(relay, { toAll: true }));
+      await twoOutages();
+      assert.equal(await pass(), 2);
+      assert.deepEqual(delivered().sort(), [
+        `${CHS_TO}, ${NOTIFY_TO}: [Temperature Alarms] CHS IDF 2: Hot warning (85 °F)`,
+        `${MHS_TO}, ${NOTIFY_TO}: [Temperature Alarms] MHS MDF: Hot critical (91 °F)`,
+      ]);
+    });
+
+    test('a list changed while a row waits sends it to the list as it stands, and emptied falls back on NOTIFY_TO', async () => {
+      const { chs, mhs } = await twoOutages();
+      const put = (id: number, notifyTo: string) => fetch(client.campuses.url(`/${id}`), { ...asAdmin(), method: 'PATCH', body: JSON.stringify({ notifyTo }) });
+      assert.equal((await put(chs.id, 'new-chs@district.example')).status, 200);
+      assert.equal((await put(mhs.id, '')).status, 200);
+      assert.equal(await pass(), 2);
+      assert.deepEqual(delivered().sort(), [
+        'new-chs@district.example: [Temperature Alarms] CHS IDF 2: Hot warning (85 °F)',
+        `${NOTIFY_TO}: [Temperature Alarms] MHS MDF: Hot critical (91 °F)`,
+      ]);
+    });
+  });
+
   describe('reminders for long incidents', () => {
     /** Reminders every four hours, sent the moment they are due. */
     const reminding = () => serve(notifyingConfig(relay, { remindHours: 4 }));
@@ -652,6 +796,173 @@ describe('email notifications: the outbox and the sender (docs/adr/0008)', () =>
     });
   });
 
+  describe('quiet hours for warnings', () => {
+    const NIGHTS = { daily: { start: 18 * 60, end: 7 * 60 }, weekends: false };
+    /** Quiet hours 18:00-07:00 on the passes' clock (UTC here); anything not held is sent the moment it is due. */
+    const quietly = (overrides: Partial<NotificationsConfig> = {}) => serve(notifyingConfig(relay, { quietHours: NIGHTS, ...overrides }));
+    /** The next 23:00 UTC at least a minute away, and 07:00 the morning after. Ingest queues rows at the wall clock's time, before both. */
+    const tonight = (): { night: Date; morning: Date } => {
+      const night = new Date();
+      night.setUTCHours(23, 0, 0, 0);
+      if (night.getTime() < Date.now() + MINUTE) night.setTime(night.getTime() + DAY_MS);
+      return { night, morning: new Date(night.getTime() + 8 * HOUR) };
+    };
+    const later = (at: Date, ms: number) => new Date(at.getTime() + ms);
+    const waiting = async () => (await outbox()).filter((r) => r.sentAt === null && r.failedAt === null).map((r) => `${r.kind} ${r.level}`);
+
+    test('a warning due at 23:00 is held until 07:00, shown on Settings, and sent in the first pass after', async () => {
+      await quietly();
+      const { night, morning } = tonight();
+      await registerDevice();
+      await postReading(85);
+      assert.equal(await pass(night), 0);
+      assert.equal(relay.received.length, 0, 'nothing at night');
+      const [row] = await outbox();
+      assert.deepEqual([row.nextAttemptAt, row.notBefore, row.attempts], [morning, morning, 0]);
+      let shown = await status();
+      assert.deepEqual([shown.pending, shown.held, shown.heldUntil], [1, 1, morning.toISOString()]);
+      assert.deepEqual(shown.quietHours, { hours: '18:00-07:00', weekends: false });
+
+      assert.equal(await pass(later(night, 4 * HOUR)), 0, 'later passes leave it alone');
+      assert.equal(await pass(later(morning, -SECOND)), 0, 'not a second early');
+      assert.equal(await pass(morning), 1);
+      assert.deepEqual(subjects(), ['[Temperature Alarms] CHS IDF 2: Hot warning (85 °F)']);
+      shown = await status();
+      assert.deepEqual([shown.pending, shown.held, shown.heldUntil], [0, 0, null]);
+    });
+
+    test('critical never waits, nor does Offline: both send at 23:00', async () => {
+      await quietly();
+      const { night } = tonight();
+      const campus = await client.campuses.create();
+      await registerDevice('ESP_A1B2C3', campus, 'IDF 2');
+      await postReading(91);
+      const silent = await registerDevice('ESP_D4E5F6', campus, 'MDF');
+      await readingAt(silent.id, whole(Date.now() - 5 * MINUTE));
+      await sweep();
+      assert.deepEqual((await kinds()).sort(), ['opened critical', 'opened warning']);
+      assert.equal(await pass(night), 2);
+      assert.deepEqual(subjects(), ['[Temperature Alarms] 2 incidents: 1 Hot, 1 Offline']);
+      assert.deepEqual(await waiting(), []);
+    });
+
+    test('a warning that turns critical at night sends at once, as worse, and the opening held for the morning goes with it', async () => {
+      await quietly();
+      const { night, morning } = tonight();
+      await registerDevice();
+      await postReading(85);
+      assert.equal(await pass(night), 0);
+      await postReading(91);
+      assert.deepEqual(await kinds(), ['opened warning', 'worse critical']);
+      assert.equal(await pass(later(night, MINUTE)), 2, 'the worse, and the held opening marked sent with it');
+      assert.deepEqual(subjects(), ['[Temperature Alarms] CHS IDF 2: Hot critical, got worse (91 °F)']);
+      assert.deepEqual(await waiting(), []);
+      assert.equal(await pass(morning), 0, 'the morning has nothing more to say about it');
+      assert.equal(relay.received.length, 1);
+    });
+
+    test('an incident that opened and closed in the night arrives in the morning digest as opened and resolved', async () => {
+      await quietly({ coalesceSeconds: 60 });
+      const { night, morning } = tonight();
+      const campus = await client.campuses.create();
+      await registerDevice('ESP_A1B2C3', campus, 'IDF 2');
+      await registerDevice('ESP_D4E5F6', campus, 'MDF');
+      await postReading(85);
+      assert.equal(await pass(night), 0);
+      await postReading(72);
+      await postReading(72);
+      await postReading(70, 15, 'ESP_D4E5F6');
+      assert.equal(await pass(later(night, HOUR)), 0);
+      assert.deepEqual(await waiting(), ['opened warning', 'closed warning', 'opened warning']);
+      assert.equal(relay.received.length, 0);
+
+      assert.equal(await pass(morning), 3, 'in the first pass after, without waiting a window');
+      assert.deepEqual(subjects(), ['[Temperature Alarms] 2 incidents: 1 Hot, 1 Dry (1 resolved)']);
+      assert.match(relay.received[0].text, /^Hot warning: opened and resolved$/m);
+      assert.match(relay.received[0].text, /^Dry warning: opened$/m);
+    });
+
+    test('the morning sends one email per recipient list', async () => {
+      await quietly();
+      const { night, morning } = tonight();
+      const response = await client.campuses.add({ name: 'Maple High School', shortcode: 'MHS', notifyTo: 'mhs-techs@district.example' });
+      assert.equal(response.status, 201, await response.clone().text());
+      const maple = await json<Campus>(response);
+      await registerDevice('ESP_A1B2C3');
+      await registerDevice('ESP_D4E5F6', maple, 'MDF');
+      await postReading(85);
+      await postReading(85, 40, 'ESP_D4E5F6');
+      assert.equal(await pass(night), 0);
+      assert.equal(await pass(morning), 2);
+      assert.deepEqual(relay.received.map((e) => `${e.to.join(', ')}: ${e.subject}`).sort(), [
+        'mhs-techs@district.example: [Temperature Alarms] MHS MDF: Hot warning (85 °F)',
+        'techs@district.example, oncall@district.example: [Temperature Alarms] CHS IDF 2: Hot warning (85 °F)',
+      ]);
+    });
+
+    test('a held warning the relay refuses retries for a day from 07:00, not from when it was queued', async () => {
+      await quietly();
+      const { night, morning } = tonight();
+      await registerDevice();
+      await postReading(85);
+      const queued = whole(Date.now() - 20 * HOUR);
+      await pool.query('UPDATE notifications SET created_at = ?, next_attempt_at = ?', [queued, queued]);
+      assert.equal(await pass(night), 0);
+      for (const address of relay.config().to) relay.refuse.add(address);
+      try {
+        await assert.rejects(pass(morning), MailerError);
+        let [row] = await outbox();
+        assert.deepEqual([row.attempts, row.failedAt], [1, null], 'queued 28 h before, but held until 07:00');
+        await assert.rejects(pass(later(morning, 10 * HOUR)), MailerError);
+        [row] = await outbox();
+        assert.deepEqual([row.attempts, row.failedAt], [2, null]);
+        // Retried into the next night, it waits again, and the day still counts from the first 07:00.
+        assert.equal(await pass(later(morning, 12 * HOUR)), 0);
+        [row] = await outbox();
+        assert.deepEqual([row.nextAttemptAt, row.notBefore], [later(morning, DAY_MS), morning]);
+        await assert.rejects(pass(later(morning, DAY_MS)), MailerError);
+        [row] = await outbox();
+        assert.deepEqual(row.failedAt, later(morning, DAY_MS), 'given up a day after 07:00');
+      } finally {
+        relay.refuse.clear();
+      }
+    });
+
+    test("reminders wait or not by their incident's level, and a monthly report never waits", async () => {
+      await quietly({ remindHours: 4 });
+      const { night, morning } = tonight();
+      const campus = await client.campuses.create();
+      await registerDevice('ESP_A1B2C3', campus, 'IDF 2');
+      await registerDevice('ESP_D4E5F6', campus, 'MDF');
+      await postReading(85);
+      await postReading(91, 40, 'ESP_D4E5F6');
+      await pool.query('UPDATE incidents SET started_at = ?', [whole(Date.now() - 5 * HOUR)]);
+      await pool.query('DELETE FROM notifications');
+      await sweep();
+      assert.deepEqual((await kinds()).sort(), ['reminder critical', 'reminder warning']);
+      const report = await fetch(`${server.url}/api/notifications/report`, { ...asAdmin(), method: 'POST' });
+      assert.equal(report.status, 202);
+
+      // The report takes NOTIFY_TO's turn in a pass, so the critical reminder goes in the next, seconds later.
+      assert.equal(await pass(night), 1);
+      assert.equal(await pass(later(night, 5 * SECOND)), 1);
+      assert.deepEqual(subjects().map((s) => s.replace(/Monthly report, .*$/, 'Monthly report')), [
+        '[Temperature Alarms] Monthly report',
+        '[Temperature Alarms] Still open: CHS MDF Hot critical, 5 h',
+      ]);
+      assert.equal(await pass(morning), 1);
+      assert.deepEqual(subjects().slice(2), ['[Temperature Alarms] Still open: CHS IDF 2 Hot warning, 5 h']);
+    });
+
+    test('off by default: a warning at 23:00 goes at once', async () => {
+      const { night } = tonight();
+      await registerDevice();
+      await postReading(85);
+      assert.equal(await pass(night), 1);
+      assert.deepEqual((await status()).quietHours, { hours: null, weekends: false });
+    });
+  });
+
   test('retention removes rows sent or given up more than a week ago, and keeps pending ones however old', async () => {
     const device = await registerDevice();
     await postReading(85);
@@ -729,6 +1040,78 @@ describe('the outbox rules (pure)', () => {
     const queued = new Date('2026-10-06T00:00:00Z');
     assert.equal(givesUp(queued, new Date('2026-10-06T23:59:59Z'), DEFAULT_RETRY), false);
     assert.equal(givesUp(queued, new Date('2026-10-07T00:00:00Z'), DEFAULT_RETRY), true);
+    // Held by quiet hours: the day counts from when they first let it go.
+    const released = new Date('2026-10-06T07:00:00Z');
+    assert.equal(givesUp(queued, new Date('2026-10-07T06:59:59Z'), DEFAULT_RETRY, released), false);
+    assert.equal(givesUp(queued, new Date('2026-10-07T07:00:00Z'), DEFAULT_RETRY, released), true);
+    assert.equal(givesUp(queued, new Date('2026-10-07T00:00:00Z'), DEFAULT_RETRY, null), true);
+  });
+
+  test('quiet hours hold every warning, Mold risk high included, and nothing critical, Offline, Sensor fault, held release, or report', () => {
+    const held = (kind: QuietCandidate['kind'], level: QuietCandidate['level'], condition: QuietCandidate['condition']) => heldByQuietHours({ kind, level, condition });
+    for (const kind of ['opened', 'worse', 'closed', 'reminder'] as const) {
+      assert.equal(held(kind, 'warning', 'Hot'), true, `${kind} Hot warning`);
+      assert.equal(held(kind, 'critical', 'Hot'), false, `${kind} Hot critical`);
+    }
+    assert.equal(held('opened', 'warning', 'Cold'), true);
+    assert.equal(held('opened', 'warning', 'Dry'), true);
+    assert.equal(held('opened', 'high', 'Mold risk'), true, 'humid waits too (owner decision)');
+    assert.equal(held('opened', 'warning', 'Offline'), false, 'Offline goes at once');
+    assert.equal(held('closed', 'warning', 'Offline'), false);
+    assert.equal(held('opened', 'critical', 'Sensor fault'), false);
+    assert.equal(held('hold', 'warning', null), false, 'a held release is no warning');
+    assert.equal(held('report', null, null), false, 'nor is a monthly report');
+  });
+
+  test('a Campus with its own list emails it, one without (or a row with no Campus) NOTIFY_TO; NOTIFY_TO_ALL adds NOTIFY_TO to every list', () => {
+    const defaults = ['techs@district.example', 'oncall@district.example'];
+    assert.deepEqual(recipientsFor([], defaults, false), defaults);
+    assert.deepEqual(recipientsFor(['chs@district.example'], defaults, false), ['chs@district.example']);
+    assert.deepEqual(recipientsFor(['chs@district.example'], defaults, true), ['chs@district.example', ...defaults]);
+    assert.deepEqual(recipientsFor([], defaults, true), defaults);
+    assert.deepEqual(
+      recipientsFor(['Techs@District.example', 'b@district.example', 'b@district.example'], defaults, true),
+      ['Techs@District.example', 'b@district.example', 'oncall@district.example'],
+      'each address once, whatever its case',
+    );
+    // The same people, in any order or case, are one list.
+    assert.equal(listKey(['b@district.example', 'A@district.example']), listKey(['a@district.example', 'B@district.example']));
+    assert.notEqual(listKey(['a@district.example']), listKey(['a@district.example', 'b@district.example']));
+  });
+
+  test('Settings lists NOTIFY_TO first, then each list once with the Campuses that email it, the Bench on none', () => {
+    const defaults = ['techs@district.example'];
+    const campuses = [
+      { shortcode: 'BENCH', notifyTo: [] },
+      { shortcode: 'CHS', notifyTo: ['chs@district.example'] },
+      { shortcode: 'MHS', notifyTo: [] },
+      { shortcode: 'NHS', notifyTo: ['CHS@district.example'] },
+    ];
+    assert.deepEqual(recipientLists(campuses, defaults, false), [
+      { recipients: ['techs@district.example'], campuses: ['MHS'], isDefault: true },
+      { recipients: ['chs@district.example'], campuses: ['CHS', 'NHS'], isDefault: false },
+    ]);
+    assert.deepEqual(recipientLists(campuses, defaults, true), [
+      { recipients: ['techs@district.example'], campuses: ['MHS'], isDefault: true },
+      { recipients: ['chs@district.example', 'techs@district.example'], campuses: ['CHS', 'NHS'], isDefault: false },
+    ]);
+    assert.deepEqual(recipientLists([], defaults, false), [{ recipients: ['techs@district.example'], campuses: [], isDefault: true }], 'NOTIFY_TO even with no Campus on it');
+  });
+
+  test('due notifications group by recipient list, in the order each list first appears', () => {
+    const rows = [
+      { id: 1, to: ['b@district.example'] },
+      { id: 2, to: ['a@district.example'] },
+      { id: 3, to: ['b@district.example'] },
+    ];
+    assert.deepEqual(
+      byRecipients(rows, (r) => r.to).map((g) => ({ recipients: g.recipients, ids: g.due.map((r) => r.id) })),
+      [
+        { recipients: ['b@district.example'], ids: [1, 3] },
+        { recipients: ['a@district.example'], ids: [2] },
+      ],
+    );
+    assert.deepEqual(byRecipients([], (r: { to: string[] }) => r.to), []);
   });
 
   test('a batch is ready once its oldest has waited the window, or at once when any is a retry', () => {
@@ -739,5 +1122,7 @@ describe('the outbox rules (pure)', () => {
     assert.equal(readyToSend([ago(60), ago(1)], at, 60_000), true, 'everything due goes with the oldest');
     assert.equal(readyToSend([ago(1, 2)], at, 60_000), true);
     assert.equal(readyToSend([ago(0)], at, 0), true, 'no window sends at once');
+    assert.equal(readyToSend([{ ...ago(1), notBefore: at }, ago(1)], at, 60_000), true, 'what quiet hours held goes in the first pass after');
+    assert.equal(readyToSend([{ ...ago(1), notBefore: null }], at, 60_000), false);
   });
 });

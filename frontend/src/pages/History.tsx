@@ -41,7 +41,7 @@ import { describeDay } from '@/lib/chartSummary';
 import { daysSpanned, earliestDay, rangeBounds, rangeProblem } from '@/lib/csvRange';
 import { addDays, formatDayLong, formatDayShort, formatHour, formatTime, formatTimeSeconds, isDateString, today } from '@/lib/localDate';
 import { cn } from '@/lib/utils';
-import type { DaySummary, History as HistoryPayload, Reading } from '@/types';
+import type { DaySummary, History as HistoryPayload, Reading, SensorType } from '@/types';
 
 /** How long after a Reading arrives on the stream before the day is reloaded, so a burst costs one request. */
 const LIVE_RELOAD_DELAY_MS = 2_000;
@@ -171,13 +171,18 @@ function LastReading({ tempF }: { tempF: number }) {
   );
 }
 
-/** The header subtitle: the Campus (which travels from the card) and the hostname. */
-const DeviceSubtitle = ({ campus, hostname }: { campus: string; hostname: string }) => (
+/**
+ * The header subtitle: the Campus (which travels from the card), the hostname, and, once the day has
+ * loaded, the sensor its board says it carries (firmware 6), so a Reading near a threshold is read
+ * with that sensor's accuracy in mind. Older firmware names none, and then neither does this.
+ */
+const DeviceSubtitle = ({ campus, hostname, sensor = null }: { campus: string; hostname: string; sensor?: SensorType | null }) => (
   <>
     <span data-morph="campus" className="inline-block align-top">
       {campus}
     </span>{' '}
     · <span className="font-mono text-sm">{hostname}</span>
+    {sensor !== null && <> · {sensor} sensor</>}
   </>
 );
 
@@ -283,7 +288,7 @@ function DayView({ deviceId, date, seed, back, followsToday, onShowDay, onDayRol
       deviceId={deviceId}
       back={back}
       title={loaded.device.closet}
-      subtitle={<DeviceSubtitle campus={loaded.device.campus.name} hostname={loaded.device.hostname} />}
+      subtitle={<DeviceSubtitle campus={loaded.device.campus.name} hostname={loaded.device.hostname} sensor={loaded.device.sensor} />}
       tag={<ClosetTag type={loaded.device.closetType} />}
       readout={last && <LastReading tempF={last.tempF} />}
       actions={

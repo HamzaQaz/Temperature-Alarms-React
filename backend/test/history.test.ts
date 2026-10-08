@@ -59,7 +59,7 @@ describe('/api/devices/:id/history', () => {
       const device = await registerDevice('ESP_A1B2C3', 'MDF');
       const history = await historyOf(device.id);
       assert.deepEqual(history, {
-        device: { id: device.id, hostname: 'ESP_A1B2C3', closet: 'MDF', closetType: 'MDF', campus: device.campus },
+        device: { id: device.id, hostname: 'ESP_A1B2C3', closet: 'MDF', closetType: 'MDF', campus: device.campus, sensor: null },
         date: DAY,
         timeZone: CHICAGO,
         from: DAY_START,

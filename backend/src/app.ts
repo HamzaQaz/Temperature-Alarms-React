@@ -17,6 +17,7 @@ import { incidentsRouter } from './routes/incidents';
 import { csvExportsRouter } from './routes/csvExports';
 import { firmwareRouter } from './routes/firmware';
 import { notificationsRouter } from './routes/notifications';
+import { systemRouter } from './routes/system';
 import { createMailer } from './mailer';
 
 /**
@@ -96,6 +97,7 @@ export function createApp(appDeps: AppDeps): Express {
   app.use('/api/incidents', incidentsRouter(deps));
   app.use('/api/firmware', firmwareRouter(deps));
   app.use('/api/notifications', notificationsRouter(deps));
+  app.use('/api/system', systemRouter(deps));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });

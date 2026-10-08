@@ -1,12 +1,16 @@
 # Temperature Alarms
 
-Live temperature and humidity monitoring for network closets across school campuses, fed by NodeMCU boards with DHT11 sensors.
+Live temperature and humidity monitoring for network closets across school campuses, fed by NodeMCU boards with DHT11 sensors (or the more accurate DHT22 or SHT31).
 
 ## Language
 
 **Device**:
-One NodeMCU board with a DHT11 sensor, installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings.
+One NodeMCU board with a sensor (a DHT11, DHT22, or SHT31, chosen when its firmware is built), installed in a single Closet. Identified by its hostname (`ESP_` plus the last six hex digits of its MAC), which never changes: a replaced board is a new Device. Its Closet and Campus can be corrected without losing its Readings. From firmware 6 the board says which sensor it carries with every report, and the Device's History shows it, so its Readings are read with that sensor's accuracy in mind.
 _Avoid_: Sensor, node, board, table
+
+**Fallback network**:
+The second WiFi network a board's firmware may name (`WIFI_SSID_2`), joined when the first cannot be: the board tries the two in turn and stays on whichever joined until it drops. From firmware 7 the board says which network it is on with every report. A Device on its fallback network shows a note on its card and Settings names the network, but it is not a Condition: no Incident, no Notification. Moving closets to a new network over the air goes through it: a build whose fallback is the new network, then one that makes it the first.
+_Avoid_: Backup network, secondary SSID, failover
 
 **Reading**:
 One temperature and humidity sample sent by a Device at a single moment.
@@ -54,8 +58,12 @@ A board that reports with the Device token but is not yet added as a Device, wai
 _Avoid_: Pending device, unknown device, orphan
 
 **Firmware release**:
-The one signed firmware build the server offers to Devices over the air, with its version and, while it is staged, the Devices it is offered to. A Device installs it when its version is higher than the Device's own (docs/adr/0007).
+The one signed firmware build the server offers to Devices over the air, with its version and, while it is staged, the named Devices it is offered to first. It is released to all (widened) once every named Device has sent 10 clean Readings in a row on it. A Device installs it when its version is higher than the Device's own (docs/adr/0007).
 _Avoid_: OTA image, update, push
+
+**Hold**:
+A staged Firmware release stopping itself because one of its named Devices went Offline or into Sensor fault after taking it, or reported that the update failed. A held release is offered to no Device until it is withdrawn or replaced by a higher version; it is emailed when Notifications are on (docs/adr/0007).
+_Avoid_: Pause, freeze, rollback (nothing is rolled back: boards that installed it keep it)
 
 **Condition**:
 A named state a Device is in, computed on the server from its latest Reading and its reports against global thresholds set once in the backend configuration: Hot, Cold, Dry, Mold risk, Sensor fault, Offline. Each has a level (warning, critical, or moderate/high for Mold risk). A Device can be in several Conditions at once.
@@ -70,12 +78,20 @@ A technician saying they are on an open Incident, with their name or a short not
 _Avoid_: Claim, assign, ownership, ack
 
 **Notification**:
-An email the server sends to a fixed list of recipients, through the district's SMTP relay, when an Incident opens, gets worse (its level rises), or closes. A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
+An email the server sends through the district's SMTP relay when an Incident opens, gets worse (its level rises), or closes, to its Campus's recipients: the Campus's own list, set on Settings, or the default list (`NOTIFY_TO`) for a Campus without one; and, to the default list, when a Firmware release goes on Hold (its own email). A level falling back is not sent, Devices on the Bench never send one, and Incident changes close together go out as one email to each recipient list, worst first. Each is queued in the same transaction as the Incident change it reports, so a restart or an SMTP outage delays it rather than losing it. Off unless the backend configuration names a relay (docs/adr/0008).
 _Avoid_: Alert, alarm (the old feature that was removed), page, message
 
 **Reminder**:
 A Notification that an Incident is still open and no one has acknowledged it, sent once it has been open a set number of hours (`NOTIFY_REMIND_HOURS`, the same for every Condition and level) and again every as many hours after, counted from the Incident's start, until it closes or is acknowledged. Off unless configured, and only while Notifications are on; Devices on the Bench never get one; no cap on how many (docs/adr/0008).
 _Avoid_: Escalation, repeat alert, nag, follow-up
+
+**Quiet hours**:
+When warning Notifications wait instead of going out: a nightly window (`NOTIFY_QUIET_HOURS`, such as 18:00 to 07:00) and, if configured, the whole weekend (`NOTIFY_QUIET_WEEKENDS`), on the server's clock (`TZ`). Every warning waits, Mold risk high included, with its Reminders and its closing email; what waited goes out when they end, one email per recipient list. Critical Incidents, Offline, and Sensor fault never wait, and a warning that turns critical goes at once. Off unless configured; school holidays are not quiet hours (docs/adr/0008).
+_Avoid_: Do not disturb, snooze, mute, maintenance window
+
+**Monthly report**:
+An email on the month just ended, sent to the default list (`NOTIFY_TO`), never a Campus's own, on the 1st of each month when configured (`NOTIFY_MONTHLY_REPORT`), or on request from Settings: its Incidents and time in each Condition, the hottest and most humid closets with their peaks, the closets that **ran warm** (more than half their Readings within 3 °F of their Hot warning, or above it), and each Device's Offline and Sensor fault time, every closet linked to its History. Evidence for facilities' HVAC work. Devices on the Bench are left out (docs/adr/0008).
+_Avoid_: Digest, summary, newsletter, statement
 
 **Bench**:
 The holding Campus (shortcode `BENCH`) a Device is registered under between flashing and installation, whatever its bench verdict: a board that failed its check stays registered there too, and the inventory sheet's `TESTED` column says which passed. A Device on the Bench is expected to be Offline until it is moved to its real Campus and Closet.

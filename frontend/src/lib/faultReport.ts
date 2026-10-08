@@ -1,14 +1,14 @@
 /**
  * A fault report on the dashboard (docs/adr/0009): the board was heard from, but its sensor did
  * not answer, so no Reading came with it. The card takes the server's new state (Online, the
- * Conditions, the last report) and keeps its last good Reading, still ageing from when it was
+ * Conditions, the last report, whether the board is on its fallback network) and keeps its last good Reading, still ageing from when it was
  * recorded. Nothing is judged here: Sensor fault and Online are the server's.
  */
 import type { DashboardDevice, FaultEvent } from '../types.ts';
 
 /** What the dashboard holds of a Device: its ages were true at `asOf`, on the monotonic clock (lib/elapsed.ts). */
 export interface AgedDevice
-  extends Pick<DashboardDevice, 'hostname' | 'online' | 'conditions' | 'lastReportAt' | 'secondsSinceReading' | 'secondsSinceReport'> {
+  extends Pick<DashboardDevice, 'hostname' | 'online' | 'conditions' | 'lastReportAt' | 'secondsSinceReading' | 'secondsSinceReport' | 'onFallbackNetwork'> {
   asOf: number;
 }
 
@@ -31,6 +31,7 @@ export function applyFault<T extends AgedDevice>(devices: T[], event: FaultEvent
     online: event.online,
     conditions: event.conditions,
     lastReportAt: event.lastReportAt,
+    onFallbackNetwork: event.onFallbackNetwork,
     secondsSinceReport: 0,
     secondsSinceReading: device.secondsSinceReading === null ? null : device.secondsSinceReading + elapsed,
     asOf: device.asOf + elapsed * 1000,
