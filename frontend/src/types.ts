@@ -191,6 +191,8 @@ export interface History {
   readings: Reading[];
   /** True when the day held more Readings than one response carries: `readings` is the day's first ones and the summary covers only those. */
   truncated?: boolean;
+  /** How many days Readings are kept: the longest range the CSV download takes. */
+  retentionDays: number;
   summary: {
     tempF: DaySummary | null;
     humidity: DaySummary | null;

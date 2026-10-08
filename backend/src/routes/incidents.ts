@@ -24,14 +24,14 @@ function instant(query: Request['query'], name: string): Date | { error: string 
   return date;
 }
 
-/** The window asked for by `?from=` and `?to=`, or the message explaining why there is none. */
-function parseWindow(query: Request['query']): Window | { error: string } {
+/** The window asked for by `?from=` and `?to=`, at most `maxDays` long, or the message explaining why there is none. */
+export function parseWindow(query: Request['query'], maxDays = MAX_WINDOW_DAYS): Window | { error: string } {
   const from = instant(query, 'from');
   if ('error' in from) return from;
   const to = instant(query, 'to');
   if ('error' in to) return to;
   if (from.getTime() >= to.getTime()) return { error: 'from must be before to' };
-  if (to.getTime() - from.getTime() > MAX_WINDOW_DAYS * DAY_MS) return { error: `The window can be at most ${MAX_WINDOW_DAYS} days` };
+  if (to.getTime() - from.getTime() > maxDays * DAY_MS) return { error: `The window can be at most ${maxDays} days` };
   return { from, to };
 }
 

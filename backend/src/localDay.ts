@@ -74,6 +74,14 @@ function wallClock(at: Date, timeZone: string): WallClock {
   return read as WallClock;
 }
 
+const pad = (n: number, width = 2): string => String(n).padStart(width, '0');
+
+/** "2026-09-05 14:30:00": what a clock on the wall in the zone reads at the instant, in the form Excel takes as a date and time. */
+export function wallClockText(at: Date, timeZone: string): string {
+  const { year, month, day, hour, minute, second } = wallClock(at, timeZone);
+  return `${pad(year, 4)}-${pad(month)}-${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
+}
+
 /** Milliseconds the zone is ahead of UTC at the instant (negative west of Greenwich). */
 function offsetMs(at: Date, timeZone: string): number {
   const { year, month, day, hour, minute, second } = wallClock(at, timeZone);
