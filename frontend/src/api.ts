@@ -1,4 +1,4 @@
-import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incident, Incidents, NotificationStatus, Overview, TestEmailResult } from './types';
+import type { Device, DeviceRotation, PendingDevice, FirmwareRelease, FirmwareStatus, Campus, Dashboard, DashboardOrder, History, Incident, Incidents, NotificationStatus, Overview, SystemHealth, TestEmailResult } from './types';
 import { getAdminToken } from './lib/adminToken';
 import { apiBaseUrl } from './lib/apiBase';
 
@@ -145,6 +145,11 @@ export const getNotificationStatus = (): Promise<NotificationStatus> => request(
 
 /** Send a test email to every recipient now; at most one a minute. Needs the Admin token. */
 export const sendTestEmail = (): Promise<TestEmailResult> => request('/api/notifications/test', { method: 'POST' });
+
+// ==================== SYSTEM ====================
+
+/** Whether the system itself is OK, line by line (Settings, System). Needs the Admin token. */
+export const getSystemHealth = (): Promise<SystemHealth> => request('/api/system', { admin: true });
 
 // ==================== DASHBOARD ====================
 

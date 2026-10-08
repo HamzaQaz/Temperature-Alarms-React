@@ -28,6 +28,7 @@ import {
   type OpenIncidentPayload,
 } from '../incidentStore';
 import { enqueueNotifications } from '../outboxStore';
+import { WEAK_SIGNAL_DBM } from '../systemHealth';
 
 interface DeviceIdRow extends RowDataPacket {
   id: number;
@@ -200,11 +201,13 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         ]);
         // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware
         // tab, and its sensor (firmware 6) for History too.
+        // A signal under WEAK_SIGNAL_DBM keeps when it fell there, for Settings, System; a better one, or none, clears it.
         if (info !== null) {
           await conn.query(
             `UPDATE devices SET firmware_version = COALESCE(?, firmware_version), rssi = ?, uptime_s = ?, free_heap = ?,
-               reset_reason = ?, update_result = ?, sensor = ?, info_at = ? WHERE id = ?`,
-            [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, info.sensor, recordedAt, device.id],
+               reset_reason = ?, update_result = ?, sensor = ?, info_at = ?,
+               weak_signal_since = IF(? < ?, COALESCE(weak_signal_since, ?), NULL) WHERE id = ?`,
+            [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, info.sensor, recordedAt, info.rssi, WEAK_SIGNAL_DBM, recordedAt, device.id],
           );
         }
         changed =

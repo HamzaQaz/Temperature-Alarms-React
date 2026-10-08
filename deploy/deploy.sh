@@ -104,7 +104,8 @@ With no action and a terminal, shows a menu. Actions:
                      check /api/health through web. Also the upgrade. Safe to repeat.
   status             Containers and the health check
   logs               Recent logs (--follow, --service api|web|db, --tail N)
-  backup             mysqldump to backups/<project>_<time>.sql.gz (--keep-days N prunes older ones)
+  backup             mysqldump to backups/<project>_<time>.sql.gz (--keep-days N prunes older ones);
+                     records when in the database, for Settings, System
   schedule-backup    Run backup nightly from cron (--at HH:MM, default 02:00; --keep-days N,
                      default 7). Replaces its own crontab line; other lines are left alone.
   unschedule-backup  Remove that crontab line
@@ -904,6 +905,11 @@ site_url() {
   [ "$port" = 80 ] && printf 'http://%s/' "$host" || printf 'http://%s:%s/' "$host" "$port"
 }
 
+# The commit this checkout is at and its date, which backend/Dockerfile bakes into api's image as
+# APP_VERSION for Settings, System. Empty outside a git checkout. From inside it, not -C: with
+# MSYS_NO_PATHCONV, Git for Windows would be handed Git Bash's /c/... path as it is.
+app_version() { (cd "$REPO_DIR" && git log -1 --format='%h %cd' --date=short 2>/dev/null) || true; }
+
 do_deploy() {
   [ -f "$ENV_FILE" ] || do_install
   migrate_root_password
@@ -911,6 +917,8 @@ do_deploy() {
   check_secrets
   maybe_pull
   do_preflight || die "preflight failed; fix the [FAIL] lines above"
+  # After the pull, so the version is the code being built.
+  APP_VERSION=$(app_version); export APP_VERSION
   # A plain `up --build` reuses whatever node and nginx base images are cached, so a server
   # would never get their security patches; --pull checks for newer ones on every deploy.
   step "Build with fresh base images (docker compose build --pull)"
@@ -959,8 +967,27 @@ do_backup() {
   fi
   ok "$file ($(du -k "$file" | awk '{print $1}') KB)"
   LAST_BACKUP=$file
+  LAST_BACKUP_AT=$(date -u '+%Y-%m-%d %H:%M:%S')
+  record_backup
   [ -n "$KEEP_DAYS" ] && prune_backups
   return 0
+}
+
+# Tells api when the last backup finished, for Settings, System: api sees neither this host's cron
+# nor backups/, so the marker is a row in its database (last_backup, migration 0018). A failure
+# warns and keeps the backup: an api from before 0018 has no such table yet.
+record_backup() {
+  local name bytes out
+  # deploy's own name (project, time, .sql.gz); anything else is dropped, so the SQL needs no quoting.
+  name=$(basename "$LAST_BACKUP" | tr -cd 'A-Za-z0-9._-')
+  bytes=$(wc -c < "$LAST_BACKUP" | tr -cd '0-9')
+  # shellcheck disable=SC2016 # $MYSQL_ROOT_PASSWORD expands inside the db container
+  if out=$(printf "REPLACE INTO last_backup (id, finished_at, file, size_bytes) VALUES (1, '%s', '%s', %s);\n" "$LAST_BACKUP_AT" "$name" "${bytes:-NULL}" \
+      | dc exec -T db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysql -uroot '"$DB_NAME" 2>&1); then
+    ok "recorded as the last backup for Settings, System"
+  else
+    warn "the backup is kept, but Settings, System could not be told (${out:-no answer from db}); deploy.sh deploy brings api up to date"
+  fi
 }
 
 # Deletes this project's backups older than --keep-days; never the one just made.
@@ -1013,6 +1040,8 @@ do_restore() {
   fi
   ok "restored $FILE"
   dc up -d --wait api || die "api did not come back healthy; see: deploy.sh logs --service api"
+  # The restored database knows only the backups before its own; the one just made is the latest.
+  record_backup
   health 30
 }
 
@@ -1227,6 +1256,7 @@ do_demo() {
   if [ -f "$ENV_FILE" ]; then ok "$ENV_FILE exists; keeping its secrets"; else write_demo_env; fi
   apply_flags_to_env
   do_preflight || die "preflight failed; fix the [FAIL] lines above"
+  APP_VERSION=$(app_version); export APP_VERSION
   step "Build and start the demo (project $DEMO_PROJECT)"
   if ! dc up -d --build --remove-orphans --wait --wait-timeout 600; then
     dc ps

@@ -50,7 +50,11 @@ services:
     logging: *logging
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      # The commit it is built from, for Settings, System; deploy.sh sets it, and it is empty by hand.
+      args:
+        APP_VERSION: ${APP_VERSION:-}
     restart: unless-stopped
     # Exactly one instance (docs/adr/0001): SSE fan-out and the rate limit live in memory.
     # No CORS_ORIGIN: the browser reaches /api/ on the page's own origin through web.

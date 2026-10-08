@@ -15,6 +15,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY scripts ./scripts
+# The commit deploy built it from (compose.yaml), shown on Settings, System. Declared last,
+# so a commit that changes nothing above (docs only) rebuilds nothing above.
+ARG APP_VERSION=
+ENV APP_VERSION=$APP_VERSION
 USER node
 EXPOSE 3001
 CMD ["node", "dist/index.js"]

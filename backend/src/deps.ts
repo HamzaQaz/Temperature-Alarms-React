@@ -7,6 +7,7 @@ import type { Listening } from './listening';
 import type { TokenRotation } from './tokenRotation';
 import type { DeviceSightings } from './deviceSightings';
 import type { Mailer } from './mailer';
+import type { DiskSpace } from './systemHealth';
 
 /** What every route module and background job is handed at startup. */
 export interface AppDeps {
@@ -31,6 +32,12 @@ export interface AppDeps {
   mailer?: Mailer;
   /** True once the process has begun to stop (shutdown.ts); health then answers 503. Never, without one. */
   stopping?: () => boolean;
+  /** The commit the api image was built from (APP_VERSION, set by deploy), for Settings, System. */
+  version?: string;
+  /** When the server started, for its uptime. Defaults to this process's start; tests pin it. */
+  startedAt?: Date;
+  /** Free and total disk (systemHealth.ts). Defaults to the filesystem holding `/`; tests pass their own. */
+  diskSpace?: () => Promise<DiskSpace>;
 }
 
 /** AppDeps once createApp has filled in what the routes need. */
