@@ -21,6 +21,10 @@ bool serverUsesTls();
 // Which server is in use: 1 for SERVER_URL, 2 for SERVER_URL_2.
 uint8_t serverNumber();
 
+// The Device token for the server in use: DEVICE_TOKEN for SERVER_URL, DEVICE_TOKEN_2 for SERVER_URL_2
+// (DEVICE_TOKEN when config.h names no second token), so each server sees only its own.
+const char* serverDeviceToken();
+
 // How a report went, so the board can move to the other server. `taken` false (no answer, no checked
 // TLS, the token refused, the Device unknown there, a server error) twice in a row moves to the other
 // server, when config.h names two. On the fallback server, after an hour of taken reports the board
