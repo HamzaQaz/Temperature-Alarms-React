@@ -4,7 +4,8 @@
  * seen by every browser. A heartbeat comment keeps proxies from closing an idle stream;
  * reconnecting after a drop is the browser's EventSource doing what it does by default.
  * Every message is unnamed, its `data` a JSON object whose `type` says what it is: a `reading`,
- * a `fault` report, or an `incident`.
+ * a `fault` report, or an `incident`. A stopping server ends every stream, telling the browser to
+ * come back in 2 s (shutdown.ts).
  *
  * The response carries only the headers SSE needs. CORS is the shared middleware's job.
  */
@@ -105,6 +106,8 @@ export interface Broadcaster {
   /** How many dashboards are connected right now. */
   readonly clientCount: number;
   readonly heartbeatMs: number;
+  /** End every stream with a 2 s retry and refuse new ones, as the server stops (shutdown.ts). */
+  close(): void;
 }
 
 export interface BroadcasterOptions {
@@ -126,6 +129,8 @@ const DEFAULT_HEARTBEAT_MS = 25_000;
  */
 export const DEFAULT_MAX_STREAMS_PER_ADDRESS = 60;
 export const DEFAULT_MAX_STREAMS = 400;
+/** How soon a dashboard whose stream a stop ended reconnects, to the next process. Browsers wait 3 to 5 s by default. */
+const RECONNECT_AFTER_STOP_MS = 2_000;
 
 export function createBroadcaster({
   heartbeatMs = DEFAULT_HEARTBEAT_MS,
@@ -136,6 +141,7 @@ export function createBroadcaster({
   /** Open streams per address, as app.ts's trust proxy setting resolves it. */
   const perAddress = new Map<string, number>();
   let heartbeat: NodeJS.Timeout | undefined;
+  let closed = false;
 
   // The timer runs only while someone is listening, so an idle server holds no timer at all.
   const startHeartbeat = () => {
@@ -152,6 +158,10 @@ export function createBroadcaster({
   };
 
   const handler = (req: Request, res: Response) => {
+    if (closed) {
+      res.status(503).json({ error: 'The server is stopping; try again shortly.' });
+      return;
+    }
     const address = req.ip ?? '';
     const held = perAddress.get(address) ?? 0;
     if (held >= maxStreamsPerAddress) {
@@ -195,6 +205,14 @@ export function createBroadcaster({
     broadcast(event) {
       const frame = `data: ${JSON.stringify(event)}\n\n`;
       for (const res of clients) res.write(frame);
+    },
+    close() {
+      closed = true;
+      for (const res of clients) res.end(`retry: ${RECONNECT_AFTER_STOP_MS}\n\n`);
+      // At once, not as each socket closes: a Reading or a sweep pass still in flight broadcasts after this.
+      clients.clear();
+      if (heartbeat !== undefined) clearInterval(heartbeat);
+      heartbeat = undefined;
     },
   };
 }

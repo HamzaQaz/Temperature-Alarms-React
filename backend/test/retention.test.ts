@@ -4,6 +4,7 @@ import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
 import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api } from './helpers/api';
+import { createGate, gatedPool, settlesWithin } from './helpers/gate';
 import { deleteReadingsPastWindow, retentionCutoff, startRetentionJob, type RetentionJob } from '../src/retention';
 
 const NOW = new Date('2026-09-09T12:00:00Z');
@@ -133,7 +134,7 @@ describe('retention job', () => {
 
       job = startRetentionJob(withRetention(), { ...withBatch(), intervalMs: 50 });
       await waitFor(() => lines.length >= 3);
-      job.stop();
+      await job.stop();
       const seen = lines.length;
 
       assert.match(lines[0], /removed 1 /);
@@ -150,10 +151,35 @@ describe('retention job', () => {
 
       job = startRetentionJob(withRetention(90, dead), { ...withBatch(), intervalMs: 50 });
       await waitFor(() => errors.length >= 2);
-      job.stop();
+      await job.stop();
 
       assert.ok(errors[0] instanceof Error);
       assert.equal(lines.length, 0, 'a failed pass logs no count');
+    });
+
+    test('stop ends a pass after the batch it is deleting, and resolves once that batch is done', async () => {
+      const device = await registerDevice();
+      for (let i = 1; i <= 7; i++) await readingAt(device, daysAgo(91, i * 1000), i);
+      await readingAt(device, daysAgo(1), 99);
+      const gate = createGate();
+      const statements: string[] = [];
+
+      job = startRetentionJob(withRetention(90, gatedPool(pool, gate, statements)), { ...withBatch(3), intervalMs: 60_000 });
+      await gate.reached;
+      const stopped = job.stop();
+      try {
+        assert.equal(await settlesWithin(stopped, 150), false, 'stop waits for the DELETE in flight');
+      } finally {
+        gate.open();
+      }
+      await stopped;
+
+      assert.equal(statements.length, 1, 'no batch after the stop');
+      assert.equal((await remaining()).length, 5, 'one batch of three went');
+      assert.deepEqual(lines, ['retention: stopped after removing 3 readings; the next pass removes the rest']);
+      assert.deepEqual(errors, []);
+      assert.equal(await deleteReadingsPastWindow(withRetention(), withBatch()), 4, 'the next pass removes the rest');
+      assert.deepEqual(await remaining(), [99]);
     });
   });
 });

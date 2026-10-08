@@ -21,8 +21,8 @@ export interface OfflineSweepOptions {
 }
 
 export interface OfflineSweep {
-  /** Stop the schedule. A pass already in flight finishes. */
-  stop(): void;
+  /** Stop the schedule; resolves once a pass in flight has finished, so a shutdown never cuts one short. */
+  stop(): Promise<void>;
 }
 
 type SweepDeps = Pick<RouteDeps, 'pool' | 'config' | 'sse' | 'now' | 'listening'>;
@@ -60,16 +60,20 @@ export async function runOfflineSweep({ pool, config, sse, now = () => new Date(
  */
 export function startOfflineSweep(deps: SweepDeps, options: OfflineSweepOptions = {}): OfflineSweep {
   const { intervalMs = deps.config.reportIntervalSeconds * 1000, onError = (error) => console.error('offline sweep: pass failed:', error) } = options;
-  let inFlight = false;
+  let inFlight: Promise<unknown> | undefined;
   const timer = setInterval(() => {
-    if (inFlight) return;
-    inFlight = true;
-    runOfflineSweep(deps)
+    if (inFlight !== undefined) return;
+    inFlight = runOfflineSweep(deps)
       .catch(onError)
       .finally(() => {
-        inFlight = false;
+        inFlight = undefined;
       });
   }, intervalMs);
   timer.unref();
-  return { stop: () => clearInterval(timer) };
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      await inFlight;
+    },
+  };
 }

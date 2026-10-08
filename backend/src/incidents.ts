@@ -6,7 +6,8 @@
  * Pure functions only: no I/O, no clock. The database layer (incidentStore.ts) loads the open
  * incidents, asks these rules what a Reading, a fault report, or a silence does to them, and
  * saves the answer.
- * The demo replays its backfilled week through `replayIncidents`, so the two cannot disagree.
+ * The demo replays its backfilled week, Readings and fault reports alike, through
+ * `replayIncidents`, so the two cannot disagree.
  */
 import {
   conditionsFor,
@@ -243,16 +244,34 @@ export function missedOffline(previous: LastReport | null, at: Date, rules: Cond
   return close(opened('Offline', 'warning', start, previous.reading).incident, at);
 }
 
+/** A fault report (docs/adr/0009) at a moment: the board was heard from, its sensor was not. */
+export interface TimedFaultReport {
+  fault: 'sensor';
+  recordedAt: Date;
+}
+
+/** Either kind of report a Device sends, as the replay takes them. */
+export type TimedReport = TimedReading | TimedFaultReport;
+
+const isFaultReport = (report: TimedReport): report is TimedFaultReport => 'fault' in report;
+
 /**
- * Run the rules over a Device's Readings, oldest first, as ingest and the Offline sweep would
- * have seen them live: every gap longer than the allowed missed reports opens an Offline
- * incident that the next Reading closes. A silence after the last Reading counts up to `until`.
- * Returns every incident, the ones still open at the end included (end null).
+ * Run the rules over a Device's reports, Readings and fault reports alike, oldest first, as
+ * ingest and the Offline sweep would have seen them live. A Reading goes through applyReading, a
+ * fault report through applyFaultReport with the count in a row that ingest keeps in
+ * devices.sensor_faults, and every gap longer than the allowed missed reports, counted from the
+ * last report of either kind, opens an Offline incident that the next report closes. A silence
+ * after the last report counts up to `until`. Returns every incident, the ones still open at the
+ * end included (end null).
  */
-export function replayIncidents(readings: TimedReading[], rules: ConditionRules, until?: Date): IncidentState[] {
+export function replayIncidents(reports: TimedReport[], rules: ConditionRules, until?: Date): IncidentState[] {
   const all: IncidentState[] = [];
   let open: IncidentState[] = [];
-  let last: TimedReading | null = null;
+  let last: LastReport | null = null;
+  /** The last good Reading: what a Sensor fault peaks at, and an Offline after fault reports. */
+  let lastReading: TimedReading | null = null;
+  /** Ingest's count of fault reports in a row: a fault report adds one, a Reading clears it. */
+  let sensorFaults = 0;
   const advance = (steps: IncidentStep[]) => {
     open = [];
     for (const { incident } of steps) {
@@ -262,13 +281,20 @@ export function replayIncidents(readings: TimedReading[], rules: ConditionRules,
   };
   const silence = (at: Date) => {
     if (open.some((i) => i.condition === 'Offline')) return;
-    const offline = offlineIncident(last === null ? null : { at: last.recordedAt, reading: last }, at, rules);
+    const offline = offlineIncident(last, at, rules);
     if (offline !== null) open.push(offline.incident);
   };
-  for (const reading of readings) {
-    silence(new Date(reading.recordedAt.getTime() - 1000));
-    advance(applyReading(open, reading, rules));
-    last = reading;
+  for (const report of reports) {
+    silence(new Date(report.recordedAt.getTime() - 1000));
+    if (isFaultReport(report)) {
+      sensorFaults += 1;
+      advance(applyFaultReport(open, { at: report.recordedAt, sensorFaults }, lastReading, rules));
+    } else {
+      sensorFaults = 0;
+      advance(applyReading(open, report, rules));
+      lastReading = report;
+    }
+    last = { at: report.recordedAt, reading: lastReading };
   }
   if (until !== undefined) silence(until);
   return [...all, ...open].sort((a, b) => a.start.getTime() - b.start.getTime());

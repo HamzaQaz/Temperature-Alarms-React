@@ -30,8 +30,11 @@ export interface RetentionOptions {
 }
 
 export interface RetentionJob {
-  /** Stop the schedule. A pass already in flight finishes. */
-  stop(): void;
+  /**
+   * Stop the schedule, and a pass in flight after the batch it is deleting; resolves once it has.
+   * A long pass (the first after a legacy migration) would otherwise outlast a shutdown.
+   */
+  stop(): Promise<void>;
 }
 
 type RetentionDeps = Pick<AppDeps, 'pool' | 'config' | 'now'>;
@@ -46,31 +49,38 @@ export function retentionCutoff(now: Date, retentionDays: number): Date {
 /**
  * Delete every Reading past the window, then every incident that ended before it (an ongoing
  * one stays however old), `batchSize` at a time, then every notification sent or given up on
- * more than a week ago, and log the totals. Returns the Readings removed.
+ * more than a week ago, and log the totals. Returns the Readings removed. Once `signal` aborts,
+ * the pass ends after the batch in flight; the next pass removes the rest.
  */
 export async function deleteReadingsPastWindow(
   { pool, config, now = () => new Date() }: RetentionDeps,
-  { batchSize = DEFAULT_BATCH_SIZE, log = console.log }: Pick<RetentionOptions, 'batchSize' | 'log'> = {},
+  { batchSize = DEFAULT_BATCH_SIZE, log = console.log, signal }: Pick<RetentionOptions, 'batchSize' | 'log'> & { signal?: AbortSignal } = {},
 ): Promise<number> {
   const at = now();
   const cutoff = retentionCutoff(at, config.retentionDays);
-  let removed = 0;
-  for (;;) {
+  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
+  /** Run `deleteBatch` until a batch comes up short or the pass is stopped; the total removed. */
+  const inBatches = async (deleteBatch: () => Promise<number>): Promise<number> => {
+    let total = 0;
+    while (signal?.aborted !== true) {
+      const affected = await deleteBatch();
+      total += affected;
+      if (affected < batchSize) break;
+      await pause(BATCH_PAUSE_MS);
+    }
+    return total;
+  };
+  const removed = await inBatches(async () => {
     const [result] = await pool.query<ResultSetHeader>('DELETE FROM readings WHERE recorded_at < ? LIMIT ?', [cutoff, batchSize]);
-    removed += result.affectedRows;
-    if (result.affectedRows < batchSize) break;
-    await pause(BATCH_PAUSE_MS);
-  }
-  let incidents = 0;
-  for (;;) {
-    const affected = await deleteIncidentsEndedBefore(pool, cutoff, batchSize);
-    incidents += affected;
-    if (affected < batchSize) break;
-    await pause(BATCH_PAUSE_MS);
+    return result.affectedRows;
+  });
+  const incidents = await inBatches(() => deleteIncidentsEndedBefore(pool, cutoff, batchSize));
+  if (signal?.aborted === true) {
+    log(`retention: stopped after removing ${plural(removed, 'reading')}; the next pass removes the rest`);
+    return removed;
   }
   // A week's worth is a few hundred rows at most, so one statement.
   const notifications = await deleteNotificationsBefore(pool, retentionCutoff(at, NOTIFICATION_KEEP_DAYS));
-  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
   log(
     `retention: removed ${plural(removed, 'reading')} and ${plural(incidents, 'incident')} older than ${cutoff.toISOString()} (${config.retentionDays} days), ` +
       `and ${plural(notifications, 'notification')} sent or given up on more than ${NOTIFICATION_KEEP_DAYS} days ago`,
@@ -84,16 +94,16 @@ export async function deleteReadingsPastWindow(
  */
 export function startRetentionJob(deps: RetentionDeps, options: RetentionOptions = {}): RetentionJob {
   const { intervalMs = DEFAULT_INTERVAL_MS, onError = (error) => console.error('retention: pass failed:', error) } = options;
-  let inFlight = false;
+  const stopping = new AbortController();
+  let inFlight: Promise<unknown> | undefined;
 
   // Passes never overlap: a tick during a long pass (the first after a legacy migration) is skipped.
   const tick = () => {
-    if (inFlight) return;
-    inFlight = true;
-    deleteReadingsPastWindow(deps, options)
+    if (inFlight !== undefined) return;
+    inFlight = deleteReadingsPastWindow(deps, { ...options, signal: stopping.signal })
       .catch(onError)
       .finally(() => {
-        inFlight = false;
+        inFlight = undefined;
       });
   };
 
@@ -101,5 +111,11 @@ export function startRetentionJob(deps: RetentionDeps, options: RetentionOptions
   timer.unref();
   tick();
 
-  return { stop: () => clearInterval(timer) };
+  return {
+    stop: async () => {
+      clearInterval(timer);
+      stopping.abort();
+      await inFlight;
+    },
+  };
 }
