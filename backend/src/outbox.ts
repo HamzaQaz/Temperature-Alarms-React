@@ -5,7 +5,7 @@
  * Pure functions only: no I/O, no clock. outboxStore.ts writes and reads the rows, notifier.ts
  * runs the sender, and notificationEmail.ts says what the email reads.
  */
-import { LEVELS_WORST_FIRST, type ConditionLevel } from './conditions';
+import { LEVELS_WORST_FIRST, type ConditionLevel, type ConditionName } from './conditions';
 import type { IncidentChange } from './incidents';
 
 /**
@@ -64,6 +64,29 @@ export function reminderDue(start: Date, lastRemindedAt: Date | null, now: Date,
   return new Date(start.getTime() + periods * periodMs);
 }
 
+/** A due notification, as the sender decides whether quiet hours hold it. */
+export interface QuietCandidate {
+  /** `hold` (a held firmware release) and `report` (a monthly report) are about no Incident. */
+  kind: NotificationKind | 'hold' | 'report';
+  /** The level its incident had reached when it was queued; null for a row about no Incident. */
+  level: ConditionLevel | null;
+  /** Its incident's Condition; null for a row about no Incident. */
+  condition: ConditionName | null;
+}
+
+/**
+ * True when quiet hours hold the notification until they end (docs/adr/0008): every warning,
+ * Mold risk's high and reminders and closes included, at the level their incident had reached.
+ * Critical never waits, so a warning that rises to critical sends at once as `worse`; nor do
+ * Offline and Sensor fault (owner decision); nor a held release or a monthly report, which are
+ * not about an Incident.
+ */
+export function heldByQuietHours({ kind, level, condition }: QuietCandidate): boolean {
+  if (kind === 'hold' || kind === 'report' || level === null || condition === null) return false;
+  if (condition === 'Offline' || condition === 'Sensor fault') return false;
+  return level !== 'critical';
+}
+
 /** Retry timing for a batch the relay did not take. */
 export interface RetryPolicy {
   /** The wait after the first failure; each later one doubles it. */
@@ -83,25 +106,33 @@ export function retryDelayMs(attempts: number, { firstMs, maxMs }: RetryPolicy):
   return Math.min(firstMs * 2 ** Math.min(Math.max(attempts - 1, 0), 30), maxMs);
 }
 
-/** True when a notification queued at `createdAt` that just failed again should be given up on. */
-export const givesUp = (createdAt: Date, now: Date, { giveUpMs }: RetryPolicy): boolean => now.getTime() - createdAt.getTime() >= giveUpMs;
+/**
+ * True when a notification that just failed again should be given up on: a day after it was
+ * queued (`createdAt`), or, for one quiet hours held, a day after they first let it go
+ * (`notBefore`), so a night spent waiting is not counted as a day of retries.
+ */
+export const givesUp = (createdAt: Date, now: Date, { giveUpMs }: RetryPolicy, notBefore: Date | null = null): boolean =>
+  now.getTime() - Math.max(createdAt.getTime(), notBefore?.getTime() ?? 0) >= giveUpMs;
 
 /** A due notification, as the sender decides whether to send its batch. */
 export interface DueNotification {
   createdAt: Date;
   /** Tries already made; more than zero means its batch waited its window before. */
   attempts: number;
+  /** When quiet hours first let it go, if they held it; set means it waited the night already. */
+  notBefore?: Date | null;
 }
 
 /**
  * True when the due notifications should go now, as one email: once the oldest has waited the
- * coalescing window, so a campus losing power is one email, or at once when any is a retry,
- * whose batch already waited. Everything due goes together, so a burst that keeps arriving still
- * sends within one window of its first row, and a row that missed it within the next.
+ * coalescing window, so a campus losing power is one email, or at once when any is a retry, or
+ * was held by quiet hours, whose batch already waited. Everything due goes together, so a burst
+ * that keeps arriving still sends within one window of its first row, a row that missed it
+ * within the next, and the warnings held overnight in the first pass after the quiet ends.
  */
 export function readyToSend(due: DueNotification[], now: Date, windowMs: number): boolean {
   if (due.length === 0) return false;
-  if (due.some((n) => n.attempts > 0)) return true;
+  if (due.some((n) => n.attempts > 0 || (n.notBefore ?? null) !== null)) return true;
   const oldest = Math.min(...due.map((n) => n.createdAt.getTime()));
   return now.getTime() - oldest >= windowMs;
 }

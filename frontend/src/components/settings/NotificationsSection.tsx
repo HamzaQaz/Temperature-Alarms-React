@@ -20,9 +20,10 @@ const REPORT_SENT_CHECK_MS = 20_000;
 
 /**
  * Email notifications (docs/adr/0008): whether Incidents are emailed, to which lists and how the
- * last send to each went, whether the monthly report is, what waits to be sent or was given up on,
- * a test email to prove the relay works, and last month's report on request. The settings
- * themselves live in the server's .env, a Campus's own list on Campuses.
+ * last send to each went, whether the monthly report is, when quiet hours hold warnings, what waits
+ * to be sent (and until when quiet hours hold it) or was given up on, a test email to prove the
+ * relay works, and last month's report on request. The settings themselves live in the server's
+ * .env, a Campus's own list on Campuses.
  */
 export function NotificationsSection({ canEdit, onUnauthorised }: NotificationsSectionProps) {
   return (
@@ -80,6 +81,7 @@ function NotificationStatusAndTest({ onUnauthorised }: { onUnauthorised: () => v
               <span className="font-medium">{summary.state}</span> {summary.detail}
             </p>
             {summary.monthlyReport !== null && <p className="break-words text-muted-foreground">{summary.monthlyReport}</p>}
+            {summary.quietHours !== null && <p className="break-words text-muted-foreground">{summary.quietHours}</p>}
             {summary.lists.length > 0 && (
               <ul className="space-y-2 py-1" aria-label="Recipient lists">
                 {summary.lists.map((list) => (
@@ -99,6 +101,7 @@ function NotificationStatusAndTest({ onUnauthorised }: { onUnauthorised: () => v
               </ul>
             )}
             {summary.pending !== null && <p className="text-muted-foreground">{summary.pending}</p>}
+            {summary.held !== null && <p className="text-muted-foreground">{summary.held}</p>}
             {summary.failed !== null && (
               <p className="flex items-start gap-2 text-destructive">
                 <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />

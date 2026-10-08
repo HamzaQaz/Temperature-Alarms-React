@@ -133,6 +133,7 @@ export async function startTestRelay({ login, port: wanted = 0 }: { login?: { us
       coalesceSeconds: 60,
       remindHours: 0,
       monthlyReport: false,
+      quietHours: { daily: null, weekends: false },
     }),
     close: () => new Promise((resolve) => server.close(() => resolve())),
   };

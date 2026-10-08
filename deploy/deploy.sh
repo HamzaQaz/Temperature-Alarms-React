@@ -16,10 +16,10 @@ ENV_FILE=".env"
 BACKUP_DIR="backups"
 DB_NAME="temperature_alarms"
 SECRETS="ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD"
-TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE DB_BUFFER_POOL_SIZE NOTIFY_COALESCE_SECONDS NOTIFY_TO_ALL"
+TUNABLES="REPORT_INTERVAL_SECONDS RETENTION_DAYS HOT_WARNING_F HOT_CRITICAL_F COLD_WARNING_F DRY_WARNING_PERCENT MISSED_REPORTS_BEFORE_OFFLINE LEGACY_TIME_ZONE TZ DB_BUFFER_POOL_SIZE NOTIFY_COALESCE_SECONDS NOTIFY_TO_ALL"
 # Email notifications (docs/adr/0008): off while SMTP_HOST is empty. Set with the --smtp-* and --notify-*
 # flags or the install prompts, never with --set; the password never comes from the command line.
-NOTIFY_KEYS="SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS NOTIFY_MONTHLY_REPORT"
+NOTIFY_KEYS="SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS NOTIFY_MONTHLY_REPORT NOTIFY_QUIET_HOURS NOTIFY_QUIET_WEEKENDS"
 # The demo (compose.demo.yaml) has its own project, so its own volume, and throwaway secrets.
 DEMO_PROJECT="temperature-alarms-demo"
 DEMO_ENV=".env.demo"
@@ -62,6 +62,8 @@ NOTIFY_TO_OPT=""
 PUBLIC_URL_OPT=""
 NOTIFY_REMIND_HOURS_OPT=""
 NOTIFY_MONTHLY_REPORT_OPT=""
+NOTIFY_QUIET_HOURS_OPT=""
+NOTIFY_QUIET_WEEKENDS_OPT=""
 # The SMTP password once read from stdin or the hidden prompt (read_smtp_password); never from argv.
 SMTP_PW=""
 # 1 for an install from before DB_ROOT_PASSWORD, whose root password is still DB_PASSWORD (legacy_root_env).
@@ -153,6 +155,10 @@ Email notifications (install, deploy; DEPLOYMENT.md, Email notifications). Off u
                           every N hours after (1 to 168); 0 turns reminders off (the default)
       --notify-monthly-report on|off  Email the --notify-to recipients a report on the month
                           just ended on the 1st of each month (off by default)
+      --notify-quiet-hours HH:MM-HH:MM|off  Hold warning emails during these hours (e.g. 18:00-07:00,
+                          in TZ) and send them as one when they end; critical, Offline, and Sensor
+                          fault still go at once (off by default)
+      --notify-quiet-weekends on|off  Hold warning emails all Saturday and Sunday too
       --pull / --no-pull  git pull --ff-only before deploy (asked when interactive)
       --reveal          Print tokens in full (info)
       --confirm TEXT    Answer a typed confirmation non-interactively: the project name
@@ -195,6 +201,8 @@ parse_args() {
       --public-url) need_value "$@"; PUBLIC_URL_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --notify-remind-hours) need_value "$@"; NOTIFY_REMIND_HOURS_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       --notify-monthly-report) need_value "$@"; NOTIFY_MONTHLY_REPORT_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --notify-quiet-hours) need_value "$@"; NOTIFY_QUIET_HOURS_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
+      --notify-quiet-weekends) need_value "$@"; NOTIFY_QUIET_WEEKENDS_OPT=$2; PASS_ARGS+=("$1" "$2"); shift ;;
       # Every process on the host can read another's command line; the password comes on stdin instead.
       --smtp-password|--smtp-password=*) die "the SMTP password is never taken on the command line: give --smtp-user, then type it at the hidden prompt, or with --yes send it as the first line of stdin" ;;
       --pull) PULL=1; PASS_ARGS+=("$1") ;;
@@ -376,6 +384,10 @@ valid_tunable() {
     WEB_PORT) printf '%s' "$2" | grep -Eq '^([0-9.]+:|\[[0-9a-fA-F:]+\]:)?[0-9]{1,5}$' ;;
     TRUST_PROXY) valid_trust_proxy "$2" ;;
     LEGACY_TIME_ZONE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[A-Za-z0-9_/+:-]+$' ;;
+    # An IANA zone like America/Chicago, one this host knows when it keeps the zone files; api refuses
+    # one Node does not know at startup.
+    TZ) [ -z "$2" ] || { printf '%s' "$2" | grep -Eqx '[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+)*' \
+      && { [ ! -d /usr/share/zoneinfo ] || [ -f "/usr/share/zoneinfo/$2" ]; }; } ;;
     # MySQL's size syntax: bytes, or a whole number of K, M, or G.
     DB_BUFFER_POOL_SIZE) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[1-9][0-9]*[KMG]?$' ;;
     NOTIFY_COALESCE_SECONDS) [ -z "$2" ] || printf '%s' "$2" | grep -Eq '^[0-9]+$' ;;
@@ -404,12 +416,15 @@ valid_notify() {
     # Whole hours, a week at most; 0 is off.
     NOTIFY_REMIND_HOURS) printf '%s' "$2" | grep -Eqx '[0-9]{1,3}' && [ "$((10#$2))" -le 168 ] ;;
     NOTIFY_MONTHLY_REPORT) case "$2" in true|false) return 0 ;; esac; return 1 ;;
+    # Two different 24-hour times; the end may come before the start, past midnight.
+    NOTIFY_QUIET_HOURS) printf '%s' "$2" | grep -Eqx '([01][0-9]|2[0-3]):[0-5][0-9]-([01][0-9]|2[0-3]):[0-5][0-9]' && [ "${2%-*}" != "${2#*-}" ] ;;
+    NOTIFY_QUIET_WEEKENDS) case "$2" in true|false) return 0 ;; esac; return 1 ;;
     *) return 1 ;;
   esac
 }
 
 notify_flags_given() {
-  [ -n "$SMTP_HOST_OPT$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT$NOTIFY_REMIND_HOURS_OPT$NOTIFY_MONTHLY_REPORT_OPT" ]
+  [ -n "$SMTP_HOST_OPT$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT$NOTIFY_REMIND_HOURS_OPT$NOTIFY_MONTHLY_REPORT_OPT$NOTIFY_QUIET_HOURS_OPT$NOTIFY_QUIET_WEEKENDS_OPT" ]
 }
 
 # The SMTP password into SMTP_PW, never from the command line: a hidden prompt at a terminal, else
@@ -435,9 +450,10 @@ clear_notify() {
   for k in $NOTIFY_KEYS; do [ -z "$(env_get "$k")" ] || env_set "$k" ""; done
 }
 
-# write_notify HOST PORT SECURE USER PASSWORD FROM TO URL REMIND MONTHLY: the whole group at once. An
-# empty port, security mode, reminder period, or monthly report setting leaves the backend's default
-# (587, starttls, no reminders, no monthly report); an empty user drops the login.
+# write_notify HOST PORT SECURE USER PASSWORD FROM TO URL REMIND MONTHLY QUIET WEEKENDS: the whole group
+# at once. An empty port, security mode, reminder period, monthly report, or quiet hours setting leaves
+# the backend's default (587, starttls, no reminders, no monthly report, no quiet hours); an empty user
+# drops the login.
 write_notify() {
   env_set SMTP_HOST "$1"
   if [ -n "$2" ] || [ -n "$(env_get SMTP_PORT)" ]; then env_set SMTP_PORT "$2"; fi
@@ -449,6 +465,8 @@ write_notify() {
   env_set PUBLIC_URL "$8"
   if [ -n "$9" ] || [ -n "$(env_get NOTIFY_REMIND_HOURS)" ]; then env_set NOTIFY_REMIND_HOURS "$9"; fi
   if [ -n "${10}" ] || [ -n "$(env_get NOTIFY_MONTHLY_REPORT)" ]; then env_set NOTIFY_MONTHLY_REPORT "${10}"; fi
+  if [ -n "${11}" ] || [ -n "$(env_get NOTIFY_QUIET_HOURS)" ]; then env_set NOTIFY_QUIET_HOURS "${11}"; fi
+  if [ -n "${12}" ] || [ -n "$(env_get NOTIFY_QUIET_WEEKENDS)" ]; then env_set NOTIFY_QUIET_WEEKENDS "${12}"; fi
 }
 
 # "every 4 h", or "off" while NOTIFY_REMIND_HOURS is empty or 0.
@@ -462,6 +480,17 @@ remind_summary() {
   esac
 }
 
+# "18:00-07:00 and weekends", "18:00-07:00", "weekends", or "off": when warning emails wait.
+quiet_summary() {
+  local hours
+  hours=$(env_get NOTIFY_QUIET_HOURS)
+  if [ "$(env_get NOTIFY_QUIET_WEEKENDS)" = true ]; then
+    printf '%s' "${hours:+$hours and }weekends"
+  else
+    printf '%s' "${hours:-off}"
+  fi
+}
+
 notify_summary() {
   local host port secure monthly
   host=$(env_get SMTP_HOST)
@@ -471,16 +500,16 @@ notify_summary() {
   [ -n "$port" ] || { [ "$secure" = tls ] && port=465 || port=587; }
   monthly=off
   [ "$(env_get NOTIFY_MONTHLY_REPORT)" = true ] && monthly=on
-  printf '%s:%s (%s), from %s to %s, reminders %s, monthly report %s' "$host" "$port" "$secure" "$(env_get NOTIFY_FROM)" "$(env_get NOTIFY_TO)" "$(remind_summary)" "$monthly"
+  printf '%s:%s (%s), from %s to %s, reminders %s, monthly report %s, quiet hours %s' "$host" "$port" "$secure" "$(env_get NOTIFY_FROM)" "$(env_get NOTIFY_TO)" "$(remind_summary)" "$monthly" "$(quiet_summary)"
 }
 
 # --smtp-host and friends into .env, each checked first and nothing written unless all pass. A flag
 # not given keeps what .env has, so one setting can change on its own.
 apply_notify_flags() {
-  local host port secure user from to url remind monthly
+  local host port secure user from to url remind monthly quiet weekends
   notify_flags_given || return 0
   if [ "$SMTP_HOST_OPT" = off ]; then
-    [ -z "$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT$NOTIFY_REMIND_HOURS_OPT$NOTIFY_MONTHLY_REPORT_OPT" ] \
+    [ -z "$SMTP_PORT_OPT$SMTP_SECURE_OPT$SMTP_USER_OPT$NOTIFY_FROM_OPT$NOTIFY_TO_OPT$PUBLIC_URL_OPT$NOTIFY_REMIND_HOURS_OPT$NOTIFY_MONTHLY_REPORT_OPT$NOTIFY_QUIET_HOURS_OPT$NOTIFY_QUIET_WEEKENDS_OPT" ] \
       || die "--smtp-host off turns email notifications off; give no other --smtp-* or --notify-* flag with it"
     clear_notify; ok "email notifications off"; return 0
   fi
@@ -500,6 +529,17 @@ apply_notify_flags() {
     off) monthly=false ;;
     *) die "--notify-monthly-report: '$NOTIFY_MONTHLY_REPORT_OPT' is not on or off" ;;
   esac
+  case "$NOTIFY_QUIET_HOURS_OPT" in
+    '') quiet=$(env_get NOTIFY_QUIET_HOURS) ;;
+    off) quiet='' ;;
+    *) quiet=$NOTIFY_QUIET_HOURS_OPT ;;
+  esac
+  case "$NOTIFY_QUIET_WEEKENDS_OPT" in
+    '') weekends=$(env_get NOTIFY_QUIET_WEEKENDS) ;;
+    on) weekends=true ;;
+    off) weekends=false ;;
+    *) die "--notify-quiet-weekends: '$NOTIFY_QUIET_WEEKENDS_OPT' is not on or off" ;;
+  esac
   valid_notify SMTP_HOST "$host" || die "--smtp-host: '$host' is not a host name or IPv4 address"
   [ -z "$port" ] || valid_notify SMTP_PORT "$port" || die "--smtp-port: '$port' is not a port number"
   [ -z "$secure" ] || valid_notify SMTP_SECURE "$secure" || die "--smtp-secure: '$secure' is not starttls, tls, or none"
@@ -512,6 +552,8 @@ apply_notify_flags() {
   valid_notify PUBLIC_URL "$url" || die "--public-url: '$url' is not an http:// or https:// address"
   [ -z "$remind" ] || valid_notify NOTIFY_REMIND_HOURS "$remind" || die "--notify-remind-hours: '$remind' is not a whole number of hours from 0 (off) to 168"
   [ -z "$monthly" ] || valid_notify NOTIFY_MONTHLY_REPORT "$monthly" || die "NOTIFY_MONTHLY_REPORT in .env is '$monthly', not true or false: give --notify-monthly-report on or off"
+  [ -z "$quiet" ] || valid_notify NOTIFY_QUIET_HOURS "$quiet" || die "--notify-quiet-hours: '$quiet' is not two different 24-hour times like 18:00-07:00, or off"
+  [ -z "$weekends" ] || valid_notify NOTIFY_QUIET_WEEKENDS "$weekends" || die "NOTIFY_QUIET_WEEKENDS in .env is '$weekends', not true or false: give --notify-quiet-weekends on or off"
   SMTP_PW=""
   if [ -n "$SMTP_USER_OPT" ]; then
     read_smtp_password "$user" "$(env_get SMTP_PASSWORD)"
@@ -521,14 +563,14 @@ apply_notify_flags() {
     [ -n "$SMTP_PW" ] || die "SMTP user '$user' has no password: give --smtp-user and type it at the prompt, or with --yes send it as the first line of stdin"
   fi
   [ -z "$user" ] || valid_notify SMTP_PASSWORD "$SMTP_PW" || die "the SMTP password cannot hold a single quote (.env keeps it in single quotes, so Compose reads \$ and # literally)"
-  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url" "$remind" "$monthly"
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url" "$remind" "$monthly" "$quiet" "$weekends"
   SMTP_PW=""
   ok "email notifications: $(notify_summary)${user:+, login $user}"
 }
 
 # The same, asked at the keyboard, each answer checked as it is typed. Blank turns them off.
 prompt_notifications() {
-  local current value host port secure user from to url remind monthly=false login=n
+  local current value host port secure user from to url remind monthly=false quiet weekends=false login=n
   interactive || return 0
   current=$(env_get SMTP_HOST)
   say "  Incident emails go out through the district's SMTP relay (DEPLOYMENT.md, Email notifications)."
@@ -599,7 +641,17 @@ prompt_notifications() {
   if confirm "Email the recipients a report on the month just ended (hottest closets, incidents, Offline time) on the 1st of each month" "$([ "$current" = false ] && printf n || printf y)"; then
     monthly=true
   fi
-  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url" "$remind" "$monthly"
+  current=$(env_get NOTIFY_QUIET_HOURS)
+  while :; do
+    quiet=$(ask "Hold warning emails during quiet hours, HH:MM-HH:MM in TZ, and send them when they end (off: never; critical always goes at once)" "${current:-off}")
+    if [ "$quiet" = off ]; then quiet=''; break; fi
+    valid_notify NOTIFY_QUIET_HOURS "$quiet" && break
+    warn "'$quiet' is not two different 24-hour times like 18:00-07:00, or off"
+  done
+  if confirm "Hold warning emails all weekend too, until Monday" "$([ "$(env_get NOTIFY_QUIET_WEEKENDS)" = true ] && printf y || printf n)"; then
+    weekends=true
+  fi
+  write_notify "$host" "$port" "$secure" "$user" "$SMTP_PW" "$from" "$to" "$url" "$remind" "$monthly" "$quiet" "$weekends"
   SMTP_PW=""
   say "  Settings, Notifications, has a \"Send test email\" button once deployed."
 }
@@ -657,7 +709,7 @@ prompt_tunables() {
         valid_tunable "$k" "$value" && break
         warn "'$value' is not valid for $k"
       done
-      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = DB_BUFFER_POOL_SIZE ] || [ "$k" = NOTIFY_COALESCE_SECONDS ] || [ "$k" = NOTIFY_TO_ALL ]; } && [ -z "$value" ]; then continue; fi
+      if { [ "$k" = LEGACY_TIME_ZONE ] || [ "$k" = TZ ] || [ "$k" = DB_BUFFER_POOL_SIZE ] || [ "$k" = NOTIFY_COALESCE_SECONDS ] || [ "$k" = NOTIFY_TO_ALL ]; } && [ -z "$value" ]; then continue; fi
       env_set "$k" "$value"
     done
   fi
@@ -1094,6 +1146,7 @@ do_info() {
   [ -n "$(env_get DEVICE_TOKEN_PREVIOUS)" ] && say "  Previous      $(mask "$(env_get DEVICE_TOKEN_PREVIOUS)")   (still accepted: rotate-device-token --finish ends that)"
   say "  DB password   $(mask "$(env_get DB_PASSWORD)")"
   say "  DB root       $(mask "$(env_get DB_ROOT_PASSWORD)")"
+  say "  Time zone     $(v=$(env_get TZ); printf '%s' "${v:-UTC (TZ not set)}")"
   say "  Email         $(notify_summary)"
   # Masked whole: unlike the 64-hex secrets, a chosen password would give away its first and last four.
   if [ -n "$(env_get SMTP_USER)" ]; then

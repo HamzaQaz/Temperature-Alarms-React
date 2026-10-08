@@ -13,6 +13,11 @@
  * A held release and a monthly report are rows with no Incident, each sent as an email of its own,
  * never in an Incident digest; a report goes to NOTIFY_TO alone, and the pass queues the scheduled
  * one when it is due (monthlyReport.ts).
+ *
+ * During quiet hours (quietHours.ts) a warning the pass claims is held, not sent: its next try moves
+ * to when they end, and the first pass after sends what they held, one email per list. Critical,
+ * Offline, and Sensor fault go at once, and when one does, the warnings its incident has waiting go
+ * with it, marked sent, so the morning's email does not tell of it again.
  */
 import type { PoolConnection, RowDataPacket } from 'mysql2/promise';
 import type { ConditionLevel, ConditionName } from './conditions';
@@ -24,8 +29,9 @@ import { serverTimeZone } from './localDay';
 import { MailerError, type Mailer } from './mailer';
 import { queuedReportEmail, queueScheduledReport } from './monthlyReport';
 import { notificationEmail, type QueuedNotification } from './notificationEmail';
-import { byRecipients, DEFAULT_RETRY, givesUp, listKey, readyToSend, recipientsFor, retryDelayMs, type NotificationKind, type RetryPolicy } from './outbox';
+import { byRecipients, DEFAULT_RETRY, givesUp, heldByQuietHours, listKey, readyToSend, recipientsFor, retryDelayMs, type NotificationKind, type RetryPolicy } from './outbox';
 import { dropStaleReminders } from './outboxStore';
+import { quietUntil } from './quietHours';
 
 /** How often a pass runs by default: well inside the coalescing window, and cheap when nothing is due. */
 const DEFAULT_INTERVAL_MS = 5_000;
@@ -70,6 +76,12 @@ interface DueRow extends RowDataPacket {
   attempts: number;
   /** The month a `report` covers, YYYY-MM. */
   reportMonth: string | null;
+  /** Its Incident, its level when queued, and its Condition; null for a row about no Incident. */
+  incidentId: number | null;
+  level: ConditionLevel | null;
+  conditionName: ConditionName | null;
+  /** When quiet hours first let it go, if they held it. */
+  notBefore: Date | null;
 }
 
 interface QueuedRow extends RowDataPacket {
@@ -150,9 +162,48 @@ async function recordFailure(conn: PoolConnection, due: DueRow[], recipients: st
     const attempts = row.attempts + 1;
     await conn.query(
       'UPDATE notifications SET attempts = ?, last_attempt_at = ?, last_error = ?, next_attempt_at = ?, failed_at = ?, recipients = ? WHERE id = ?',
-      [attempts, at, error.message.slice(0, 1000), new Date(at.getTime() + retryDelayMs(attempts, retry)), givesUp(row.createdAt, at, retry) ? at : null, recipients, row.id],
+      [
+        attempts,
+        at,
+        error.message.slice(0, 1000),
+        new Date(at.getTime() + retryDelayMs(attempts, retry)),
+        givesUp(row.createdAt, at, retry, row.notBefore) ? at : null,
+        recipients,
+        row.id,
+      ],
     );
   }
+}
+
+/**
+ * Hold the warnings among `due` until quiet hours end, if `at` falls inside them: their next try
+ * moves to the end, and `not_before` keeps the first such end, which their day of retries counts
+ * from. Returns the rows left to send now.
+ */
+async function holdForQuietHours(conn: PoolConnection, due: DueRow[], at: Date, { quietHours }: NotificationsConfig, timeZone: string): Promise<DueRow[]> {
+  const held = due.filter((r) => heldByQuietHours({ kind: r.kind, level: r.level, condition: r.conditionName }));
+  if (held.length === 0) return due;
+  const until = quietUntil(at, quietHours, timeZone);
+  if (until === null) return due;
+  await conn.query('UPDATE notifications SET next_attempt_at = ?, not_before = COALESCE(not_before, ?) WHERE id IN (?)', [until, until, held.map((r) => r.id)]);
+  return due.filter((r) => !held.includes(r));
+}
+
+/**
+ * The warnings quiet hours hold for the incidents of a batch about to go, claimed so they can be
+ * marked sent with it: the batch's email tells of each incident as it stands, so the morning's
+ * would only repeat it. Locked rows (another pass's) are left.
+ */
+async function heldWithBatch(conn: PoolConnection, batch: DueRow[], at: Date): Promise<number[]> {
+  const incidents = [...new Set(batch.map((r) => r.incidentId).filter((id): id is number => id !== null))];
+  if (incidents.length === 0) return [];
+  const [rows] = await conn.query<(RowDataPacket & { id: number })[]>(
+    `SELECT id FROM notifications
+     WHERE incident_id IN (?) AND sent_at IS NULL AND failed_at IS NULL AND not_before IS NOT NULL AND next_attempt_at > ? AND id NOT IN (?)
+     FOR UPDATE SKIP LOCKED`,
+    [incidents, at, batch.map((r) => r.id)],
+  );
+  return rows.map((r) => r.id);
 }
 
 /** What one recipient list's turn came to: how many went, or the relay's refusal. Keyed by the list. */
@@ -176,17 +227,20 @@ async function sendNextList(
     await conn.query('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
     await conn.beginTransaction();
     const at = now();
+    // Only the notifications are locked: the incidents are read as they stand, so ingest never waits on a pass.
     const [due] = await conn.query<DueRow[]>(
-      `SELECT id, kind, created_at AS createdAt, attempts, report_month AS reportMonth FROM notifications
-       WHERE sent_at IS NULL AND failed_at IS NULL AND next_attempt_at <= ?
-       ORDER BY next_attempt_at, id LIMIT ? FOR UPDATE SKIP LOCKED`,
+      `SELECT n.id, n.kind, n.created_at AS createdAt, n.attempts, n.report_month AS reportMonth,
+              n.incident_id AS incidentId, n.level, i.condition_name AS conditionName, n.not_before AS notBefore
+       FROM notifications n LEFT JOIN incidents i ON i.id = n.incident_id
+       WHERE n.sent_at IS NULL AND n.failed_at IS NULL AND n.next_attempt_at <= ?
+       ORDER BY n.next_attempt_at, n.id LIMIT ? FOR UPDATE OF n SKIP LOCKED`,
       [at, BATCH_LIMIT],
     );
     // A reminder whose incident was acknowledged or ended since it was queued has nothing left to say,
     // nor has a hold whose release was withdrawn or replaced.
     const claimed = due.map((r) => r.id);
     const dropped = new Set([...(await dropStaleReminders(conn, claimed)), ...(await dropStaleHolds(conn, claimed))]);
-    const live = due.filter((r) => !dropped.has(r.id));
+    const live = await holdForQuietHours(conn, due.filter((r) => !dropped.has(r.id)), at, notifications, timeZone);
     const recipients = await recipientsOf(conn, live.map((r) => r.id), notifications);
     const defaults = recipientsFor([], notifications.to, notifications.toAll);
     const listOf = (r: DueRow) => recipients.get(r.id) ?? defaults;
@@ -210,6 +264,7 @@ async function sendNextList(
     }
     const list = listKey(batch.recipients);
     const ids = batch.due.map((r) => r.id);
+    const alongside = batch.hold === null && batch.report === null ? await heldWithBatch(conn, batch.due, at) : [];
     const settings = { publicUrl: notifications.publicUrl, timeZone };
     const email =
       batch.hold !== null
@@ -242,10 +297,10 @@ async function sendNextList(
       email.subject.slice(0, SUBJECT_MAX),
       sentAt,
       list,
-      ids,
+      [...ids, ...alongside],
     ]);
     await conn.commit();
-    return { list, sent: ids.length };
+    return { list, sent: ids.length + alongside.length };
   } catch (error) {
     await conn.rollback();
     throw error;

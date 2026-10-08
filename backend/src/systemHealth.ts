@@ -137,7 +137,7 @@ export async function systemHealth({ pool, now, storing, notificationsEnabled, d
   );
   const [backups] = await pool.query<BackupRow[]>('SELECT finished_at AS at, file, size_bytes AS sizeBytes FROM last_backup WHERE id = 1');
   const backup = backups[0];
-  const outbox = await outboxStatus(pool);
+  const outbox = await outboxStatus(pool, now);
   const release = await currentRelease(pool);
   const [devices] = await pool.query<DeviceRow[]>(`
     SELECT d.id, d.hostname, d.closet, d.firmware_version AS firmwareVersion, d.firmware_checked_at AS checkedAt,

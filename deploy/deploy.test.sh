@@ -105,7 +105,7 @@ printf '%s' "$out" | grep -q 'DB root' || fail "info: no DB root line: $out"
 
 # Email notifications (docs/adr/0008). Off after a plain install: no SMTP setting has a value, since
 # one set without SMTP_HOST stops api from starting. Compose passes every one to api, empty when unset.
-for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS NOTIFY_REMIND_HOURS NOTIFY_TO_ALL NOTIFY_MONTHLY_REPORT; do
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_COALESCE_SECONDS NOTIFY_REMIND_HOURS NOTIFY_TO_ALL NOTIFY_MONTHLY_REPORT NOTIFY_QUIET_HOURS NOTIFY_QUIET_WEEKENDS; do
   [ -z "$(renv $k)" ] || fail "install: $k has a value without --smtp-host"
   grep -qE "^      $k: \\\$\{$k:-\}\$" "$repo/compose.yaml" || fail "compose.yaml: api does not get $k (empty when unset)"
   grep -qE "^# $k=" "$repo/.env.example" || fail ".env.example: $k is not listed, commented"
@@ -121,6 +121,21 @@ out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL=true < /dev/null) || fa
 out=$(run_fake install --reconfigure --set NOTIFY_TO_ALL= < /dev/null) || fail "--set NOTIFY_TO_ALL=: exit $?: $out"
 [ -z "$(renv NOTIFY_TO_ALL)" ] || fail "--set NOTIFY_TO_ALL=: not emptied"
 
+# TZ, the api's zone (quiet hours, email times, the monthly report's months): a tunable, UTC unless set.
+grep -qE '^      TZ: \$\{TZ:-UTC\}$' "$repo/compose.yaml" || fail "compose.yaml: api does not get TZ (UTC when unset)"
+grep -qE '^# TZ=' "$repo/.env.example" || fail ".env.example: TZ is not listed, commented"
+printf '%s' "$(run_fake info)" | grep -q 'Time zone *UTC (TZ not set)' || fail "info: TZ not shown as unset"
+cp "$repo/.env" "$work/env.before"
+for bad in 'America/Chicago;id' '../etc/passwd' 'Central Time'; do
+  out=$(run_fake install --reconfigure --set "TZ=$bad" < /dev/null) && fail "--set TZ=$bad: exit 0"
+done
+cmp -s "$repo/.env" "$work/env.before" || fail "--set TZ refused: .env changed"
+out=$(run_fake install --reconfigure --set TZ=America/Chicago < /dev/null) || fail "--set TZ=America/Chicago: exit $?: $out"
+[ "$(renv TZ)" = America/Chicago ] || fail "--set TZ=America/Chicago: not written"
+printf '%s' "$(run_fake info)" | grep -q 'Time zone *America/Chicago' || fail "info: TZ not shown"
+out=$(run_fake install --reconfigure --set TZ= < /dev/null) || fail "--set TZ=: exit $?: $out"
+[ -z "$(renv TZ)" ] || fail "--set TZ=: not emptied"
+
 # The password is never an argument: --smtp-password is refused before anything is written.
 cp "$repo/.env" "$work/env.before"
 out=$(run_fake install --reconfigure --smtp-host relay.example.org --smtp-password hunter2 < /dev/null) && fail "--smtp-password: exit 0"
@@ -131,7 +146,7 @@ cmp -s "$repo/.env" "$work/env.before" || fail "--smtp-password: .env changed"
 out=$(run_fake install --reconfigure --smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org < /dev/null) && fail "no --public-url: exit 0"
 printf '%s' "$out" | grep -q -- '--public-url is required' || fail "no --public-url: no explanation: $out"
 ok_flags=(--smtp-host relay.example.org --notify-from alarms@example.org --notify-to techs@example.org --public-url https://alarms.example.org)
-for bad in "--smtp-port 70000" "--smtp-secure ssl" "--notify-to not-an-address" "--notify-from a@b.c,d@e.f" "--public-url ftp://alarms.example.org" "--smtp-host relay.example.org;id"   "--notify-remind-hours 169" "--notify-remind-hours 1.5" "--notify-remind-hours -4" "--notify-monthly-report yes" "--notify-monthly-report true"; do
+for bad in "--smtp-port 70000" "--smtp-secure ssl" "--notify-to not-an-address" "--notify-from a@b.c,d@e.f" "--public-url ftp://alarms.example.org" "--smtp-host relay.example.org;id"   "--notify-remind-hours 169" "--notify-remind-hours 1.5" "--notify-remind-hours -4" "--notify-monthly-report yes" "--notify-monthly-report true" "--notify-quiet-hours 18:00" "--notify-quiet-hours 18:00-18:00" "--notify-quiet-hours 6pm-7am" "--notify-quiet-hours 24:00-07:00" "--notify-quiet-weekends yes" "--notify-quiet-weekends true"; do
   # shellcheck disable=SC2086 # one flag and its value
   out=$(run_fake install --reconfigure "${ok_flags[@]}" $bad < /dev/null) && fail "$bad: exit 0"
   printf '%s' "$out" | grep -q -- "${bad%% *}" || fail "$bad: the flag is not named: $out"
@@ -144,7 +159,7 @@ cmp -s "$repo/.env" "$work/env.before" || fail "refused settings: .env changed"
 # takes it literally, $ and # included), and is on no docker command line and in no output.
 # shellcheck disable=SC2016 # a literal $, which Compose must not expand either
 pw='p@ss $HOME #1 \t\\x "q"'
-out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-port 465 --smtp-secure tls --smtp-user 'DISTRICT\svc-alarms' --notify-to 'techs@example.org, noc@example.org' --notify-remind-hours 4 --notify-monthly-report on) || fail "notify on: exit $?: $out"
+out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --smtp-port 465 --smtp-secure tls --smtp-user 'DISTRICT\svc-alarms' --notify-to 'techs@example.org, noc@example.org' --notify-remind-hours 4 --notify-monthly-report on --notify-quiet-hours 18:00-07:00 --notify-quiet-weekends on) || fail "notify on: exit $?: $out"
 [ "$(renv SMTP_HOST)" = relay.example.org ] || fail "notify on: SMTP_HOST is '$(renv SMTP_HOST)'"
 [ "$(renv SMTP_PORT)" = 465 ] && [ "$(renv SMTP_SECURE)" = tls ] || fail "notify on: port or security not written"
 [ "$(renv SMTP_USER)" = 'DISTRICT\svc-alarms' ] || fail "notify on: SMTP_USER is '$(renv SMTP_USER)'"
@@ -153,6 +168,7 @@ out=$(printf '%s\r\n' "$pw" | run_fake install --reconfigure "${ok_flags[@]}" --
 [ "$(renv PUBLIC_URL)" = https://alarms.example.org ] || fail "notify on: PUBLIC_URL is '$(renv PUBLIC_URL)'"
 [ "$(renv NOTIFY_REMIND_HOURS)" = 4 ] || fail "notify on: NOTIFY_REMIND_HOURS is '$(renv NOTIFY_REMIND_HOURS)'"
 [ "$(renv NOTIFY_MONTHLY_REPORT)" = true ] || fail "notify on: NOTIFY_MONTHLY_REPORT is '$(renv NOTIFY_MONTHLY_REPORT)'"
+[ "$(renv NOTIFY_QUIET_HOURS)" = 18:00-07:00 ] && [ "$(renv NOTIFY_QUIET_WEEKENDS)" = true ] || fail "notify on: quiet hours are '$(renv NOTIFY_QUIET_HOURS)', weekends '$(renv NOTIFY_QUIET_WEEKENDS)'"
 for k in ADMIN_TOKEN DEVICE_TOKEN DB_PASSWORD DB_ROOT_PASSWORD; do
   [ "$(renv $k)" = "$(grep -E "^$k=" "$work/env.before" | cut -d= -f2-)" ] || fail "notify on: $k changed"
 done
@@ -163,6 +179,7 @@ out=$(run_fake info)
 printf '%s' "$out" | grep -q 'relay.example.org:465 (tls)' || fail "info: no relay line: $out"
 printf '%s' "$out" | grep -q 'reminders every 4 h' || fail "info: reminders not shown: $out"
 printf '%s' "$out" | grep -q 'monthly report on' || fail "info: the monthly report not shown: $out"
+printf '%s' "$out" | grep -q 'quiet hours 18:00-07:00 and weekends' || fail "info: quiet hours not shown: $out"
 printf '%s' "$out" | grep -qF 'DISTRICT\svc-alarms / ********' || fail "info: no masked login line: $out"
 printf '%s' "$out" | grep -qF 'p@ss' && fail "info: the SMTP password (or its start) printed without --reveal"
 out=$(run_fake info --reveal)
@@ -177,6 +194,12 @@ printf '%s' "$(run_fake info)" | grep -q 'reminders off' || fail "info: reminder
 out=$(run_fake install --reconfigure --notify-monthly-report off < /dev/null) || fail "notify-monthly-report alone: exit $?: $out"
 [ "$(renv NOTIFY_MONTHLY_REPORT)" = false ] && [ "$(renv NOTIFY_REMIND_HOURS)" = 0 ] || fail "notify-monthly-report alone: not applied on its own"
 printf '%s' "$(run_fake info)" | grep -q 'monthly report off' || fail "info: the monthly report not shown as off"
+out=$(run_fake install --reconfigure --notify-quiet-weekends off < /dev/null) || fail "notify-quiet-weekends alone: exit $?: $out"
+[ "$(renv NOTIFY_QUIET_WEEKENDS)" = false ] && [ "$(renv NOTIFY_QUIET_HOURS)" = 18:00-07:00 ] || fail "notify-quiet-weekends alone: not applied on its own"
+printf '%s' "$(run_fake info)" | grep -q 'quiet hours 18:00-07:00$' || fail "info: quiet hours without weekends not shown"
+out=$(run_fake install --reconfigure --notify-quiet-hours off < /dev/null) || fail "notify-quiet-hours off: exit $?: $out"
+[ -z "$(renv NOTIFY_QUIET_HOURS)" ] && [ "$(renv NOTIFY_QUIET_WEEKENDS)" = false ] || fail "notify-quiet-hours off: not applied on its own"
+printf '%s' "$(run_fake info)" | grep -q 'quiet hours off' || fail "info: quiet hours not shown as off"
 out=$(run_fake install --reconfigure --smtp-user other-svc < /dev/null) || fail "smtp-user, empty stdin: exit $?: $out"
 [ "$(renv SMTP_USER)" = other-svc ] && [ "$(renv SMTP_PASSWORD)" = "'$pw'" ] || fail "smtp-user, empty stdin: password not kept"
 # Without --reconfigure an existing .env is left alone, as for --set.
@@ -185,7 +208,7 @@ out=$(run_fake install --smtp-host off < /dev/null) || fail "off without --recon
 
 # Off: every setting of the group is emptied, so none is left set without SMTP_HOST.
 out=$(run_fake install --reconfigure --smtp-host off < /dev/null) || fail "off: exit $?: $out"
-for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS NOTIFY_MONTHLY_REPORT; do
+for k in SMTP_HOST SMTP_PORT SMTP_SECURE SMTP_USER SMTP_PASSWORD NOTIFY_FROM NOTIFY_TO PUBLIC_URL NOTIFY_REMIND_HOURS NOTIFY_MONTHLY_REPORT NOTIFY_QUIET_HOURS NOTIFY_QUIET_WEEKENDS; do
   [ -z "$(renv $k)" ] || fail "off: $k still set"
 done
 out=$(run_fake install --reconfigure --smtp-host off --notify-to a@example.org < /dev/null) && fail "off with another flag: exit 0"
@@ -195,6 +218,9 @@ printf '%s' "$out" | grep -q 'email notifications are off here' || fail "--notif
 out=$(run_fake install --reconfigure --smtp-host off --notify-monthly-report on < /dev/null) && fail "off with --notify-monthly-report: exit 0"
 out=$(run_fake install --reconfigure --notify-monthly-report on < /dev/null) && fail "--notify-monthly-report with email off: exit 0"
 printf '%s' "$out" | grep -q 'email notifications are off here' || fail "--notify-monthly-report with email off: no explanation: $out"
+out=$(run_fake install --reconfigure --smtp-host off --notify-quiet-hours 18:00-07:00 < /dev/null) && fail "off with --notify-quiet-hours: exit 0"
+out=$(run_fake install --reconfigure --notify-quiet-weekends on < /dev/null) && fail "--notify-quiet-weekends with email off: exit 0"
+printf '%s' "$out" | grep -q 'email notifications are off here' || fail "--notify-quiet-weekends with email off: no explanation: $out"
 # A relay that needs no login, on a fresh .env: no user, no password.
 mv "$repo/.env" "$work/env.kept"
 out=$(run_fake install "${ok_flags[@]}" < /dev/null) || fail "fresh install with notify: exit $?: $out"

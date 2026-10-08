@@ -20,6 +20,7 @@ import { stagedRolloutSchema } from './0015-staged-rollout';
 import { deviceSensorSchema } from './0016-device-sensor';
 import { monthlyReportSchema } from './0017-monthly-report';
 import { systemHealthSchema } from './0018-system-health';
+import { quietHoursSchema } from './0019-quiet-hours';
 import { deviceNetworkSchema } from './0020-device-network';
 
 /** What a migration may consult and report to while it runs. */
@@ -57,6 +58,7 @@ export const migrations: Migration[] = [
   deviceSensorSchema,
   monthlyReportSchema,
   systemHealthSchema,
+  quietHoursSchema,
   deviceNetworkSchema,
 ];
 

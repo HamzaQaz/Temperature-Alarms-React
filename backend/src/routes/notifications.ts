@@ -10,6 +10,7 @@ import { MonotonicStore } from '../monotonicStore';
 import { queueMonthlyReport } from '../monthlyReport';
 import { listKey, recipientLists } from '../outbox';
 import { outboxStatus, type ListResult } from '../outboxStore';
+import { dailyWindowText } from '../quietHours';
 
 /** The email the Settings button sends: proof that the relay, the sender, and the recipients work. */
 export function testEmail({ smtp, publicUrl }: NotificationsConfig, sentAt: Date): Email {
@@ -42,9 +43,10 @@ interface CampusListRow extends RowDataPacket {
 
 /**
  * Email notifications (docs/adr/0008), all behind the Admin token. GET /api/notifications/status
- * says whether they are on, through which relay, to whom, whether the monthly report is, how the
- * last send went, and how many wait in the outbox or were given up on; and for each recipient list
- * (NOTIFY_TO, and each Campus's own), which Campuses email it and how its last try went.
+ * says whether they are on, through which relay, to whom, whether the monthly report is, when quiet
+ * hours are, how the last send went, and how many wait in the outbox (and how many of those quiet
+ * hours hold, until when) or were given up on; and for each recipient list (NOTIFY_TO, and each
+ * Campus's own), which Campuses email it and how its last try went.
  * POST /api/notifications/test sends a test email now, at most one a minute, and returns the relay's reply.
  * POST /api/notifications/report queues the report on last month in the outbox, at most one a
  * minute, and answers 202 with the month; the sender emails it to NOTIFY_TO within seconds.
@@ -63,7 +65,7 @@ export function notificationsRouter({ config, pool, mailer, now = () => new Date
 
   router.get('/status', adminOnly, async (_req, res, next) => {
     try {
-      const outbox = await outboxStatus(pool);
+      const outbox = await outboxStatus(pool, now());
       const [campuses] = await pool.query<CampusListRow[]>('SELECT shortcode, notify_to AS notifyTo FROM campuses ORDER BY name');
       const lists =
         notifications === undefined
@@ -85,9 +87,15 @@ export function notificationsRouter({ config, pool, mailer, now = () => new Date
         toAll: notifications?.toAll ?? false,
         lists,
         monthlyReport: notifications?.monthlyReport ?? false,
+        quietHours:
+          notifications === undefined
+            ? null
+            : { hours: notifications.quietHours.daily === null ? null : dailyWindowText(notifications.quietHours.daily), weekends: notifications.quietHours.weekends },
         lastSent: serialised(latest(outbox.lastSent, testSent)),
         lastFailure: serialised(latest(outbox.lastFailure, testFailure)),
         pending: outbox.pending,
+        held: outbox.held?.count ?? 0,
+        heldUntil: outbox.held?.until.toISOString() ?? null,
         failed: outbox.failed,
       });
     } catch (error) {
