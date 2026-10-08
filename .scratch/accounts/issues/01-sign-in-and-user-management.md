@@ -7,7 +7,7 @@ This reverses ADR 0003's "viewing the dashboard and history stays unauthenticate
 
 **Blocked by:** none
 
-**Status:** needs-triage
+**Status:** ready-for-agent
 
 **GitHub:** #38
 
@@ -24,9 +24,9 @@ This reverses ADR 0003's "viewing the dashboard and history stays unauthenticate
 - [ ] Tests at the HTTP seam: no session → 401 on every read route and the stream; a viewer → 403 on every change; the Admin token still works for changes; the forced first change; sign-in limit; disabled user and sign-out end the session (stream included); the last-admin rules; cookie flags. Frontend: the sign-in redirect and return; the Users tab's refusals. `e2e/walk.mjs` signs in
 - [ ] README, DEPLOYMENT.md, the new ADR, CONTEXT.md (User, Admin, Viewer)
 
-**Decisions to confirm (owner):**
-- Two roles, Admin and Viewer. Or only admins (everyone who signs in can change everything)?
-- Wall displays (a Dashboard on a TV in a closet office) now need someone to sign in, and stay signed in for at most 7 days. Is that acceptable, or should there be a read-only kiosk link?
-- `admin` / `admin` must be changed on first sign-in. Proposed because the site is on the internet and the pair is the first thing anyone tries; strike it if the owner wants it kept.
+**Decisions (owner, 2026-10-08):**
+- Two roles, Admin and Viewer.
+- No kiosk exception: wall displays sign in like everyone else (7 days at most).
+- `admin` / `admin` must be changed at first sign-in.
 
 ## Comments
