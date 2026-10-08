@@ -35,6 +35,24 @@ export function cleanReportsAfter(previous: CleanCount, report: { version: numbe
   return onTime && previous.version === report.version ? previous.cleanReports + 1 : 1;
 }
 
+/** What the Firmware tab shows of a Device that a report can change, before and after it. */
+export interface RolloutFacts {
+  version: number | null;
+  updateResult: string | null;
+  cleanReports: number;
+}
+
+/**
+ * Whether a report changes what the Firmware tab shows, so an open one is told to read it again
+ * (sse.ts, firmwareChanged): the version the board runs, or its last update check's result; or, for
+ * a Device the release is offered to, its clean Readings, up to the CLEAN_REPORTS_TO_WIDEN the tab
+ * counts to. The rest, the signal and uptime every Reading brings, waits for the tab's own re-read.
+ */
+export function reportMovesRollout(before: RolloutFacts, after: RolloutFacts, offered: boolean): boolean {
+  if (before.version !== after.version || before.updateResult !== after.updateResult) return true;
+  return offered && Math.min(before.cleanReports, CLEAN_REPORTS_TO_WIDEN) !== Math.min(after.cleanReports, CLEAN_REPORTS_TO_WIDEN);
+}
+
 /** True once a named Device runs `version` (or later) and has sent CLEAN_REPORTS_TO_WIDEN clean Readings on it. */
 export const readyFor = (version: number, { firmwareVersion, cleanReports }: { firmwareVersion: number | null; cleanReports: number }): boolean =>
   firmwareVersion !== null && firmwareVersion >= version && cleanReports >= CLEAN_REPORTS_TO_WIDEN;

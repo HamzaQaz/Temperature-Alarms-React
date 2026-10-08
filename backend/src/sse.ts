@@ -4,8 +4,8 @@
  * seen by every browser. A heartbeat comment keeps proxies from closing an idle stream;
  * reconnecting after a drop is the browser's EventSource doing what it does by default.
  * Every message is unnamed, its `data` a JSON object whose `type` says what it is: a `reading`,
- * a `fault` report, or an `incident`. A stopping server ends every stream, telling the browser to
- * come back in 2 s (shutdown.ts).
+ * a `fault` report, an `incident`, or `firmware`, a signal that firmware status can have changed.
+ * A stopping server ends every stream, telling the browser to come back in 2 s (shutdown.ts).
  *
  * The response carries only the headers SSE needs. CORS is the shared middleware's job.
  */
@@ -99,14 +99,31 @@ export interface IncidentEvent {
   incident: IncidentPayload;
 }
 
+/**
+ * What every open dashboard receives when firmware status can have changed (docs/adr/0007): the
+ * signal and nothing more. The status names WiFi networks and is the Admin's, while the stream is
+ * anyone's, so an open Firmware tab reads GET /api/firmware/status again with the Admin token.
+ */
+export interface FirmwareEvent {
+  type: 'firmware';
+}
+
 /** Every message the stream carries, told apart by `type`. */
-export type StreamEvent = ReadingEvent | FaultEvent | IncidentEvent;
+export type StreamEvent = ReadingEvent | FaultEvent | IncidentEvent | FirmwareEvent;
 
 export interface Broadcaster {
   /** Express handler for GET /api/dashboard/stream. */
   readonly handler: RequestHandler;
   /** Send one event to every connected client. */
   broadcast(event: StreamEvent): void;
+  /**
+   * Firmware status can have changed: a release published, widened, withdrawn or held, a board's
+   * update check answered, a report moving where a board is on the way to it. One `firmware` event
+   * goes out `firmwareEveryMs` after the first such change and says every change made until then,
+   * so a fleet's Readings never flood the stream. Nothing while no one is listening.
+   */
+  firmwareChanged(): void;
+  readonly firmwareEveryMs: number;
   /** How many dashboards are connected right now. */
   readonly clientCount: number;
   readonly heartbeatMs: number;
@@ -121,9 +138,13 @@ export interface BroadcasterOptions {
   maxStreamsPerAddress?: number;
   /** Streams the server holds open in all; past it, 503. */
   maxStreams?: number;
+  /** The shortest time between two `firmware` events. */
+  firmwareEveryMs?: number;
 }
 
 const DEFAULT_HEARTBEAT_MS = 25_000;
+/** At most one `firmware` event a second: each costs every open Firmware tab a request. */
+const DEFAULT_FIRMWARE_EVERY_MS = 1_000;
 /**
  * A browser holds at most six HTTP/1.1 connections to one origin, so one technician's tabs fit with
  * room to spare. Per address, room for a wall of screens behind one NAT, or every browser behind a
@@ -140,11 +161,14 @@ export function createBroadcaster({
   heartbeatMs = DEFAULT_HEARTBEAT_MS,
   maxStreamsPerAddress = DEFAULT_MAX_STREAMS_PER_ADDRESS,
   maxStreams = DEFAULT_MAX_STREAMS,
+  firmwareEveryMs = DEFAULT_FIRMWARE_EVERY_MS,
 }: BroadcasterOptions = {}): Broadcaster {
   const clients = new Set<Response>();
   /** Open streams per address, as app.ts's trust proxy setting resolves it. */
   const perAddress = new Map<string, number>();
   let heartbeat: NodeJS.Timeout | undefined;
+  /** Set while a `firmware` event is due: it says every change made before it goes. */
+  let firmwareDue: NodeJS.Timeout | undefined;
   let closed = false;
 
   // The timer runs only while someone is listening, so an idle server holds no timer at all.
@@ -200,15 +224,27 @@ export function createBroadcaster({
     });
   };
 
+  const broadcast = (event: StreamEvent) => {
+    const frame = `data: ${JSON.stringify(event)}\n\n`;
+    for (const res of clients) res.write(frame);
+  };
+
   return {
     handler,
     heartbeatMs,
+    firmwareEveryMs,
     get clientCount() {
       return clients.size;
     },
-    broadcast(event) {
-      const frame = `data: ${JSON.stringify(event)}\n\n`;
-      for (const res of clients) res.write(frame);
+    broadcast,
+    firmwareChanged() {
+      if (closed || clients.size === 0 || firmwareDue !== undefined) return;
+      // At the end of the window, not its start, so a burst is one event, sent once all of it has committed.
+      firmwareDue = setTimeout(() => {
+        firmwareDue = undefined;
+        broadcast({ type: 'firmware' });
+      }, firmwareEveryMs);
+      firmwareDue.unref();
     },
     close() {
       closed = true;
@@ -217,6 +253,8 @@ export function createBroadcaster({
       clients.clear();
       if (heartbeat !== undefined) clearInterval(heartbeat);
       heartbeat = undefined;
+      clearTimeout(firmwareDue);
+      firmwareDue = undefined;
     },
   };
 }

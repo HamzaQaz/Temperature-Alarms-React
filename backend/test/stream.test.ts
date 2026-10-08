@@ -112,21 +112,28 @@ describe('GET /api/dashboard/stream', () => {
     const stream = await listen();
     await stream.next();
     const add = async (body: Record<string, unknown>) => (await client.readings.add({ device: 'ESP_A1B2C3', ...body })).arrayBuffer();
+    // The first says a version the server did not know, so a `firmware` event follows it a second later (firmwareStream.test.ts).
+    const next = async <T extends { type: string }>(): Promise<T> => {
+      for (;;) {
+        const message = await stream.nextMessage<T>();
+        if (message.type !== 'firmware') return message;
+      }
+    };
 
     await add({ temp: 72, humidity: 40, fw: 7, ssid: 'CISD-MAC', network: 2 });
-    const reading = await stream.nextMessage<ReadingEvent>();
+    const reading = await next<ReadingEvent>();
     assert.equal(reading.onFallbackNetwork, true);
     assert.ok(!JSON.stringify(reading).includes('CISD-MAC'), 'the name stays behind the Admin token');
 
     await add({ fault: 'sensor', fw: 7, ssid: 'CISD-MAC', network: 2 });
-    assert.equal((await stream.nextMessage<FaultEvent>()).onFallbackNetwork, true);
+    assert.equal((await next<FaultEvent>()).onFallbackNetwork, true);
 
     // A board that says nothing about itself (firmware 1 or 2) leaves what the server knows as it was.
     await add({ temp: 72, humidity: 40 });
-    assert.equal((await stream.nextMessage<ReadingEvent>()).onFallbackNetwork, true);
+    assert.equal((await next<ReadingEvent>()).onFallbackNetwork, true);
 
     await add({ temp: 72, humidity: 40, fw: 7, ssid: 'closet-net', network: 1 });
-    assert.equal((await stream.nextMessage<ReadingEvent>()).onFallbackNetwork, false);
+    assert.equal((await next<ReadingEvent>()).onFallbackNetwork, false);
   });
 
   test('every subscriber receives the same Reading from the one client set', async () => {
