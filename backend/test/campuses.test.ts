@@ -93,6 +93,68 @@ describe('/api/campuses', () => {
     assert.equal((await listed()).length, 1);
   });
 
+  describe('recipients per Campus (docs/adr/0008)', () => {
+    interface Recipients {
+      id: number;
+      notifyTo: string[];
+    }
+    const recipients = async () => json<Recipients[]>(await fetch(url('/recipients'), asAdmin()));
+    const setRecipients = (id: number, notifyTo: unknown, init: RequestInit = asAdmin()) =>
+      fetch(url(`/${id}`), { ...init, method: 'PATCH', body: JSON.stringify({ notifyTo }) });
+
+    test('a campus may be added with its own list, read back only with the Admin token', async () => {
+      const response = await addCampus({ name: 'Central High School', shortcode: 'CHS', notifyTo: ' chs-techs@district.example, ,lead@district.example ' });
+      assert.equal(response.status, 201);
+      const { id } = await json<Campus>(response);
+      const other = await json<Campus>(await addCampus({ name: 'Maple High School', shortcode: 'MHS' }));
+      assert.deepEqual(await recipients(), [
+        { id, notifyTo: ['chs-techs@district.example', 'lead@district.example'] },
+        { id: other.id, notifyTo: [] },
+      ]);
+      assert.deepEqual(await listed(), [
+        { id, name: 'Central High School', shortcode: 'CHS' },
+        { id: other.id, name: 'Maple High School', shortcode: 'MHS' },
+      ], 'the public list carries no addresses');
+      assert.equal((await fetch(url('/recipients'))).status, 401);
+    });
+
+    test('a list is replaced by PATCH, as a comma-separated string or an array, and emptied to fall back on NOTIFY_TO', async () => {
+      const { id } = await client.campuses.create();
+      let response = await setRecipients(id, 'chs-techs@district.example');
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { id, name: 'Central High School', shortcode: 'CHS', notifyTo: ['chs-techs@district.example'] });
+      response = await setRecipients(id, ['a@district.example', ' b@district.example ']);
+      assert.deepEqual(await response.json(), { id, name: 'Central High School', shortcode: 'CHS', notifyTo: ['a@district.example', 'b@district.example'] });
+      response = await setRecipients(id, '');
+      assert.deepEqual(await response.json(), { id, name: 'Central High School', shortcode: 'CHS', notifyTo: [] });
+      assert.deepEqual(await recipients(), [{ id, notifyTo: [] }]);
+    });
+
+    test('refuses anything that is not a bare address, as NOTIFY_TO does, and a list too long to store', async () => {
+      const { id } = await client.campuses.create();
+      for (const notifyTo of ['techs@district.example, not-an-address', 'Techs <techs@district.example>', 'a@b', 42, [1], { to: 'a@district.example' }]) {
+        const response = await setRecipients(id, notifyTo);
+        assert.equal(response.status, 422, JSON.stringify(notifyTo));
+        assert.equal(typeof (await errorOf(response)), 'string');
+      }
+      assert.match(await errorOf(await setRecipients(id, 'techs@district.example, not-an-address')), /not an address: "not-an-address"/);
+      assert.equal((await fetch(url(`/${id}`), { ...asAdmin(), method: 'PATCH', body: '{}' })).status, 422, 'no list at all is not taken as an empty one');
+      const long = Array.from({ length: 60 }, (_, i) => `technician-${i}@district.example`).join(', ');
+      assert.match(await errorOf(await setRecipients(id, long)), /1000 characters/);
+      const added = await addCampus({ name: 'Maple High School', shortcode: 'MHS', notifyTo: 'nope' });
+      assert.equal(added.status, 422);
+      assert.deepEqual(await recipients(), [{ id, notifyTo: [] }], 'nothing stored, and no campus added');
+    });
+
+    test('needs the Admin token, and answers 404 for an unknown campus', async () => {
+      const { id } = await client.campuses.create();
+      assert.equal((await setRecipients(id, 'a@district.example', { headers: { 'Content-Type': 'application/json' } })).status, 401);
+      assert.equal((await setRecipients(id + 1, 'a@district.example')).status, 404);
+      assert.equal((await setRecipients(0, 'a@district.example')).status, 404);
+      assert.deepEqual(await recipients(), [{ id, notifyTo: [] }]);
+    });
+  });
+
   describe('DELETE /api/campuses/:id', () => {
     const createId = async () => (await json<Campus>(await addCampus({ name: 'Central High School', shortcode: 'CHS' }))).id;
 

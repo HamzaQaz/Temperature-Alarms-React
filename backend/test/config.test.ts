@@ -151,6 +151,7 @@ describe('loadConfig: email notifications', () => {
       publicUrl: 'https://alarms.example.test',
       coalesceSeconds: 60,
       remindHours: 0,
+      toAll: false,
     });
   });
 
@@ -165,6 +166,7 @@ describe('loadConfig: email notifications', () => {
       PUBLIC_URL: 'http://10.0.0.5:8080/',
       NOTIFY_COALESCE_SECONDS: '0',
       NOTIFY_REMIND_HOURS: '4',
+      NOTIFY_TO_ALL: 'true',
     }).notifications;
     assert.deepEqual(notifications, {
       smtp: { host: 'relay.example.test', port: 2525, secure: 'none', auth: { user: 'svc-alarms', password: 'smtp-secret' } },
@@ -173,6 +175,7 @@ describe('loadConfig: email notifications', () => {
       publicUrl: 'http://10.0.0.5:8080',
       coalesceSeconds: 0,
       remindHours: 4,
+      toAll: true,
     });
   });
 
@@ -182,6 +185,14 @@ describe('loadConfig: email notifications', () => {
     assert.equal(loadConfig({ ...smtp, NOTIFY_REMIND_HOURS: '168' }).notifications?.remindHours, 168);
     // Like the window, it may sit in a template while email is off: only SMTP_HOST turns anything on.
     assert.equal(loadConfig({ ...complete, NOTIFY_REMIND_HOURS: '4' }).notifications, undefined);
+  });
+
+  test('NOTIFY_TO_ALL keeps NOTIFY_TO on every email when true, in any case; empty or false is off', () => {
+    assert.equal(loadConfig({ ...smtp, NOTIFY_TO_ALL: 'TRUE' }).notifications?.toAll, true);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_TO_ALL: 'false' }).notifications?.toAll, false);
+    assert.equal(loadConfig({ ...smtp, NOTIFY_TO_ALL: '' }).notifications?.toAll, false);
+    // Like the window, it may sit in a template while email is off.
+    assert.equal(loadConfig({ ...complete, NOTIFY_TO_ALL: 'true' }).notifications, undefined);
   });
 
   test('implicit TLS defaults to port 465', () => {
@@ -224,6 +235,7 @@ describe('loadConfig: email notifications', () => {
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '-1' }, /NOTIFY_REMIND_HOURS/);
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '1.5' }, /NOTIFY_REMIND_HOURS/);
     refuses({ ...smtp, NOTIFY_REMIND_HOURS: '169' }, /NOTIFY_REMIND_HOURS.*168/);
+    refuses({ ...smtp, NOTIFY_TO_ALL: 'yes' }, /NOTIFY_TO_ALL.*true or false/);
   });
 
   test('never prints the SMTP password', () => {

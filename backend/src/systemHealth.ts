@@ -183,7 +183,10 @@ export async function systemHealth({ pool, now, storing, notificationsEnabled, d
     notifications: {
       status: !notificationsEnabled ? 'off' : failingNow ? 'attention' : 'ok',
       enabled: notificationsEnabled,
-      ...outbox,
+      lastSent: outbox.lastSent,
+      lastFailure: outbox.lastFailure,
+      pending: outbox.pending,
+      failed: outbox.failed,
     },
     firmware: {
       status: behind.length > 0 ? 'attention' : 'ok',

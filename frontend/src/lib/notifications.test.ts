@@ -1,14 +1,33 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { notificationsSummary, testEmailSent } from './notifications.ts';
-import type { NotificationStatus } from '../types.ts';
+import type { NotificationStatus, RecipientList } from '../types.ts';
 
-const off: NotificationStatus = { enabled: false, relay: null, from: null, recipients: [], lastSent: null, lastFailure: null, pending: 0, failed: 0 };
+const off: NotificationStatus = {
+  enabled: false,
+  relay: null,
+  from: null,
+  recipients: [],
+  toAll: false,
+  lists: [],
+  lastSent: null,
+  lastFailure: null,
+  pending: 0,
+  failed: 0,
+};
+const defaultList: RecipientList = {
+  recipients: ['oncall@district.example', 'techs@district.example'],
+  campuses: ['CHS', 'MHS'],
+  isDefault: true,
+  lastResult: null,
+};
 const on: NotificationStatus = {
   enabled: true,
   relay: { host: 'relay.district.example', port: 587, secure: 'starttls' },
   from: 'alarms@district.example',
   recipients: ['techs@district.example', 'oncall@district.example'],
+  toAll: false,
+  lists: [defaultList],
   lastSent: null,
   lastFailure: null,
   pending: 0,
@@ -21,30 +40,53 @@ describe('notificationsSummary', () => {
     const summary = notificationsSummary(off, day);
     assert.equal(summary.state, 'Off.');
     assert.match(summary.detail, /^Set SMTP_HOST, NOTIFY_FROM, NOTIFY_TO, and PUBLIC_URL in the server's \.env/);
-    assert.equal(summary.lastSent, null);
-    assert.equal(summary.lastFailure, null);
+    assert.deepEqual(summary.lists, []);
   });
 
-  it('names the relay, its security, the sender, and every recipient', () => {
+  it('names the relay, its security, the sender, and how a Campus finds its recipients', () => {
     const summary = notificationsSummary(on, day);
     assert.equal(summary.state, 'On, through relay.district.example:587 (STARTTLS), from alarms@district.example.');
-    assert.equal(summary.detail, 'Sent to techs@district.example, oncall@district.example.');
-    assert.equal(summary.lastSent, null);
-    assert.equal(summary.lastFailure, null);
+    assert.equal(summary.detail, 'Each Campus emails its own recipients, set under Campuses, or the default ones when it has none.');
     assert.match(notificationsSummary({ ...on, relay: { host: 'relay', port: 25, secure: 'none' } }, day).state, /\(no encryption\)/);
+    assert.match(notificationsSummary({ ...on, toAll: true }, day).detail, / The default recipients also get every email \(NOTIFY_TO_ALL\)\.$/);
   });
 
-  it('gives the last send and the last failure with their times', () => {
+  it('gives each list, who is on it, the Campuses on it, and its last result', () => {
     const summary = notificationsSummary(
       {
         ...on,
-        lastSent: { at: '2026-10-06T14:00:00.000Z', subject: '[Temperature Alarms] Test email' },
-        lastFailure: { at: '2026-10-05T09:00:00.000Z', error: 'Invalid login: 535 Authentication failed' },
+        lists: [
+          { ...defaultList, lastResult: { at: '2026-10-06T14:00:00.000Z', sent: true, subject: '[Temperature Alarms] Test email' } },
+          {
+            recipients: ['chs-techs@district.example'],
+            campuses: ['CHS', 'NHS'],
+            isDefault: false,
+            lastResult: { at: '2026-10-05T09:00:00.000Z', sent: false, error: 'Invalid login: 535 Authentication failed' },
+          },
+          { recipients: ['mhs-techs@district.example'], campuses: ['MHS'], isDefault: false, lastResult: null },
+        ],
       },
       day,
     );
-    assert.equal(summary.lastSent, 'Last sent 2026-10-06: [Temperature Alarms] Test email.');
-    assert.equal(summary.lastFailure, 'Last failure 2026-10-05: Invalid login: 535 Authentication failed');
+    assert.deepEqual(summary.lists, [
+      {
+        recipients: 'oncall@district.example, techs@district.example',
+        campuses: 'Default recipients (NOTIFY_TO), for CHS, MHS and the test email.',
+        lastResult: 'Last sent 2026-10-06: [Temperature Alarms] Test email.',
+        failed: false,
+      },
+      {
+        recipients: 'chs-techs@district.example',
+        campuses: 'For CHS, NHS.',
+        lastResult: 'Last failure 2026-10-05: Invalid login: 535 Authentication failed',
+        failed: true,
+      },
+      { recipients: 'mhs-techs@district.example', campuses: 'For MHS.', lastResult: 'Nothing sent in the last week.', failed: false },
+    ]);
+    assert.equal(
+      notificationsSummary({ ...on, lists: [{ ...defaultList, campuses: [] }] }, day).lists[0].campuses,
+      'Default recipients (NOTIFY_TO), for no Campus at present and the test email.',
+    );
   });
 
   it('counts what waits in the outbox and what was given up on, saying nothing when both are none', () => {
