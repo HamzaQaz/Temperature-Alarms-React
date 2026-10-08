@@ -7,6 +7,15 @@
 #define WIFI_SSID "your-network"
 #define WIFI_PASSWORD "your-password"
 
+// A second network to fall back to, or "" for none. A board that cannot join the first tries this
+// one, the two in turn, 30 seconds each, until one joins, and stays on whichever joined until it
+// drops. The password works as the first's: empty for an open network. Both must reach SERVER_URL.
+// A board on this one says so with every report: a note on its Dashboard card, never a Condition
+// or an email. To move boards to a new network over the air, name the new one here, then publish a
+// later build that names it first (README, "The fallback network").
+#define WIFI_SSID_2 ""
+#define WIFI_PASSWORD_2 ""
+
 // Where the backend is served, without a trailing slash. Readings are posted to
 // SERVER_URL/api/readings, and the board checks /api/firmware for updates. Production boards:
 // https://YOUR_DOMAIN, the name the dashboard is served at. Its certificate must chain to a Let's

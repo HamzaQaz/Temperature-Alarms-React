@@ -230,6 +230,7 @@ describe('upgrading a production database', () => {
       '0016-device-sensor',
       '0017-monthly-report',
       '0018-system-health',
+      '0020-device-network',
     ]);
   });
 });

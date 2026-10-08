@@ -1,10 +1,23 @@
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import type { Pool } from 'mysql2/promise';
+import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { createTestPool, resetDatabase } from './helpers/database';
-import { startServer, type RunningServer } from './helpers/server';
+import { startServer, testConfig, type RunningServer } from './helpers/server';
 import { api, asAdmin, json, type History } from './helpers/api';
+import type { NotificationsConfig } from '../src/config';
 import { publishFirmware, withdrawFirmware } from '../src/firmwareStore';
+
+/** Email on, so a test can show nothing is queued (nothing is sent: the outbox is not drained here). */
+const NOTIFY: NotificationsConfig = {
+  smtp: { host: '127.0.0.1', port: 2525, secure: 'none', auth: undefined },
+  from: 'alarms@district.example',
+  to: ['techs@district.example'],
+  toAll: false,
+  publicUrl: 'https://alarms.district.example',
+  coalesceSeconds: 0,
+  remindHours: 0,
+  monthlyReport: false,
+};
 
 /** A signed-looking image (firmware.test.ts has the format). */
 function image(version: number): Buffer {
@@ -24,6 +37,8 @@ interface StatusDevice {
     resetReason: string | null;
     updateResult: string | null;
     sensor: string | null;
+    ssid: string | null;
+    fallback: boolean | null;
     at: string;
   } | null;
 }
@@ -56,6 +71,7 @@ describe('what a board reports about itself with each Reading', () => {
   const statusOf = async (hostname: string) =>
     (await json<{ devices: StatusDevice[] }>(await fetch(`${server.url}/api/firmware/status`, asAdmin()))).devices.find((d) => d.hostname === hostname);
   const historySensor = async () => (await json<History>(await client.devices.history(deviceId))).device.sensor;
+  const cardOf = async (hostname: string) => (await client.dashboard.get()).devices.find((d) => d.hostname === hostname);
 
   test('version, signal, uptime, free memory, last restart and last update are kept and shown to the Admin', async () => {
     const response = await post({ fw: 3, rssi: -61, uptime: 3600, heap: 21450, reset: 'Software/System restart', update: 'none newer' });
@@ -69,6 +85,8 @@ describe('what a board reports about itself with each Reading', () => {
       resetReason: 'Software/System restart',
       updateResult: 'none newer',
       sensor: null,
+      ssid: null,
+      fallback: null,
       at: undefined,
     });
     assert.equal((await statusOf('ESP_D4E5F6'))?.info, null);
@@ -122,6 +140,81 @@ describe('what a board reports about itself with each Reading', () => {
     // Alone it is still a self-report: the board is newer firmware, saying nothing else usable.
     await post({ sensor: 'DHT11' });
     assert.equal((await statusOf('ESP_A1B2C3'))?.info?.sensor, 'DHT11');
+  });
+
+  test('the network a board is on (firmware 7) is shown to the Admin, and its fallback network as a note on its card', async () => {
+    assert.equal((await cardOf('ESP_A1B2C3'))?.onFallbackNetwork, false, 'not said yet');
+    assert.equal((await post({ fw: 7, ssid: 'closet-net', network: 1 })).status, 201);
+    assert.deepEqual(await statusOf('ESP_A1B2C3').then((d) => [d?.info?.ssid, d?.info?.fallback]), ['closet-net', false]);
+    assert.equal((await cardOf('ESP_A1B2C3'))?.onFallbackNetwork, false);
+
+    assert.equal((await post({ fw: 7, ssid: 'CISD-MAC', network: 2 })).status, 201);
+    assert.deepEqual(await statusOf('ESP_A1B2C3').then((d) => [d?.info?.ssid, d?.info?.fallback]), ['CISD-MAC', true]);
+    assert.equal((await cardOf('ESP_A1B2C3'))?.onFallbackNetwork, true);
+    // The card says only that it is on its fallback: the network's name stays behind the Admin token.
+    assert.ok(!JSON.stringify(await client.dashboard.get()).includes('CISD-MAC'));
+    assert.equal((await cardOf('ESP_D4E5F6'))?.onFallbackNetwork, false);
+  });
+
+  test('a fault report names the network too', async () => {
+    const response = await client.readings.add({ device: 'ESP_A1B2C3', fault: 'sensor', fw: 7, ssid: 'CISD-MAC', network: 2 });
+    assert.equal(response.status, 202);
+    await response.arrayBuffer();
+    assert.deepEqual(await statusOf('ESP_A1B2C3').then((d) => [d?.info?.ssid, d?.info?.fallback]), ['CISD-MAC', true]);
+    assert.equal((await cardOf('ESP_A1B2C3'))?.onFallbackNetwork, true);
+  });
+
+  test('the network is what the board last said: older firmware flashed back clears it, and the note with it', async () => {
+    await post({ fw: 7, ssid: 'CISD-MAC', network: 2 });
+    await post({ fw: 6, sensor: 'DHT11' });
+    assert.deepEqual(await statusOf('ESP_A1B2C3').then((d) => [d?.info?.ssid, d?.info?.fallback]), [null, null]);
+    assert.equal((await cardOf('ESP_A1B2C3'))?.onFallbackNetwork, false);
+  });
+
+  test('a network number other than 1 or 2 is dropped, never refused; the name is cut to printable ASCII and 32 characters', async () => {
+    for (const network of [0, 3, '2', 1.5, null]) {
+      const response = await post({ fw: 7, ssid: 'CISD-MAC', network });
+      assert.equal(response.status, 201, String(network));
+      assert.deepEqual(await statusOf('ESP_A1B2C3').then((d) => [d?.info?.ssid, d?.info?.fallback]), ['CISD-MAC', null], String(network));
+      assert.equal((await cardOf('ESP_A1B2C3'))?.onFallbackNetwork, false, String(network));
+    }
+    await post({ fw: 7, ssid: 'Library\r\nreport: 201 created' + 'x'.repeat(40), network: 2 });
+    const ssid = (await statusOf('ESP_A1B2C3'))?.info?.ssid;
+    assert.ok(ssid !== null && ssid !== undefined && ssid.length <= 32 && !/[\r\n]/.test(ssid), ssid ?? '');
+    await post({ fw: 7, ssid: 42, network: 2 });
+    assert.deepEqual(await statusOf('ESP_A1B2C3').then((d) => [d?.info?.ssid, d?.info?.fallback]), [null, true]);
+    // Alone it is still a self-report.
+    await post({ network: 2 });
+    assert.equal((await statusOf('ESP_A1B2C3'))?.info?.fallback, true);
+  });
+
+  test('a board on its fallback network is a note, never a Condition, an incident or an email (owner decision)', async () => {
+    const notifying = await startServer(pool, testConfig({ notifications: NOTIFY }));
+    try {
+      for (let i = 0; i < 4; i++) {
+        const response = await api(notifying).readings.add({ device: 'ESP_A1B2C3', temp: 71, humidity: 40, fw: 7, ssid: 'CISD-MAC', network: 2 });
+        assert.equal(response.status, 201);
+        await response.arrayBuffer();
+      }
+      const card = (await api(notifying).dashboard.get()).devices.find((d) => d.hostname === 'ESP_A1B2C3');
+      assert.equal(card?.onFallbackNetwork, true);
+      assert.deepEqual(card?.conditions, []);
+      assert.deepEqual(card?.openIncidents, []);
+      const counts = async () => {
+        const [[incidents], [emails]] = await Promise.all([
+          pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM incidents'),
+          pool.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM notifications'),
+        ]);
+        return [incidents[0].n, emails[0].n];
+      };
+      assert.deepEqual(await counts(), [0, 0]);
+      // The same server does open and queue one for a Condition, so the zeros above are not for want of email.
+      const hot = await api(notifying).readings.add({ device: 'ESP_A1B2C3', temp: 95, humidity: 40, fw: 7, ssid: 'CISD-MAC', network: 2 });
+      await hot.arrayBuffer();
+      assert.deepEqual(await counts(), [1, 1]);
+    } finally {
+      await notifying.close();
+    }
   });
 
   test('the Reading answer says when a newer build is waiting for this board, so it checks at once', async () => {

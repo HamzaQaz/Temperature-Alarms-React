@@ -12,7 +12,7 @@ import type { ReadingPayload } from '../sse';
 import { MonotonicStore } from '../monotonicStore';
 import { LATEST_READING_ID, lastReportAt, latestAllowed } from '../latestReading';
 import { notePending } from '../pendingDevices';
-import { parseDeviceInfo } from '../deviceInfo';
+import { onFallbackNetwork, parseDeviceInfo } from '../deviceInfo';
 import { cachedRelease, holdOnReport, offers } from '../firmwareStore';
 import { cleanReportsAfter } from '../rollout';
 import type { DeviceSightings } from '../deviceSightings';
@@ -38,6 +38,7 @@ interface DeviceIdRow extends RowDataPacket {
   firmwareVersion: number | null;
   cleanReports: number;
   sentAt: Date | null;
+  wifiNetwork: number | null;
 }
 
 interface ReadingInput {
@@ -159,7 +160,7 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         await conn.beginTransaction();
         const [devices] = await conn.query<DeviceIdRow[]>(
           `SELECT id, hostname, last_report_at AS lastReportAt, sensor_faults AS sensorFaults, firmware_version AS firmwareVersion,
-                  firmware_clean_reports AS cleanReports, firmware_sent_at AS sentAt
+                  firmware_clean_reports AS cleanReports, firmware_sent_at AS sentAt, wifi_network AS wifiNetwork
            FROM devices WHERE hostname = ? FOR UPDATE`,
           [hostname],
         );
@@ -200,14 +201,17 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
           device.id,
         ]);
         // What the board says about itself (firmware 3 and later), kept beside the Device for the Firmware
-        // tab, and its sensor (firmware 6) for History too.
+        // tab, its sensor (firmware 6) for History too, and its network (firmware 7) for the card's note.
         // A signal under WEAK_SIGNAL_DBM keeps when it fell there, for Settings, System; a better one, or none, clears it.
         if (info !== null) {
           await conn.query(
             `UPDATE devices SET firmware_version = COALESCE(?, firmware_version), rssi = ?, uptime_s = ?, free_heap = ?,
-               reset_reason = ?, update_result = ?, sensor = ?, info_at = ?,
+               reset_reason = ?, update_result = ?, sensor = ?, wifi_ssid = ?, wifi_network = ?, info_at = ?,
                weak_signal_since = IF(? < ?, COALESCE(weak_signal_since, ?), NULL) WHERE id = ?`,
-            [info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, info.sensor, recordedAt, info.rssi, WEAK_SIGNAL_DBM, recordedAt, device.id],
+            [
+              info.firmwareVersion, info.rssi, info.uptimeSeconds, info.freeHeap, info.resetReason, info.updateResult, info.sensor,
+              info.ssid, info.network, recordedAt, info.rssi, WEAK_SIGNAL_DBM, recordedAt, device.id,
+            ],
           );
         }
         changed =
@@ -255,18 +259,36 @@ export function readingsRouter({ pool, config, sse, ingest, listening, rotation,
         res.set('X-Firmware-Available', String(release.version));
       }
       const reportedAt = recordedAt.toISOString();
+      // The network as the server now holds it: this report's, or the last one a board said (older firmware says none).
+      const fallback = onFallbackNetwork(info === null ? device.wifiNetwork : info.network);
       if (values === null) {
         // 202: heard, and nothing created.
         res.status(202).json({ device: device.hostname, fault: 'sensor' });
         // Heard from just now; the last good Reading is judged only until the count reaches a Sensor fault.
         const conditions = conditionsFor({ reading: lastReading, secondsSinceReport: 0, sensorFaults, ...rules });
-        sse.broadcast({ type: 'fault', device: device.hostname, fault: 'sensor', online: !isOffline(conditions), conditions, lastReportAt: reportedAt });
+        sse.broadcast({
+          type: 'fault',
+          device: device.hostname,
+          fault: 'sensor',
+          online: !isOffline(conditions),
+          conditions,
+          lastReportAt: reportedAt,
+          onFallbackNetwork: fallback,
+        });
       } else {
         const reading: ReadingPayload = { ...values, recordedAt: reportedAt };
         res.status(201).json({ device: device.hostname, reading });
         // It just arrived, so it is zero seconds old: the Conditions are those of the Reading alone.
         const conditions = conditionsFor({ reading: values, secondsSinceReport: 0, ...rules });
-        sse.broadcast({ type: 'reading', device: device.hostname, reading, online: !isOffline(conditions), conditions, lastReportAt: reportedAt });
+        sse.broadcast({
+          type: 'reading',
+          device: device.hostname,
+          reading,
+          online: !isOffline(conditions),
+          conditions,
+          lastReportAt: reportedAt,
+          onFallbackNetwork: fallback,
+        });
       }
       await broadcastIncidentChanges(pool, sse, changed);
     } catch (error) {
@@ -294,6 +316,7 @@ interface DashboardRow extends RowDataPacket {
   recordedAt: Date | null;
   lastReportAt: Date | null;
   sensorFaults: number;
+  wifiNetwork: number | null;
 }
 
 /** Every Device with its latest Reading, in one statement: one step back along the index per Device (latestReading.ts). */
@@ -301,7 +324,7 @@ const SELECT_DASHBOARD = `
   SELECT d.id, d.hostname, d.closet,
          c.id AS campusId, c.name AS campusName, c.shortcode AS campusShortcode,
          r.temp_f AS tempF, r.humidity, r.recorded_at AS recordedAt,
-         d.last_report_at AS lastReportAt, d.sensor_faults AS sensorFaults
+         d.last_report_at AS lastReportAt, d.sensor_faults AS sensorFaults, d.wifi_network AS wifiNetwork
   FROM devices d
   JOIN campuses c ON c.id = d.campus_id
   LEFT JOIN readings r ON r.id = (${LATEST_READING_ID})`;
@@ -337,6 +360,8 @@ function toDashboardDevice(row: DashboardRow, now: Date, rules: ConditionRules, 
     tokenMismatchAt: sightings.mismatchedAt(hostname)?.toISOString() ?? null,
     /** Its incidents still open, oldest first, each with who acknowledged it: the card says who is on them. */
     openIncidents,
+    /** The board said it is on its fallback network (firmware 7): a note on its card, never a Condition. Not its name: that is for the Admin. */
+    onFallbackNetwork: onFallbackNetwork(row.wifiNetwork),
   };
 }
 

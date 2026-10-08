@@ -10,6 +10,7 @@ const device = (hostname: string, overrides: Partial<AgedDevice> = {}): AgedDevi
   lastReportAt: '2026-10-06T14:00:00.000Z',
   secondsSinceReading: 10,
   secondsSinceReport: 10,
+  onFallbackNetwork: false,
   asOf: 1_000,
   ...overrides,
 });
@@ -21,6 +22,7 @@ const fault = (overrides: Partial<FaultEvent> = {}): FaultEvent => ({
   online: true,
   conditions: [{ name: 'Sensor fault', level: 'critical' }],
   lastReportAt: '2026-10-06T14:01:00.000Z',
+  onFallbackNetwork: false,
   ...overrides,
 });
 
@@ -35,6 +37,13 @@ describe('applyFault', () => {
     assert.equal(card.secondsSinceReading, 70);
     assert.equal(card.asOf, 61_000);
     assert.deepEqual(other, device('ESP_D4E5F6'));
+  });
+
+  it('takes the network the board reported from, so the card notes its fallback network at once, and drops the note when it is back', () => {
+    const [onFallback] = applyFault([device('ESP_A1B2C3')], fault({ onFallbackNetwork: true }), 5_000);
+    assert.equal(onFallback.onFallbackNetwork, true);
+    const [back] = applyFault([onFallback], fault({ lastReportAt: '2026-10-06T14:02:00.000Z' }), 35_000);
+    assert.equal(back.onFallbackNetwork, false);
   });
 
   it('does not wear the Reading age down over a run of fault reports', () => {

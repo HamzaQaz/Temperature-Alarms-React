@@ -173,6 +173,7 @@ function applyReading(dashboard: LoadedDashboard, event: ReadingEvent): LoadedDa
     online: event.online,
     conditions: event.conditions,
     tokenMismatchAt: null,
+    onFallbackNetwork: event.onFallbackNetwork,
     secondsSinceReading: 0,
     lastReportAt: event.lastReportAt,
     secondsSinceReport: 0,
