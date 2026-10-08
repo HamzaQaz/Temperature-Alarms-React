@@ -7,6 +7,8 @@ Warning-level emails held during quiet hours (nights and weekends) go out as one
 
 **Status:** needs-triage
 
+**GitHub:** #14
+
 - [ ] `NOTIFY_QUIET_HOURS` (e.g. `18:00-07:00`) and `NOTIFY_QUIET_WEEKENDS` in `config.ts`, in the server's zone (`localDay.ts`), with deploy flags and `info`
 - [ ] The sender leaves warning rows due inside quiet hours pending, with a `not_before` time, and sends them in the first pass after; the 24 h give-up counts from `not_before`, not from queuing
 - [ ] An incident that opened and closed inside quiet hours arrives in the digest as "opened and resolved"

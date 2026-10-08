@@ -7,6 +7,8 @@ Publishing to named Devices first already exists (`POST /api/firmware?only=ESP_A
 
 **Status:** needs-triage
 
+**GitHub:** #16
+
 - [ ] The release records its stage (named Devices, or all) and when it was widened
 - [ ] `POST /api/firmware/widen` (Admin token) turns a staged release into one for every Device
 - [ ] Hold: a staged Device that took the new version and then goes Offline or Sensor fault, or whose self-report carries a failed update, marks the release held; held releases offer nothing more, and the Firmware tab says why and which Device

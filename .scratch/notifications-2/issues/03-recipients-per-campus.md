@@ -7,6 +7,8 @@ Each Campus can name its own recipients, so a campus's technicians get only thei
 
 **Status:** needs-triage
 
+**GitHub:** #13
+
 - [ ] Migration: `campuses.notify_to` (comma-separated addresses, empty: use `NOTIFY_TO`)
 - [ ] Campus editor on Settings gains the field, checked with the same address rule as `config.ts`
 - [ ] The sender groups due rows by recipient list: one email per list per pass, each still coalesced and worst first; a row is marked sent only when its own email went

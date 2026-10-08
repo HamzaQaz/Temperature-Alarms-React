@@ -15,6 +15,8 @@ An incident still open and unacknowledged after `NOTIFY_REMIND_HOURS` (say 4) em
 
 ## Open questions
 
+Tracked for the owner in GitHub #20.
+
 - One period for every level, or sooner for critical?
 - A cap on reminders per incident (an unplugged board on the Bench of a closed school)?
 

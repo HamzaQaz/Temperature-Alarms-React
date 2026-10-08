@@ -7,6 +7,8 @@ A board that cannot join its network tries a second configured one before going 
 
 **Status:** needs-triage
 
+**GitHub:** #18
+
 - [ ] `config.h`: optional `WIFI_SSID_2` / `WIFI_PASSWORD_2` (empty password: open network, as for the first)
 - [ ] `network.cpp`: try the first for N seconds, then the second, alternating; stay on whichever joined until it drops
 - [ ] The self-report names which network the board is on; Settings shows it

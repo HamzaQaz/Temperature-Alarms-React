@@ -7,6 +7,8 @@ On the first of each month, one email per Campus (or one district-wide) summaris
 
 **Status:** needs-triage
 
+**GitHub:** #15
+
 - [ ] A pure builder from last month's incidents and Readings to {subject, text, html}, like `notificationEmail.ts`; times and days in the server's zone
 - [ ] A monthly job, queued through the outbox (a `report` row) so it retries and shows on Settings like any email; sent once per month even across restarts
 - [ ] `NOTIFY_MONTHLY_REPORT=true`, with deploy flag and `info`
