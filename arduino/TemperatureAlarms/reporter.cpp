@@ -3,17 +3,14 @@
 #include <Arduino.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
-#include <WiFiClientSecure.h>
 
 #include "config.h"
 #include "network.h"
-#include "sensor.h"
 #include "server.h"
 #include "updater.h"
 #include "version.h"
 
 static const char READINGS_PATH[] = "/api/readings";
-static const unsigned long HTTP_TIMEOUT_MS = 10 * 1000UL;
 // How much of a refusal's body is read for the log, and for how long in all. HTTPClient's own
 // getString() reads everything the server sends, waiting up to the timeout per byte, so a server
 // that trickles a byte at a time would hold the loop for good.
@@ -107,16 +104,17 @@ static String responseStart(WiFiClient& client) {
 // status that means success: 201 for a Reading, 202 for a fault report.
 static int post(WiFiClient& client, const String& body, int accepted, String& response) {
   HTTPClient http;
-  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.setTimeout(SERVER_TIMEOUT_MS);
   http.setReuse(false);
   if (!http.begin(client, readingsUrl)) return HTTPC_ERROR_CONNECTION_FAILED;
   http.addHeader(F("Content-Type"), F("application/json"));
-  http.addHeader(F("Authorization"), String(F("Bearer ")) + DEVICE_TOKEN);
+  http.addHeader(F("Authorization"), F("Bearer " DEVICE_TOKEN));  // one string in flash, built at compile time
   // The server names a newer build waiting for this board in a header, so the board checks at once.
+  // An absent header reads as "", which is 0: none waiting.
   const char* wanted[] = {"X-Firmware-Available"};
   http.collectHeaders(wanted, 1);
   int status = http.POST(body);
-  if (status == accepted) updaterOffered(http.hasHeader("X-Firmware-Available") ? http.header("X-Firmware-Available").toInt() : 0);
+  if (status == accepted) updaterOffered(http.header("X-Firmware-Available").toInt());
   if (status > 0 && status != accepted) response = responseStart(client);
   http.end();
   return status;
@@ -133,20 +131,14 @@ void reporterBegin() {
 // POSTs the body once and logs the outcome: `success` when the server answers `accepted`.
 static void send(const String& body, int accepted, const __FlashStringHelper* success) {
   String response;
-  int status;
-  if (serverUsesTls()) {
-    BearSSL::WiFiClientSecure client;
-    const __FlashStringHelper* problem = serverSecure(client);
-    if (problem != nullptr) {
-      Serial.print(F("report: failed, "));
-      Serial.print(problem);
-      Serial.println(F(", token not sent"));
-      return;
-    }
-    status = post(client, body, accepted, response);
-  } else {
-    WiFiClient client;
-    status = post(client, body, accepted, response);
+  int status = 0;
+  const __FlashStringHelper* problem =
+      serverRequest([&](WiFiClient& client) { status = post(client, body, accepted, response); });
+  if (problem != nullptr) {
+    Serial.print(F("report: failed, "));
+    Serial.print(problem);
+    Serial.println(F(", token not sent"));
+    return;
   }
 
   if (status == accepted) {
