@@ -33,3 +33,11 @@ Used by `/wayfinder`. The **map** is a file with one **child** file per ticket.
 
 - The current feature is `.scratch/rebuild/` — its spec is `spec.md` and its implementation tickets are under `issues/` (01 to 14 from the spec, later numbers for work found afterwards).
 - Each ticket carries a `Blocked by:` line near the top listing the gating tickets by number. The frontier is every ticket whose blockers all have `Status: done`.
+
+## GitHub issues
+
+The `.scratch/` file stays the source of truth; GitHub issues mirror the tickets the owner still has to decide or that are open, so they show on GitHub and PRs can reference them.
+
+- A ticket with an issue carries a `**GitHub:** #N` line under its `Status:` line.
+- The issue carries the triage label (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`) and an `area:` label (`area:notifications`, `area:reporting`, `area:firmware`, `area:operations`).
+- A PR that builds the ticket says `Closes #N` in its body; close the issue by hand if the PR does not target `master`.

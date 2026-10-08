@@ -7,6 +7,8 @@ One Settings tab that answers "is the system itself OK?": database size and free
 
 **Status:** needs-triage
 
+**GitHub:** #19
+
 - [ ] `GET /api/system` (Admin token) gathers what `/api/health`, `/api/notifications/status`, and `/api/firmware/status` already know, plus database size (`information_schema`) and the last backup time
 - [ ] The backup time: `deploy backup` writes a marker the api can read (a file on a shared volume, or a row), since the api cannot see the host's cron
 - [ ] Settings tab per DESIGN.md: each line states its fact and, when not fine, the fix ("No backup in 3 days: run `deploy/deploy.sh backup`")

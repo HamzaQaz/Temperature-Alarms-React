@@ -7,6 +7,8 @@ The DHT11 reads ±2 °C and ±5 % humidity, coarse for a closet sitting near a H
 
 **Status:** needs-triage
 
+**GitHub:** #17
+
 - [ ] `config.h`: `SENSOR_TYPE` (`DHT11`, `DHT22`, `SHT31`), with pins per type in `config.example.h`; `sensor.cpp` hides the difference behind `sensorRead`, retry and fault report unchanged
 - [ ] The self-report carries the sensor type; the server stores it on the Device and Settings shows it
 - [ ] Builds for each type with core 3.1.2; IRAM and flash noted (IRAM is at 92% today, and the SHT31 library is small, but check)
