@@ -46,3 +46,38 @@ export function errorReloads(clock: () => number, gapMs = ERROR_RELOAD_GAP_MS): 
     return true;
   };
 }
+
+/** How often an open Firmware tab reads its status whatever the stream says. */
+export const FALLBACK_RELOAD_MS = 30_000;
+
+export interface LiveReloads {
+  /** Something it shows can have changed (a `firmware` event), or the stream is back after a drop. */
+  changed(): void;
+  /** The page was shown or hidden (the browser's visibilitychange). */
+  visibilityChanged(): void;
+  /** Stop the fallback timer, as the tab closes. */
+  stop(): void;
+}
+
+/**
+ * When an open tab reads its data again on its own: at each `changed()`, and every `everyMs`
+ * whatever the stream does, so a dropped stream, or a change no event announces (a build published
+ * from the command line, a Device added), still shows within that. Only while the page is visible:
+ * a hidden one reads nothing, and once when it is shown again if it missed a read. `reload` must be
+ * coalesced (as useResource's is), so a burst costs at most one request beyond the one in flight.
+ */
+export function liveReloads(reload: () => Promise<void>, visible: () => boolean, everyMs = FALLBACK_RELOAD_MS): LiveReloads {
+  let missed = false;
+  const read = () => {
+    missed = !visible();
+    if (!missed) void reload();
+  };
+  const timer = setInterval(read, everyMs);
+  return {
+    changed: read,
+    visibilityChanged: () => {
+      if (missed && visible()) read();
+    },
+    stop: () => clearInterval(timer),
+  };
+}

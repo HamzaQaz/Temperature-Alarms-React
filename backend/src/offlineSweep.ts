@@ -44,8 +44,9 @@ export async function runOfflineSweep({ pool, config, sse, now = () => new Date(
     // Each opening is queued for email in its own transaction when notifications are on (docs/adr/0008).
     const changed = await sweepOffline(pool, rules, at, listening?.since(), config.notifications !== undefined);
     await broadcastIncidentChanges(pool, sse, changed);
-    // A named Device of a staged release that went Offline, or into Sensor fault, after taking it holds the release.
-    await holdOnIncidents(pool, at, config.notifications !== undefined);
+    // A named Device of a staged release that went Offline, or into Sensor fault, after taking it holds
+    // the release, and an open Firmware tab is told to look again.
+    if ((await holdOnIncidents(pool, at, config.notifications !== undefined)) !== null) sse.firmwareChanged();
     // Then the reminders for incidents still open and unacknowledged, when they are on.
     const remindHours = config.notifications?.remindHours ?? 0;
     if (remindHours > 0) await enqueueReminders(pool, remindHours * HOUR_MS, at);
